@@ -31,7 +31,7 @@ An advanced third-person character locomotion and physics framework built with *
 *   `Ctrl`: Crouch (Persistent Toggle; blocked under ceilings).
 *   `Space`: Jump (Hold in air to queue a landing dodge-roll recovery).
 *   `R`: Dodge roll (Horizontal momentum).
-*   `Q`: Punch combo (Tap with rhythm to chain Jab into Cross).
+*   `Q`: Punch.
 *   `E`: Spell casting (Automatic stand-up when crouched).
 *   `F`: Interaction (Automatic stand-up when crouched).
 *   `Mouse Drag`: Orbit camera.
