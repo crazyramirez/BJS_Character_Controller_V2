@@ -4,6 +4,8 @@ An advanced third-person character locomotion and physics framework built with *
 
 🎮 **Live Demo**: [https://viseni.com/_demos_/bjs_character_controller_v2/](https://viseni.com/_demos_/bjs_character_controller_v2/)
 
+![BJS Character Controller V2 Screenshot](assets/screenshot.jpg)
+
 ---
 
 ## 🚀 Key Features & Engine Mechanics
