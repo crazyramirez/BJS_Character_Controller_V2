@@ -19,7 +19,7 @@ body {
 
 #c {
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   display: block;
   outline: none;
 }
@@ -345,13 +345,21 @@ body.touch-device #mobile-ctrls {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
+.touch-btn:active,
+.touch-btn.active {
+  background: rgba(0, 255, 153, 0.22);
+  border-color: rgba(0, 255, 153, 0.7);
+  color: #fff;
+  box-shadow: 0 0 16px rgba(0, 255, 153, 0.45);
+  text-shadow: 0 0 5px rgba(0, 255, 153, 0.5);
+}
+
 .touch-btn:active {
   transform: scale(0.9);
-  background: rgba(0, 255, 153, 0.2);
-  border-color: rgba(0, 255, 153, 0.6);
-  color: #fff;
-  box-shadow: 0 0 15px rgba(0, 255, 153, 0.4);
-  text-shadow: 0 0 5px rgba(0, 255, 153, 0.5);
+}
+
+.touch-btn.active {
+  transform: scale(0.94);
 }
 
 #btn-sprint {
@@ -360,10 +368,21 @@ body.touch-device #mobile-ctrls {
   border-color: rgba(0, 170, 255, 0.2);
 }
 
+#btn-sprint:active,
+#btn-sprint.active {
+  background: rgba(0, 170, 255, 0.22);
+  border-color: rgba(0, 170, 255, 0.7);
+  box-shadow: 0 0 16px rgba(0, 170, 255, 0.45);
+  color: #fff;
+  text-shadow: 0 0 5px rgba(0, 170, 255, 0.5);
+}
+
 #btn-sprint:active {
-  background: rgba(0, 170, 255, 0.2);
-  border-color: rgba(0, 170, 255, 0.6);
-  box-shadow: 0 0 15px rgba(0, 170, 255, 0.4);
+  transform: scale(0.9);
+}
+
+#btn-sprint.active {
+  transform: scale(0.94);
 }
 
 #btn-jump {

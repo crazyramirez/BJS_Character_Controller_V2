@@ -733,28 +733,24 @@ class CharCtrl {
         if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
-            this._idle();
+            this._returnToLoco();
           } else {
             this._showCombo('CEILING BLOCKED');
             setTimeout(() => this._hideCombo(), 1200);
           }
         } else {
           this.crouching = true;
-          this.sprinting = false; // Crouching cancels sprinting
-          this._idle();
+          this._returnToLoco();
         }
       }
     } else if (this._matchesAction(code, 'SPRINT')) {
       if (this.grounded && !inAction && !this.sitting) {
         if (this.sprinting) {
           this.sprinting = false;
-          this._idle();
+          this._returnToLoco();
         } else {
           this.sprinting = true;
-          if (this.crouching && this._canUncrouch()) {
-            this.crouching = false; // Sprinting cancels crouching
-          }
-          this._idle();
+          this._returnToLoco();
         }
       }
     } else if (this._matchesAction(code, 'JUMP')) {
@@ -1155,8 +1151,17 @@ class CharCtrl {
     }
 
     // ── PROCESS CROUCHING COLLISION HEIGHT ADJUSTMENTS ─────
-    const targetEllipsoidY = this.crouching ? this._crouchEllipsoidY : this._standEllipsoidY;
-    const targetOffset = this.crouching ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
+    // If we are performing a standing action (like spell casting or interacting) while crouching,
+    // we temporarily restore standing collision bounds and target height so that the character stands properly.
+    const isTempStandingAction = inAction && (this.state === S.SPELL_ENTER || this.state === S.SPELL_SHOOT || this.state === S.SPELL_EXIT || this.state === S.INTERACT);
+    const useCrouchHeight = this.crouching && !isTempStandingAction;
+
+    const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
+    const targetOffset = useCrouchHeight ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
+
+    if (isTempStandingAction) {
+      this.targetLocalY = this._standMeshY;
+    }
 
     // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches
     if (this.root.ellipsoid) {
@@ -1434,6 +1439,22 @@ class CharCtrl {
       const hudSpeed = document.getElementById('hud-speed');
       if (hudSpeed) {
         hudSpeed.textContent = `spd: ${this.speed.toFixed(1)}`;
+      }
+    }
+
+    // Update active visual state for mobile toggle buttons
+    if (this.isTouch) {
+      const btnCrouch = document.getElementById('btn-crouch');
+      const btnSprint = document.getElementById('btn-sprint');
+      
+      if (btnCrouch) {
+        if (this.crouching) btnCrouch.classList.add('active');
+        else btnCrouch.classList.remove('active');
+      }
+      
+      if (btnSprint) {
+        if (this.sprinting) btnSprint.classList.add('active');
+        else btnSprint.classList.remove('active');
       }
     }
 
