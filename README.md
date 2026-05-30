@@ -16,7 +16,7 @@ The demo showcases a third-person sandbox where a 3D character interacts with a 
 
 ### Core Engine Capabilities:
 *   **Stable Collision Physics**: Utilizes a capsule collider with `moveWithCollisions` physics for fluid world navigation, smooth step-climbing, and ramp-sliding without vertical jitter.
-*   **Locomotion Blend Tree**: A unified `Locomotion` virtual group interpolates animation weights in real time between `Idle_Loop`, `Walk_Loop`, and `Sprint_Loop` based on physical velocity.
+*   **Locomotion Blend Tree (Reactive Animations)**: A unified `Locomotion` virtual group interpolates animation weights in real time between `Idle_Loop`, `Walk_Loop`, and `Sprint_Loop` based on physical velocity. This makes animations fully reactive to the character's movement: as the velocity changes, the model transitions fluidly from walking to jogging and sprinting. This reactivity is especially noticeable on mobile devices using the touch joystick, where dragging the analog control gradually increases speed, and the animations correspond and scale dynamically to match the movement.
 *   **Procedural Footstep & Impact Particles**: Generates dynamic smoke/dust trails at the character's feet during walking, sprinting, and rolling, with heavy bursts emitted upon impact landing.
 *   **Advanced Visual Suspension & Kinetic Animation**:
     *   **Y-Suspension**: Absorbs height shocks when stepping up or down, smoothly returning the visual mesh to its height baseline.

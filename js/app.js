@@ -154,13 +154,14 @@ async function createDemoScene() {
 
   if (isIOS) {
     // iOS WebGL precision limits (mediump) cause severe shadow acne / striping with PCF.
-    // Blurred Exponential Shadow Maps (ESM) provide beautiful soft shadows and are immune to precision-based acne.
+    // Exponential Shadow Maps (ESM) are immune to precision-based acne.
+    // We use a small blur kernel, 1:1 blur scaling, and high depthScale to keep the shadows crisp and defined.
     shadow.useBlurExponentialShadowMap = true;
     shadow.useKernelBlur = true;
-    shadow.blurKernel = 16;
-    shadow.blurScale = 2;
-    shadow.depthScale = 25; // Controls the softness edge transition
-    shadow.bias = 0.005;
+    shadow.blurKernel = 4;     // Small kernel for sharper edges (reduced from 16)
+    shadow.blurScale = 1;      // Sharp 1:1 resolution (reduced from 2)
+    shadow.depthScale = 65.0;  // High value for crisp edge transition (increased from 25)
+    shadow.bias = 0.003;
   } else if (isMobile) {
     // Android/other mobile: use optimized medium quality PCF
     shadow.usePercentageCloserFiltering = true;
