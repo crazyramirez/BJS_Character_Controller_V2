@@ -146,30 +146,21 @@ async function createDemoScene() {
 
   // ── SHADOWS ────────────────────────────────────────────
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-  // Optimize shadow map size for mobile devices
-  const shadowSize = isMobile ? 512 : 1024;
+  // Use 2048 for high-definition, sharp shadow maps on all modern screens
+  const shadowSize = 2048;
   const shadow = new BABYLON.ShadowGenerator(shadowSize, sun);
 
-  if (isIOS) {
-    // iOS WebGL precision limits (mediump) cause severe shadow acne / striping with PCF.
-    // Exponential Shadow Maps (ESM) are immune to precision-based acne.
-    // We use a small blur kernel, 1:1 blur scaling, and high depthScale to keep the shadows crisp and defined.
-    shadow.useBlurExponentialShadowMap = true;
-    shadow.useKernelBlur = true;
-    shadow.blurKernel = 4;     // Small kernel for sharper edges (reduced from 16)
-    shadow.blurScale = 1;      // Sharp 1:1 resolution (reduced from 2)
-    shadow.depthScale = 65.0;  // High value for crisp edge transition (increased from 25)
-    shadow.bias = 0.003;
-  } else if (isMobile) {
-    // Android/other mobile: use optimized medium quality PCF
+  if (isMobile) {
+    // Mobile (iOS & Android): Use PCF with Medium quality (3x3 kernel).
+    // This provides beautiful, anti-aliased soft shadows without any pixelation or noise,
+    // utilizing hardware PCF filtering natively supported on WebGL 2.
     shadow.usePercentageCloserFiltering = true;
     shadow.filteringQuality = BABYLON.ShadowGenerator.QUALITY_MEDIUM;
-    shadow.bias = 0.015;
-    shadow.normalBias = 0.005;
+    shadow.bias = 0.005;
+    shadow.normalBias = 0.001;
   } else {
-    // Desktop: high quality PCF
+    // Desktop: premium PCF High quality (5x5 kernel)
     shadow.usePercentageCloserFiltering = true;
     shadow.filteringQuality = BABYLON.ShadowGenerator.QUALITY_HIGH;
     shadow.bias = 0.01;
