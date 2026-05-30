@@ -299,4 +299,13 @@ createDemoScene()
     $('bar').style.background = '#f44';
   });
 
+// ── HUD COLLAPSE CONTROLLER ──────────────────────────────
+const hud = $('hud');
+const toggle = $('hud-toggle');
+if (toggle && hud) {
+  toggle.addEventListener('click', () => {
+    hud.classList.toggle('collapsed');
+  });
+}
+
 window.addEventListener('resize', () => engine.resize());

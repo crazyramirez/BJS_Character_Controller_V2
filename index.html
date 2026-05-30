@@ -40,15 +40,22 @@
   </div>
 
   <div id="hud">
-    <div class="panel">
-      <div class="state-label">State</div>
-      <div class="state-val" id="hud-state">IDLE</div>
-      <div class="state-label" style="margin-top:4px">Animation</div>
-      <div class="anim-val" id="hud-anim">—</div>
-      <div class="weapon-val" id="hud-weapon"></div>
-      <div class="speed-val" id="hud-speed"></div>
-      <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: #aeb4ff; font-weight: 500;">
-        <span style="color: #00ff99; font-weight: bold; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;">Tip:</span> Press <span style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">Space</span> in air to queue a <span style="color:#ffcc00; font-weight: 600;">Double Jump (Landing Roll)</span>
+    <div class="panel main-panel">
+      <button id="hud-toggle" aria-label="Toggle HUD">
+        <svg class="toggle-icon" viewBox="0 0 24 24">
+          <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+        </svg>
+      </button>
+      <div class="hud-content">
+        <div class="state-label">State</div>
+        <div class="state-val" id="hud-state">IDLE</div>
+        <div class="state-label" style="margin-top:4px">Animation</div>
+        <div class="anim-val" id="hud-anim">—</div>
+        <div class="weapon-val" id="hud-weapon"></div>
+        <div class="speed-val" id="hud-speed"></div>
+        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: #aeb4ff; font-weight: 500;">
+          <span style="color: #00ff99; font-weight: bold; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;">Tip:</span> Press <span style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">Space</span> in air to queue a <span style="color:#ffcc00; font-weight: 600;">Double Jump (Landing Roll)</span>
+        </div>
       </div>
     </div>
     <div class="panel keys-grid">
