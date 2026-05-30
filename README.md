@@ -27,8 +27,8 @@ An advanced third-person character locomotion and physics framework built with *
 
 ### Keyboard & Mouse (PC):
 *   `W`, `A`, `S`, `D` / `Arrow Keys`: Camera-relative movement.
-*   `Shift`: Sprint (Persistent Toggle).
-*   `Ctrl`: Crouch (Persistent Toggle; blocked under ceilings).
+*   `Shift`: Sprint (Persistent Toggle / Latch Mode button).
+*   `Ctrl`: Crouch (Persistent Toggle / Latch Mode button; blocked under ceilings).
 *   `Space`: Jump (Hold in air to queue a landing dodge-roll recovery).
 *   `R`: Dodge roll (Horizontal momentum).
 *   `Q`: Punch.
@@ -40,8 +40,8 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Left Hand**: Floating Analog Joystick (drag to adjust speed/animations dynamically).
 *   **Screen Double-Tap**: Smoothly recenter camera behind the character.
 *   **Right Hand (Button Grid)**:
-    *   **Row 1 (Upper)**: `SPELL` · `ACT` · `CROUCH` (with visual active indicators)
-    *   **Row 2 (Lower)**: `ROLL` · `SPRINT` (with visual active indicators) · `JUMP`
+    *   **Row 1 (Upper)**: `SPELL` · `ACT` · `CROUCH` (Latch Mode toggle with visual active glow indicator)
+    *   **Row 2 (Lower)**: `ROLL` · `SPRINT` (Latch Mode toggle with visual active glow indicator) · `JUMP`
 
 ---
 
