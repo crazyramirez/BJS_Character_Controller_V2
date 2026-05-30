@@ -1,6 +1,6 @@
 <a href="https://www.viseni.com" target="_blank"><img src="https://www.viseni.com/_demos_/viseni-logo-white.webp" style="width: 200px; margin-bottom: 50px"></a>
 
-# 3D Character Animation Engine & Controller in Babylon.js
+# 3D Character Animation Controller for Babylon.js
 
 An advanced 3D character animation and third-person controller framework built with **Babylon.js**. This framework features high-fidelity collision physics, dynamic locomotion blend trees, procedural dust particles, advanced visual suspension mechanics, combat combos, spell casting, and built-in mobile touch support.
 
