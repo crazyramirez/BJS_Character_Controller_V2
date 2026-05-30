@@ -23,6 +23,7 @@ An advanced third-person character locomotion and physics framework built with *
     *   **Leaning & Banking**: Automatically pitches forward on acceleration, backward on braking, and banks into sharp angular turns.
     *   **Squash & Stretch**: Elastic scale distortions on jumps, falls, and landing impact.
 *   **Ledge Snap & Stairs Snapping**: Downward snap pressure prevents micro-airborne jitter on ramps and stairs.
+*   **Smart Landing Physics & Height Filtering**: Evaluates vertical impact velocity (`jumpVel < -3.0`) and tracks peak airborne height to calculate the exact physical drop distance (`fallHeight > 0.4m`). This allows the controller to ignore tiny stair drops or curbs while perfectly triggering the landing animation (`Jump_Land`) and visual squash effects on real falls and jumps. The execution order resolves calculations *before* grounded state resets, ensuring perfect precision.
 *   **High-End Mobile Touch UI**: Fully custom glassmorphism virtual joystick and responsive action buttons.
     *   **Integrated Collapsing panel**: Double-click/tap recenters camera seamlessly. The HUD collapses into a compact glowing glass bead in the screen corner and persists its state via `localStorage`.
 
