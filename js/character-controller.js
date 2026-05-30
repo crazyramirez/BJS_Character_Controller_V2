@@ -1163,10 +1163,10 @@ class CharCtrl {
       this.targetLocalY = this._standMeshY;
     }
 
-    // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches
+    // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches (slowed down to 4 for premium fluid feel)
     if (this.root.ellipsoid) {
-      this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-14 * dt));
-      this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-14 * dt));
+      this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-4 * dt));
+      this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
     }
 
     // ── PROCESS HORIZONTAL PHYSICS (LOCOMOTION) ────────────
@@ -1319,8 +1319,8 @@ class CharCtrl {
       // Compensate visual mesh local Y for capsule height shifts
       this.visualLocalY -= deltaY;
     }
-    // Smoothly return visual mesh local Y to its target crouch/stand state Y
-    this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-14 * dt));
+    // Smoothly return visual mesh local Y to its target crouch/stand state Y (slowed to 4 for svelte transitions during spells/interactions)
+    this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-4 * dt));
     // Clamp to prevent visual separating too far from capsule boundaries.
     // Extremely important: clamp the lower bound tightly (targetLocalY - 0.02) to prevent clipping into stairs/slopes,
     // while keeping a generous upper bound (targetLocalY + 0.35) for beautiful step-down suspension!
