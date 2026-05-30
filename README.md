@@ -191,3 +191,9 @@ node js/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/c
 If the character's limbs cross or stick too close to the body due to skeletal differences, open `merge_animations.mjs` and tweak the angle offsets:
 *   `ARM_SPREAD_ANGLE = -5`: Separation angle offset (in degrees) for the upper arms.
 *   `LEG_SPREAD_ANGLE = 5`: Outward spread angle offset (in degrees) for the upper legs.
+
+---
+
+## 📚 Credits & Attributions
+
+*   **Animations**: Assets from the [Universal Animation Library by Quaternius](https://quaternius.com/packs/universalanimationlibrary.html) (a highly recommended and extremely comprehensive library for game development).
