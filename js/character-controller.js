@@ -673,6 +673,27 @@ class CharCtrl {
         addListener(btn, 'pointercancel', onBtnUp);
       });
     }
+
+    // Double tap on canvas to recenter camera
+    let lastTap = 0;
+    const canvasEl = this.scene.getEngine().getRenderingCanvas();
+    if (canvasEl) {
+      const onCanvasTap = (e) => {
+        if (e.pointerType !== 'touch') return;
+
+        // Ignore taps near joystick or action buttons to prevent accidental triggers
+        const isNearJoystick = e.clientX < 180 && e.clientY > (window.innerHeight - 180);
+        const isNearButtons = e.clientX > (window.innerWidth - 220) && e.clientY > (window.innerHeight - 220);
+        if (isNearJoystick || isNearButtons) return;
+
+        const now = performance.now();
+        if (now - lastTap < 300) {
+          this._recenterCamera();
+        }
+        lastTap = now;
+      };
+      addListener(canvasEl, 'pointerdown', onCanvasTap);
+    }
   }
 
   destroy() {
@@ -1474,6 +1495,43 @@ class CharCtrl {
     if (loco) {
       loco.updateSpeed(this.speed);
     }
+  }
+
+  // ── RECENTER CAMERA (DOUBLE TAP OPTIMIZATION) ─────────
+  _recenterCamera() {
+    if (!this.camera) return;
+
+    // targetAlpha is the rotation angle directly behind the character's facing direction (rotY)
+    const targetAlpha = -this.rotY - Math.PI / 2;
+    const targetBeta = Math.PI / 3.5; // Default pitch angle
+
+    let elapsed = 0;
+    const duration = 0.35; // 350ms smooth transition
+    const startAlpha = this.camera.alpha;
+    const startBeta = this.camera.beta;
+
+    // Normalize angle differences to prevent 360-degree round spins
+    let diffAlpha = targetAlpha - startAlpha;
+    while (diffAlpha > Math.PI) diffAlpha -= 2 * Math.PI;
+    while (diffAlpha < -Math.PI) diffAlpha += 2 * Math.PI;
+
+    const diffBeta = targetBeta - startBeta;
+
+    const obs = this.scene.onBeforeRenderObservable.add(() => {
+      const dt = this.scene.getEngine().getDeltaTime() / 1000;
+      elapsed += dt;
+      const t = Math.min(1.0, elapsed / duration);
+
+      // Smooth step ease curve
+      const smoothT = t * t * (3 - 2 * t);
+
+      this.camera.alpha = startAlpha + diffAlpha * smoothT;
+      this.camera.beta = startBeta + diffBeta * smoothT;
+
+      if (t >= 1.0) {
+        this.scene.onBeforeRenderObservable.remove(obs);
+      }
+    });
   }
 }
 
