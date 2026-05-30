@@ -1,6 +1,6 @@
 # 🎮 3D Character Animation Controller V2 for Babylon.js
 
-An advanced third-person character locomotion and physics framework built with **Babylon.js**. This framework features high-fidelity collision physics, dynamic locomotion blend trees, procedural dust particles, advanced visual suspension mechanics, combat combos, spell casting, and a top-tier responsive mobile touch interface.
+An advanced third-person character locomotion and physics framework built with **Babylon.js**. **The primary goal of this framework is to provide a highly powerful, fluid, and extremely easy-to-use Character Controller** that integrates out-of-the-box physics, animations, and high-end visual features.
 
 🎮 **Live Demo**: [https://viseni.com/_demos_/bjs_character_controller_v2/](https://viseni.com/_demos_/bjs_character_controller_v2/)
 
@@ -12,6 +12,11 @@ An advanced third-person character locomotion and physics framework built with *
 
 *   **Locomotion Blend Tree (Reactive Animations)**: Smoothly blends weight and speeds between `Idle_Loop`, `Walk_Loop`, and `Sprint_Loop` based on physical velocity.
 *   **Dual-State Coexistence**: Crouch and Sprint operate as persistent **Toggles (Latch Mode)** and can cohabitate seamlessly, allowing a high-speed **Crouch Run (Agachado)** locomotion state.
+*   **Advanced Kinetic Camera System**:
+    *   **Natural Lerped Follow**: Smoothly tracks the character's height using adaptive linear interpolation (Lerp), eliminating rigid camera cuts and stutter.
+    *   **Dynamic Tunnel Vision (FOV Expansion)**: Automatically expands the camera Field of View (FOV) at higher velocities to increase the sensation of speed.
+    *   **Landing Impact Camera Shake**: Triggers multi-axis rotational camera shake depending on landing height and landing physics velocity.
+    *   **Mobile-Adaptive Framing & Recenter**: Lowers the target center on mobile to keep the character perfectly visible above the thumbs and touch overlay, with a seamless double-tap screen recentering transition.
 *   **Procedural Footstep Particles**: Generates dynamic dust trails at the feet during locomotion, with impactful landing bursts based on fall velocity.
 *   **Advanced Visual Suspension**:
     *   **Y-Suspension & Morphing**: Dampens vertical height shocks when walking up/down steps. Automatically morphs collision bounds and visual offsets during standing actions (magics, interactions) when crouched.
