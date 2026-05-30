@@ -1,0 +1,476 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  overflow: hidden;
+  background: #000;
+  font-family: 'Courier New', monospace;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  -webkit-user-drag: none;
+  -moz-user-drag: none;
+  -ms-user-drag: none;
+}
+
+#c {
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  outline: none;
+}
+
+/* ── LOADING ── */
+#loading {
+  position: fixed;
+  inset: 0;
+  background: #080810;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  transition: opacity .6s;
+}
+
+#loading h1 {
+  font-size: 28px;
+  color: #00ff99;
+  letter-spacing: 6px;
+  margin-bottom: 8px;
+}
+
+#loading p {
+  color: #556;
+  font-size: 12px;
+  margin-bottom: 30px;
+  letter-spacing: 2px;
+}
+
+.bar-bg {
+  width: 280px;
+  height: 3px;
+  background: #1a1a2a;
+  border-radius: 2px;
+}
+
+.bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #00ff99, #00aaff);
+  border-radius: 2px;
+  transition: width .3s;
+}
+
+.bar-label {
+  margin-top: 10px;
+  color: #445;
+  font-size: 11px;
+  text-align: center;
+}
+
+/* ── HUD ── */
+#hud {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 100;
+}
+
+.panel {
+  background: rgba(0, 0, 0, .65);
+  border: 1px solid rgba(255, 255, 255, .1);
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.state-label {
+  font-size: 10px;
+  color: #556;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.state-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: #00ff99;
+  letter-spacing: 1px;
+  margin: 2px 0;
+}
+
+.anim-val {
+  font-size: 11px;
+  color: #aaf;
+}
+
+.weapon-val {
+  font-size: 11px;
+  color: #fa0;
+  margin-top: 2px;
+}
+
+.speed-val {
+  font-size: 11px;
+  color: #888;
+}
+
+.keys-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+  font-size: 10px;
+}
+
+.krow {
+  color: #668;
+}
+
+.krow span {
+  display: inline-block;
+  background: rgba(255, 255, 255, .1);
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #aaa;
+  font-size: 9px;
+  margin-right: 3px;
+}
+
+/* ── CROSSHAIR ── */
+#xhair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s;
+}
+
+#xhair.on {
+  opacity: .8;
+}
+
+#xhair::before,
+#xhair::after {
+  content: '';
+  position: absolute;
+  background: rgba(255, 255, 255, .9);
+}
+
+#xhair::before {
+  width: 2px;
+  height: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+#xhair::after {
+  height: 2px;
+  width: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* ── COMBO ── */
+#combo {
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #ff6;
+  letter-spacing: 2px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .3s;
+  text-shadow: 0 0 10px #ff0;
+}
+
+#combo.show {
+  opacity: 1;
+}
+
+/* ── SWIM INDICATOR ── */
+#swim-bar {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 60, 120, .7);
+  border: 1px solid rgba(0, 200, 255, .4);
+  border-radius: 20px;
+  padding: 4px 16px;
+  color: #0cf;
+  font-size: 11px;
+  letter-spacing: 2px;
+  display: none;
+}
+
+#swim-bar.on {
+  display: block;
+}
+
+/* ── MOBILE CONTROLS (GLASSMORPHISM) ── */
+#mobile-ctrls {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  display: none;
+  /* Show only when touch device detected */
+}
+
+body.touch-device #mobile-ctrls {
+  display: block;
+}
+
+#joystick-zone {
+  position: absolute;
+  bottom: 40px;
+  left: 40px;
+  width: 140px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#joystick-ring {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 2px solid rgba(0, 255, 153, 0.25);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 15px rgba(0, 255, 153, 0.1), inset 0 0 15px rgba(0, 255, 153, 0.05);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#joystick-ring.active {
+  border-color: rgba(0, 255, 153, 0.6);
+  box-shadow: 0 0 25px rgba(0, 255, 153, 0.3), inset 0 0 20px rgba(0, 255, 153, 0.1);
+}
+
+#joystick-knob {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3), 0 0 10px rgba(0, 255, 153, 0.2);
+  backdrop-filter: blur(4px);
+  position: absolute;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+#joystick-ring.active #joystick-knob {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(0, 255, 153, 0.8);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4), 0 0 15px rgba(0, 255, 153, 0.5);
+}
+
+#action-btns {
+  position: absolute;
+  bottom: 30px;
+  right: 30px;
+  display: grid;
+  grid-template-areas:
+    ". sprint act"
+    "crouch roll jump";
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.touch-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.8);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.touch-btn:active {
+  transform: scale(0.9);
+  background: rgba(0, 255, 153, 0.2);
+  border-color: rgba(0, 255, 153, 0.6);
+  color: #fff;
+  box-shadow: 0 0 15px rgba(0, 255, 153, 0.4);
+  text-shadow: 0 0 5px rgba(0, 255, 153, 0.5);
+}
+
+#btn-sprint {
+  grid-area: sprint;
+  background: rgba(0, 170, 255, 0.05);
+  border-color: rgba(0, 170, 255, 0.2);
+}
+
+#btn-sprint:active {
+  background: rgba(0, 170, 255, 0.2);
+  border-color: rgba(0, 170, 255, 0.6);
+  box-shadow: 0 0 15px rgba(0, 170, 255, 0.4);
+}
+
+#btn-jump {
+  grid-area: jump;
+  width: 70px;
+  height: 70px;
+  margin-top: -5px;
+  background: rgba(0, 255, 153, 0.07);
+  border-color: rgba(0, 255, 153, 0.25);
+  font-size: 10px;
+}
+
+#btn-roll {
+  grid-area: roll;
+}
+
+#btn-crouch {
+  grid-area: crouch;
+}
+
+#btn-act {
+  grid-area: act;
+  background: rgba(255, 102, 0, 0.05);
+  border-color: rgba(255, 102, 0, 0.2);
+}
+
+#btn-act:active {
+  background: rgba(255, 102, 0, 0.2);
+  border-color: rgba(255, 102, 0, 0.6);
+  box-shadow: 0 0 15px rgba(255, 102, 0, 0.4);
+}
+
+/* Modify existing hud for touch compatibility */
+body.touch-device #hud {
+  top: auto;
+  bottom: 200px;
+  left: 16px;
+  max-width: calc(100vw - 32px);
+}
+
+body.touch-device .keys-grid {
+  display: none;
+  /* Hide keyboard shortcut help on touch */
+}
+
+/* ── WEIGHT SLIDER ── */
+.weight-container {
+  margin-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 10px;
+}
+
+.weight-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.weight-label {
+  font-size: 10px;
+  color: #556;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.weight-val {
+  font-size: 11px;
+  font-weight: bold;
+  color: #00ff99;
+}
+
+.slider-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.weight-slider {
+  pointer-events: auto;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: #1a1a2a;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.weight-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.weight-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #00ff99;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0, 255, 153, 0.6);
+  transition: transform 0.1s, background-color 0.1s;
+  margin-top: -4px;
+}
+
+.weight-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  background: #00ffcc;
+  box-shadow: 0 0 12px rgba(0, 255, 204, 0.9);
+}
+
+.weight-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #00ff99;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0, 255, 153, 0.6);
+  transition: transform 0.1s, background-color 0.1s;
+}
+
+.weight-slider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+  background: #00ffcc;
+  box-shadow: 0 0 12px rgba(0, 255, 204, 0.9);
+}

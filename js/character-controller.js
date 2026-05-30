@@ -1,0 +1,1435 @@
+'use strict';
+
+// ═══════════════════════════════════════════════════════════
+// UTILS & MATH HELPERS
+// ═══════════════════════════════════════════════════════════
+function lerp(a, b, t) {
+  return a + (b - a) * Math.min(1, t);
+}
+
+function lerpAngle(a, b, t) {
+  let d = b - a;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return a + d * Math.min(1, t);
+}
+
+function normBone(name) {
+  if (!name) return '';
+  return name.toLowerCase()
+    .replace(/^(mixamorig\d*|armature)[:_ ]/i, '')
+    .replace(/[:_ \-]/g, '');
+}
+
+function cleanAnimName(raw) {
+  // "Armature|Walk_Loop" → "Walk_Loop"
+  const parts = raw.split('|');
+  return parts[parts.length - 1].trim();
+}
+
+// ═══════════════════════════════════════════════════════════
+// STATES
+// ═══════════════════════════════════════════════════════════
+const S = {
+  IDLE: 'IDLE', WALK: 'WALK', JOG: 'JOG', SPRINT: 'SPRINT',
+  WALK_FORMAL: 'WALK_FORMAL',
+  CROUCH_IDLE: 'CROUCH_IDLE', CROUCH_WALK: 'CROUCH_WALK', CROUCH_RUN: 'CROUCH_RUN',
+  JUMP_START: 'JUMP_START', JUMP_LOOP: 'JUMP_LOOP', JUMP_LAND: 'JUMP_LAND',
+  ROLL: 'ROLL',
+  PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
+  SPELL_ENTER: 'SPELL_ENTER', SPELL_SHOOT: 'SPELL_SHOOT', SPELL_EXIT: 'SPELL_EXIT',
+  INTERACT: 'INTERACT', PICKUP: 'PICKUP',
+};
+
+const ACTION_STATES = new Set([
+  S.JUMP_START, S.JUMP_LOOP, S.JUMP_LAND, S.ROLL,
+  S.PUNCH_JAB, S.PUNCH_CROSS,
+  S.SPELL_ENTER, S.SPELL_SHOOT, S.SPELL_EXIT,
+  S.INTERACT, S.PICKUP,
+]);
+
+// ═══════════════════════════════════════════════════════════
+// LOCOMOTION BLEND TREE
+// ═══════════════════════════════════════════════════════════
+class LocoBlendGroup {
+  constructor(animCtrl) {
+    this.anim = animCtrl;
+    this.weight = 0.0;
+    this.speed = 0.0;
+    this.animatables = [];
+    this.isPlaying = false;
+  }
+
+  start(loop = true, speedRatio = 1.0, from, to, falseArg = false) {
+    this.isPlaying = true;
+    const idle = this.anim.g.get('Idle_Loop');
+    const walk = this.anim.g.get('Walk_Loop');
+    const sprint = this.anim.g.get('Sprint_Loop');
+
+    if (idle && !idle.isPlaying) idle.start(true, 1.0, idle.from, idle.to, false);
+    if (walk && !walk.isPlaying) walk.start(true, 1.5, walk.from, walk.to, false);
+    if (sprint && !sprint.isPlaying) sprint.start(true, 1.1, sprint.from, sprint.to, false);
+
+    this.updateWeights();
+  }
+
+  stop() {
+    this.isPlaying = false;
+    const idle = this.anim.g.get('Idle_Loop');
+    const walk = this.anim.g.get('Walk_Loop');
+    const sprint = this.anim.g.get('Sprint_Loop');
+
+    if (idle) idle.stop();
+    if (walk) walk.stop();
+    if (sprint) sprint.stop();
+  }
+
+  setWeightForAllAnimatables(w) {
+    this.weight = w;
+    this.updateWeights();
+  }
+
+  updateSpeed(speed) {
+    this.speed = speed;
+    this.updateWeights();
+  }
+
+  updateWeights() {
+    const idle = this.anim.g.get('Idle_Loop');
+    const walk = this.anim.g.get('Walk_Loop');
+    const sprint = this.anim.g.get('Sprint_Loop');
+
+    if (!idle || !walk || !sprint) return;
+
+    let wIdle = 0, wWalk = 0, wSprint = 0;
+    const v = this.speed;
+
+    const spdWalk = 2.4; // Matches SPD_WALK
+    const spdSprint = 6.0; // Matches SPD_SPRINT
+
+    if (v <= 0) {
+      wIdle = 1.0;
+    } else if (v <= spdWalk) {
+      const t = v / spdWalk;
+      wIdle = 1.0 - t;
+      wWalk = t;
+    } else if (v <= spdSprint) {
+      const t = (v - spdWalk) / (spdSprint - spdWalk);
+      wWalk = 1.0 - t;
+      wSprint = t;
+    } else {
+      wSprint = 1.0;
+    }
+
+    idle.setWeightForAllAnimatables(wIdle * this.weight);
+    walk.setWeightForAllAnimatables(wWalk * this.weight);
+    sprint.setWeightForAllAnimatables(wSprint * this.weight);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ANIMATION CONTROLLER
+// ═══════════════════════════════════════════════════════════
+class AnimCtrl {
+  constructor(groups, scene) {
+    this.scene = scene;
+    this.cur = null;
+    this.curName = '';
+    this.activeTransitions = [];
+    this.activeWeight = 1.0;
+    this.customWeights = new Map(); // Store specific defaults here
+    this.onAnimationChange = null;  // Callback for decoupling UI
+
+    // Support both pre-populated Map or a simple Array of AnimationGroups
+    if (groups instanceof Map) {
+      this.g = groups;
+    } else if (Array.isArray(groups)) {
+      this.g = new Map();
+      groups.forEach(ag => {
+        const cleanName = cleanAnimName(ag.name);
+        this.g.set(cleanName, ag);
+      });
+    } else {
+      this.g = new Map();
+    }
+
+    console.log('[AnimCtrl] loaded:', [...this.g.keys()].sort().join(', '));
+
+    // Register Locomotion Blend Tree as a virtual animation group
+    this.locoGroup = new LocoBlendGroup(this);
+    this.g.set('Locomotion', this.locoGroup);
+
+    this.resetInactiveWeights();
+  }
+
+  resetInactiveWeights() {
+    const active = new Set();
+    if (this.cur) {
+      active.add(this.curName);
+      if (this.curName === 'Locomotion') {
+        active.add('Idle_Loop');
+        active.add('Walk_Loop');
+        active.add('Sprint_Loop');
+      }
+    }
+    this.activeTransitions.forEach(t => {
+      for (const [name, group] of this.g.entries()) {
+        if (group === t.incoming || group === t.outgoing) {
+          active.add(name);
+          if (name === 'Locomotion') {
+            active.add('Idle_Loop');
+            active.add('Walk_Loop');
+            active.add('Sprint_Loop');
+          }
+        }
+      }
+    });
+
+    for (const [name, group] of this.g.entries()) {
+      if (!active.has(name)) {
+        group.setWeightForAllAnimatables(0);
+        group.stop();
+      }
+    }
+  }
+
+  setWeight(w) {
+    this.activeWeight = w;
+    if (this.cur && this.activeTransitions.length === 0) {
+      this.cur.setWeightForAllAnimatables(w);
+    }
+  }
+
+  setCustomWeight(name, w) {
+    this.customWeights.set(name, w);
+  }
+
+  play(name, loop = false, blendDuration = 0.25, onEnd = null, speedRatio = 1.0, weightParam = null) {
+    const ag = this.g.get(name);
+    if (!ag) { console.warn('[AnimCtrl] missing:', name); return false; }
+
+    // Resolve target weight:
+    // 1. Explicit argument in play()
+    // 2. Pre-configured custom weight for this animation
+    // 3. Fallback to global active weight slider
+    let targetWeight = this.activeWeight;
+    if (weightParam !== null) {
+      targetWeight = weightParam;
+    } else if (this.customWeights.has(name)) {
+      targetWeight = this.customWeights.get(name);
+    }
+
+    if (this.cur === ag) {
+      this.cur.setWeightForAllAnimatables(targetWeight);
+      this.cur.speedRatio = speedRatio;
+      return true;
+    }
+
+    const outgoing = this.cur;
+    const incoming = ag;
+
+    // Cancel any active transitions for incoming/outgoing to avoid conflicts
+    if (this.activeTransitions) {
+      this.activeTransitions = this.activeTransitions.filter(t => {
+        if (t.incoming === incoming || t.outgoing === incoming || t.incoming === outgoing || t.outgoing === outgoing) {
+          if (t.observer) this.scene.onBeforeRenderObservable.remove(t.observer);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // Start incoming animation group
+    incoming.start(loop, speedRatio, incoming.from, incoming.to, false);
+    incoming.setWeightForAllAnimatables(outgoing ? 0 : targetWeight);
+
+    if (outgoing) {
+      let elapsed = 0;
+      const outgoingStartWeight = outgoing.animatables[0] ? outgoing.animatables[0].weight : targetWeight;
+      const transition = {
+        incoming,
+        outgoing,
+        observer: null
+      };
+      transition.observer = this.scene.onBeforeRenderObservable.add(() => {
+        const dt = this.scene.getEngine().getDeltaTime() / 1000;
+        elapsed += dt;
+        const t = Math.min(1.0, elapsed / blendDuration);
+
+        // Smooth step weight blending
+        const smoothT = t * t * (3 - 2 * t);
+
+        let currentTarget = this.activeWeight;
+        if (weightParam !== null) {
+          currentTarget = weightParam;
+        } else if (this.customWeights.has(name)) {
+          currentTarget = this.customWeights.get(name);
+        }
+
+        incoming.setWeightForAllAnimatables(smoothT * currentTarget);
+        outgoing.setWeightForAllAnimatables((1.0 - smoothT) * outgoingStartWeight);
+
+        if (t >= 1.0) {
+          // Transition complete
+          outgoing.setWeightForAllAnimatables(0);
+          outgoing.stop();
+          this.scene.onBeforeRenderObservable.remove(transition.observer);
+          if (this.activeTransitions) {
+            this.activeTransitions = this.activeTransitions.filter(item => item !== transition);
+          }
+          this.resetInactiveWeights();
+        }
+      });
+      this.activeTransitions.push(transition);
+    }
+
+    this.cur = incoming;
+    this.curName = name;
+
+    if (this.onAnimationChange) {
+      this.onAnimationChange(name);
+    } else {
+      const hudAnim = document.getElementById('hud-anim');
+      if (hudAnim) {
+        hudAnim.textContent = name;
+      }
+    }
+
+    if (onEnd && !loop) {
+      incoming.onAnimationGroupEndObservable.addOnce(() => onEnd());
+    }
+
+    this.resetInactiveWeights();
+    return true;
+  }
+
+  stop() {
+    if (this.cur) {
+      this.cur.setWeightForAllAnimatables(0);
+      this.cur.stop();
+      this.cur = null;
+      this.curName = '';
+    }
+    this.resetInactiveWeights();
+  }
+
+  forceStop() {
+    this.activeTransitions.forEach(t => {
+      t.incoming.setWeightForAllAnimatables(0);
+      t.incoming.stop();
+      t.outgoing.setWeightForAllAnimatables(0);
+      t.outgoing.stop();
+      if (t.observer) this.scene.onBeforeRenderObservable.remove(t.observer);
+    });
+    this.activeTransitions = [];
+    this.stop();
+  }
+
+  has(name) { return this.g.has(name); }
+
+  destroy() {
+    this.forceStop();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHARACTER CONTROLLER
+// ═══════════════════════════════════════════════════════════
+class CharCtrl {
+  constructor(root, visualMesh, camera, anim, scene, options = {}) {
+    this.root = root; // Capsule collider parent mesh
+    this.visualMesh = visualMesh; // Visual character mesh
+    this.camera = camera;
+    this.anim = anim;
+    this.scene = scene;
+
+    // Callbacks & Custom UI configuration
+    this.callbacks = Object.assign({
+      onStateChange: null,
+      onSpeedChange: null,
+      onCombo: null
+    }, options.callbacks || {});
+
+    // Physics & Speeds Config
+    const config = Object.assign({
+      GRAV: 22,
+      JUMP_PWR: 9.5,
+      SPD_WALK: 2.4,
+      SPD_JOG: 3,
+      SPD_SPRINT: 6,
+      SPD_CROUCH: 2,
+      SPD_CROUCH_RUN: 3.6,
+      ACCEL: 14,
+      DECEL: 16,
+      ROT_SPD: 50,
+      AIR_CONTROL: false   // true (full control) or false (no control) in mid-air
+    }, options.config || {});
+
+    this.GRAV = config.GRAV;
+    this.JUMP_PWR = config.JUMP_PWR;
+    this.SPD_WALK = config.SPD_WALK;
+    this.SPD_JOG = config.SPD_JOG;
+    this.SPD_SPRINT = config.SPD_SPRINT;
+    this.SPD_CROUCH = config.SPD_CROUCH;
+    this.SPD_CROUCH_RUN = config.SPD_CROUCH_RUN;
+    this.ACCEL = config.ACCEL;
+    this.DECEL = config.DECEL;
+    this.ROT_SPD = config.ROT_SPD;
+    this.AIR_CONTROL = config.AIR_CONTROL;
+
+    // Mobile / Touch controls configuration
+    this.touchConfig = Object.assign({
+      zoneId: 'joystick-zone',
+      ringId: 'joystick-ring',
+      knobId: 'joystick-knob',
+      buttons: {
+        'btn-sprint': 'ShiftLeft',
+        'btn-jump': 'Space',
+        'btn-roll': 'KeyR',
+        'btn-crouch': 'ControlLeft',
+        'btn-act': 'KeyF'
+      }
+    }, options.touch || {});
+
+    // Physics running state
+    this.speed = 0;
+    this.rotY = 0;
+    this.jumpVel = 0;
+    this.grounded = true;
+    this.onScalable = false;
+    this._airborneTime = 0;
+    this._rollOnLand = false;
+    this._rollActive = false;
+
+    // State
+    this.state = S.IDLE;
+    this.stateT = 0;
+    this.crouching = false;
+    this.sitting = false;
+    this.weapon = null; // null | 'spell'
+    this.comboIdx = 0;
+    this.comboT = 0;
+    this.moveDir = new BABYLON.Vector3(0, 0, 0);
+
+    this.keys = {};
+    this.touchVector = { x: 0, y: 0 };
+    this.isTouch = false;
+    this._touchListeners = [];
+
+    this._setupInput();
+
+    // Setup procedural dust particles
+    this._setupDustParticles();
+
+    // Touch device setup
+    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
+    this.isTouch = hasTouch;
+    if (this.isTouch) {
+      document.body.classList.add('touch-device');
+      // Wait slightly for DOM loading
+      setTimeout(() => this._setupTouchHUD(), 200);
+    }
+
+    // Capture initial dimensions for automatic crouch scaling
+    this._standEllipsoidY = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
+    this._standMeshY = this.visualMesh.position.y;
+    this._crouchEllipsoidY = 0.55;
+    this._lastY = this.root.position.y;
+
+    // Perfect controller procedural & suspension variables
+    this.targetLocalY = this._standMeshY;
+    this.visualLocalY = this._standMeshY;
+    this.tiltPitch = 0;
+    this.tiltRoll = 0;
+    this.targetScale = new BABYLON.Vector3(1, 1, 1);
+    this._lastRotY = this.rotY;
+    this._lastSpeed = this.speed;
+    this._camShake = 0;
+    this._bobTime = 0;
+    this._initialCameraFOV = this.camera.fov || 0.8;
+
+    // Cache initial visual mesh yaw rotation to preserve imports & orientations
+    if (this.visualMesh.rotationQuaternion) {
+      const euler = this.visualMesh.rotationQuaternion.toEulerAngles();
+      this._initialVisualYaw = euler.y;
+    } else {
+      this._initialVisualYaw = this.visualMesh.rotation.y;
+    }
+
+    this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
+
+    // Start idle
+    this._idle();
+  }
+
+  // ── DUST PARTICLE SYSTEM ─────────────────────────────
+  _setupDustParticles() {
+    const smokeTex = new BABYLON.Texture("assets/smoke.png", this.scene);
+
+    // Instantiate Particle System
+    this.dustPS = new BABYLON.ParticleSystem("dustParticles", 300, this.scene);
+    this.dustPS.particleTexture = smokeTex;
+    this.dustPS.blendMode = BABYLON.ParticleSystem.BLENDMODE_ADD;
+
+    // Emitter is placed at the player's feet
+    this.dustPS.emitter = new BABYLON.Vector3(0, 0, 0);
+    this.dustPS.minEmitBox = new BABYLON.Vector3(-0.25, -0.05, -0.25);
+    this.dustPS.maxEmitBox = new BABYLON.Vector3(0.25, 0.05, 0.25);
+
+    this.dustPS.color1 = new BABYLON.Color4(0.68, 0.65, 0.6, 0.45);
+    this.dustPS.color2 = new BABYLON.Color4(0.55, 0.52, 0.48, 0.22);
+    this.dustPS.colorDead = new BABYLON.Color4(0, 0, 0, 0);
+
+    this.dustPS.minSize = 0.16;
+    this.dustPS.maxSize = 0.45;
+    this.dustPS.minLifeTime = 0.2;
+    this.dustPS.maxLifeTime = 0.45;
+    this.dustPS.emitRate = 0; // Starts stopped, we emit manually or update emitRate
+
+    this.dustPS.gravity = new BABYLON.Vector3(0, 1.2, 0); // dust rises slightly
+    this.dustPS.direction1 = new BABYLON.Vector3(-0.5, 0.2, -0.5);
+    this.dustPS.direction2 = new BABYLON.Vector3(0.5, 0.4, 0.5);
+
+    this.dustPS.minEmitPower = 0.2;
+    this.dustPS.maxEmitPower = 0.6;
+    this.dustPS.updateSpeed = 0.016;
+
+    this.dustPS.start();
+  }
+
+  _emitLandingDust() {
+    if (this.dustPS) {
+      this.dustPS.manualEmitCount = 30; // Emit 30 particles instantly
+      this.dustPS.start();              // Force restart to process manual emission
+    }
+  }
+
+  // ── INPUT ──────────────────────────────────────────────
+  _setupInput() {
+    this._boundKeyDown = e => {
+      this.keys[e.code] = true;
+      if (!e.repeat) this._keyDown(e.code);
+    };
+    this._boundKeyUp = e => { this.keys[e.code] = false; };
+    this._boundReset = () => this._resetInputState();
+
+    window.addEventListener('keydown', this._boundKeyDown);
+    window.addEventListener('keyup', this._boundKeyUp);
+    window.addEventListener('focus', this._boundReset);
+    window.addEventListener('blur', this._boundReset);
+  }
+
+  _resetInputState() {
+    this.keys = {};
+    this.touchVector = { x: 0, y: 0 };
+    if (this.joystickKnob) {
+      this.joystickKnob.style.transform = 'translate(0px, 0px)';
+    }
+    if (this.joystickRing) {
+      this.joystickRing.classList.remove('active');
+    }
+    this._idle();
+  }
+
+  _setupTouchHUD() {
+    const zone = document.getElementById(this.touchConfig.zoneId);
+    const ring = document.getElementById(this.touchConfig.ringId);
+    const knob = document.getElementById(this.touchConfig.knobId);
+
+    if (!zone || !ring || !knob) {
+      console.log('[CharCtrl] Mobile joystick elements not found in DOM, skipping joystick initialization');
+      return;
+    }
+
+    this.joystickRing = ring;
+    this.joystickKnob = knob;
+
+    let activePointerId = null;
+    const maxDist = 50; // max drag radius in pixels
+
+    const onPointerDown = (e) => {
+      if (activePointerId !== null) return;
+      activePointerId = e.pointerId;
+      ring.classList.add('active');
+      zone.setPointerCapture(e.pointerId);
+      updateJoystick(e);
+    };
+
+    const onPointerMove = (e) => {
+      if (activePointerId !== e.pointerId) return;
+      updateJoystick(e);
+    };
+
+    const onPointerUp = (e) => {
+      if (activePointerId !== e.pointerId) return;
+      activePointerId = null;
+      ring.classList.remove('active');
+      zone.releasePointerCapture(e.pointerId);
+
+      knob.style.transform = 'translate(0px, 0px)';
+      this.touchVector = { x: 0, y: 0 };
+    };
+
+    const updateJoystick = (e) => {
+      const ringBounds = ring.getBoundingClientRect();
+      const centerX = ringBounds.left + ringBounds.width / 2;
+      const centerY = ringBounds.top + ringBounds.height / 2;
+
+      let dx = e.clientX - centerX;
+      let dy = e.clientY - centerY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > maxDist) {
+        dx = (dx / dist) * maxDist;
+        dy = (dy / dist) * maxDist;
+      }
+
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+
+      // Normalize vector to [-1, 1] range
+      // Swap Y because screen down is positive, but we want forward (W) to be positive, backward (S) negative
+      this.touchVector.x = dx / maxDist;
+      this.touchVector.y = -dy / maxDist;
+    };
+
+    const addListener = (element, type, listener) => {
+      element.addEventListener(type, listener);
+      this._touchListeners.push({ element, type, listener });
+    };
+
+    addListener(zone, 'pointerdown', onPointerDown);
+    addListener(zone, 'pointermove', onPointerMove);
+    addListener(zone, 'pointerup', onPointerUp);
+    addListener(zone, 'pointercancel', onPointerUp);
+
+    // Action Buttons Pointer Events based on touchConfig
+    if (this.touchConfig.buttons) {
+      Object.entries(this.touchConfig.buttons).forEach(([btnId, keyCode]) => {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+
+        const onBtnDown = (e) => {
+          e.preventDefault();
+          this.keys[keyCode] = true;
+          this._keyDown(keyCode);
+        };
+
+        const onBtnUp = (e) => {
+          e.preventDefault();
+          this.keys[keyCode] = false;
+        };
+
+        addListener(btn, 'pointerdown', onBtnDown);
+        addListener(btn, 'pointerup', onBtnUp);
+        addListener(btn, 'pointercancel', onBtnUp);
+      });
+    }
+  }
+
+  destroy() {
+    // 1. Remove window keyboard and focus/blur event listeners
+    if (this._boundKeyDown) window.removeEventListener('keydown', this._boundKeyDown);
+    if (this._boundKeyUp) window.removeEventListener('keyup', this._boundKeyUp);
+    if (this._boundReset) {
+      window.removeEventListener('focus', this._boundReset);
+      window.removeEventListener('blur', this._boundReset);
+    }
+
+    // 2. Remove update observer from scene
+    if (this._updateObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._updateObserver);
+    }
+
+    // 3. Remove touch and button event listeners
+    if (this._touchListeners) {
+      this._touchListeners.forEach(({ element, type, listener }) => {
+        element.removeEventListener(type, listener);
+      });
+      this._touchListeners = [];
+    }
+
+    // 4. Dispose particle system
+    if (this.dustPS) {
+      this.dustPS.stop();
+      this.dustPS.dispose();
+    }
+  }
+
+  _keyDown(code) {
+    const inAction = ACTION_STATES.has(this.state);
+
+    switch (code) {
+      case 'ControlLeft': case 'ControlRight':
+        if (this.grounded && !inAction && !this.sitting) {
+          if (this.crouching) {
+            if (this._canUncrouch()) {
+              this.crouching = false;
+              this._idle();
+            } else {
+              this._showCombo('CEILING BLOCKED');
+              setTimeout(() => this._hideCombo(), 1200);
+            }
+          } else {
+            this.crouching = true;
+            this._idle();
+          }
+        }
+        break;
+
+      case 'Space':
+        if (this.grounded && !inAction && !this.sitting) {
+          if (this.crouching) {
+            if (this._canUncrouch()) {
+              this.crouching = false;
+              this._jump();
+            } else {
+              this._showCombo('CEILING BLOCKED');
+              setTimeout(() => this._hideCombo(), 1200);
+            }
+          } else {
+            this._jump();
+          }
+        } else if (!this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
+          this._rollOnLand = true;
+        }
+        break;
+
+      case 'KeyR':
+        if (this.grounded && !inAction && !this.sitting && !this._rollActive)
+          this._roll();
+        break;
+
+      case 'KeyQ':
+        if (this.grounded && !inAction && !this.weapon && !this.sitting)
+          this._punch();
+        break;
+
+      case 'KeyE':
+        if (!inAction && !this.sitting)
+          this._spellCast();
+        break;
+
+      case 'KeyF':
+        if (inAction) break;
+        if (!this.sitting) this._interact();
+        break;
+    }
+  }
+
+  // ── ACTIONS ────────────────────────────────────────────
+  _jump() {
+    this.jumpVel = this.JUMP_PWR;
+    this.grounded = false;
+    this._setState(S.JUMP_START);
+    // Dynamic takeoff squash
+    this.targetScale.set(1.15, 0.78, 1.15);
+    setTimeout(() => {
+      if (!this.grounded) {
+        this.targetScale.set(0.92, 1.14, 0.92);
+      }
+    }, 100);
+    this.anim.play('Jump_Start', false, 0.2, () => {
+      if (this.state === S.JUMP_START && !this.grounded) {
+        this._setState(S.JUMP_LOOP);
+        this.anim.play('Jump_Loop', true, 0.25);
+      }
+    });
+  }
+
+  _roll() {
+    if (this._rollActive) return;
+    this._rollActive = true;
+    this._setState(S.ROLL);
+
+    let inputX = 0, inputZ = 0;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
+      inputX = this.touchVector.x; inputZ = this.touchVector.y;
+    }
+    this._rollMoving = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
+
+    if (this._rollMoving) {
+      const camFwd = this._camForward();
+      let dir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
+      if (dir.length() > 0.01) dir.normalize(); else dir = camFwd;
+      this._rollDir = dir;
+      this.speed = Math.max(this.speed, 3.5);
+    } else {
+      this.speed = 0;
+    }
+
+    this.anim.play('Roll', false, 0.2, () => {
+      this._rollActive = false;
+      // Cancel any outgoing transition on Roll and force weight to 0 immediately
+      const rollAg = this.anim.g.get('Roll');
+      if (rollAg) {
+        this.anim.activeTransitions = this.anim.activeTransitions.filter(t => {
+          if (t.outgoing === rollAg) {
+            if (t.observer) this.scene.onBeforeRenderObservable.remove(t.observer);
+            return false;
+          }
+          return true;
+        });
+        rollAg.setWeightForAllAnimatables(0);
+        rollAg.stop();
+      }
+      this._returnToLoco(0.2);
+    }, 1.1);
+  }
+
+  _punch() {
+    const now = performance.now();
+    if (this.comboIdx === 1 && now - this.comboT < 900) {
+      this.comboIdx = 2;
+      this._setState(S.PUNCH_CROSS);
+      this.anim.play('Punch_Cross', false, 0.08, () => {
+        this.comboIdx = 0;
+        this._setState(S.IDLE);
+        this._returnToLoco();
+        this._hideCombo();
+      }, 1.2);
+      this._showCombo('CROSS!');
+    } else {
+      this.comboIdx = 1;
+      this.comboT = now;
+      this._setState(S.PUNCH_JAB);
+      this.anim.play('Punch_Jab', false, 0.08, () => {
+        if (this.comboIdx === 1) {
+          this.comboIdx = 0;
+          this._setState(S.IDLE);
+          this._returnToLoco();
+          this._hideCombo();
+        }
+      }, 1.2);
+      this._showCombo('JAB');
+    }
+  }
+
+  _showCombo(txt) {
+    if (this.callbacks.onCombo) {
+      this.callbacks.onCombo(txt, true);
+    } else {
+      const el = document.getElementById('combo');
+      if (el) {
+        el.textContent = txt;
+        el.classList.add('show');
+      }
+    }
+    clearTimeout(this._comboTO);
+  }
+
+  _hideCombo() {
+    if (this.callbacks.onCombo) {
+      this.callbacks.onCombo('', false);
+    } else {
+      const el = document.getElementById('combo');
+      if (el) {
+        el.classList.remove('show');
+      }
+    }
+  }
+
+  _spellCast() {
+    this._setState(S.SPELL_ENTER);
+    this.anim.play('Spell_Simple_Enter', false, 0.1, () => {
+      this._setState(S.SPELL_SHOOT);
+      this.anim.play('Spell_Simple_Shoot', false, 0.08, () => {
+        this._setState(S.SPELL_EXIT);
+        this.anim.play('Spell_Simple_Exit', false, 0.1, () => this._returnToLoco());
+      });
+    });
+  }
+
+  _interact() {
+    this._setState(S.INTERACT);
+    this.anim.play('Interact', false, 0.1, () => this._returnToLoco());
+  }
+
+  // ── IDLE ───────────────────────────────────────────────
+  _idle(blend = 0.35) {
+    if (this.crouching) {
+      this._setState(S.CROUCH_IDLE);
+      this.anim.play('Crouch_Idle_Loop', true, blend);
+    } else {
+      this._setState(S.IDLE);
+      this.anim.play('Locomotion', true, blend);
+    }
+  }
+
+  // ── RETURN TO LOCOMOTION (INTELLIGENT DECISION) ──────────
+  _returnToLoco(blend = 0.35) {
+    // Check if there is movement input
+    let inputX = 0;
+    let inputZ = 0;
+
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+
+    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
+      inputX = this.touchVector.x;
+      inputZ = this.touchVector.y;
+    }
+
+    const isSprinting = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['btn-sprint'];
+    const hasMove = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
+
+    if (hasMove) {
+      this._updateLocoAnim(true, isSprinting, inputZ < -0.2, blend);
+    } else {
+      this._idle(blend);
+    }
+  }
+
+  _setState(s) {
+    if (this.state === s) return;
+    this.state = s;
+    this.stateT = 0;
+    if (this.callbacks.onStateChange) {
+      this.callbacks.onStateChange(s);
+    } else {
+      const hudState = document.getElementById('hud-state');
+      if (hudState) {
+        hudState.textContent = s;
+      }
+    }
+  }
+
+  // ── CAMERA HELPERS ─────────────────────────────────────
+  _camForward() {
+    const f = this.camera.target.subtract(this.camera.position);
+    f.y = 0;
+    if (f.length() < 0.001) return new BABYLON.Vector3(0, 0, 1);
+    f.normalize();
+    return f;
+  }
+  _camRight(fwd) {
+    return BABYLON.Vector3.Cross(BABYLON.Vector3.Up(), fwd).normalize();
+  }
+
+  // ── RAYCAST GROUND DETECT ──────────────────────────────
+  _checkGrounded() {
+    // Origin at slightly above the bottom of the capsule (sits at Y = -0.95 relative to center)
+    const originYOffset = -0.9;
+    // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
+    // On flat ground, we use a tight ray (0.08m) so that the character snaps instantly and never floats.
+    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : 0.08;
+    const downDir = new BABYLON.Vector3(0, -1, 0);
+
+    const radius = 0.22; // Slightly inset from capsule width of 0.35
+    const offsets = [
+      new BABYLON.Vector3(0, originYOffset, 0),         // Center
+      new BABYLON.Vector3(0, originYOffset, radius),    // Forward
+      new BABYLON.Vector3(0, originYOffset, -radius),   // Backward
+      new BABYLON.Vector3(-radius, originYOffset, 0),   // Left
+      new BABYLON.Vector3(radius, originYOffset, 0)     // Right
+    ];
+
+    let hitAny = false;
+    let onScalable = false;
+
+    for (const offset of offsets) {
+      const rayStart = this.root.position.add(offset);
+      const ray = new BABYLON.Ray(rayStart, downDir, rayLen);
+      const pick = this.scene.pickWithRay(ray, (mesh) => {
+        // Only collide with environment meshes
+        return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+      });
+
+      if (pick && pick.hit) {
+        hitAny = true;
+        // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
+        if (pick.pickedMesh.meshType === "scalable" ||
+          (pick.pickedMesh.name && /step|stair|ramp/i.test(pick.pickedMesh.name))) {
+          onScalable = true;
+        } else {
+          const normal = pick.getNormal(true);
+          if (normal && normal.y < 0.99 && normal.y > 0.5) {
+            onScalable = true;
+          }
+        }
+        break;
+      }
+    }
+
+    this.onScalable = onScalable;
+    return hitAny;
+  }
+
+  _canUncrouch() {
+    if (!this.crouching) return true;
+
+    const rayStart = this.root.position.clone(); // Start at capsule center (Y = 0 local)
+    const upDir = new BABYLON.Vector3(0, 1, 0);
+    // Ray length needs to reach the standing head Y (0.96) plus a tiny 0.1m clearance margin
+    const rayLen = this._standEllipsoidY + 0.1;
+
+    const ray = new BABYLON.Ray(rayStart, upDir, rayLen);
+    const pick = this.scene.pickWithRay(ray, (mesh) => {
+      return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+    });
+
+    // If it hits a ceiling mesh, we cannot uncrouch!
+    return !(pick && pick.hit);
+  }
+
+  // ── UPDATE ─────────────────────────────────────────────
+  _update() {
+    const dt = this.scene.getEngine().getDeltaTime() / 1000;
+    if (dt <= 0 || dt > 0.1) return;
+    this.stateT += dt;
+
+    // Input Gathering (Supports Keyboard & Mobile Analog Touch) - Calculated early for landing checks
+    let inputX = 0;
+    let inputZ = 0;
+
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+
+    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
+      inputX = this.touchVector.x;
+      inputZ = this.touchVector.y;
+    }
+
+    const isSprinting = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['btn-sprint'];
+    const inputMag = Math.min(1.0, Math.sqrt(inputX * inputX + inputZ * inputZ));
+    const hasMove = inputMag > 0.15;
+
+    // Probing Ground via Raycasting (bypass when rising from a jump)
+    const wasGrounded = this.grounded;
+    if (this.jumpVel > 0.1) {
+      this.grounded = false;
+    } else {
+      this.grounded = this._checkGrounded();
+    }
+
+    // Track consecutive airborne time (resets on any grounded frame)
+    if (!this.grounded) {
+      this._airborneTime += dt;
+    } else {
+      this._airborneTime = 0;
+    }
+
+    // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
+    if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
+      this.jumpVel = -4.0;
+    }
+
+    // Landing / roll recovery
+    if (this.grounded && !wasGrounded) {
+      if (this.state === S.ROLL) {
+        if (!this._rollMoving) this.speed = 0;
+        this._returnToLoco(0.06);
+      } else if (this._rollOnLand && this.speed > 1.0) {
+        this._rollOnLand = false;
+        this._emitLandingDust();
+        this._roll();
+      } else if (this.jumpVel < -3.0 && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
+        this._rollOnLand = false;
+        this._setState(S.JUMP_LAND);
+        this.anim.play('Jump_Land', false, 0.15, () => this._returnToLoco(), 1.35);
+        this.speed *= 0.15;
+        this._emitLandingDust();
+      } else {
+        this._rollOnLand = false;
+        this._returnToLoco();
+      }
+    } else if (this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP || (this.state === S.JUMP_LAND && hasMove && this.stateT > 0.15))) {
+      this._returnToLoco();
+    }
+
+    let inAction = ACTION_STATES.has(this.state);
+
+    // Blend into walk/run before roll ends
+    if (this.state === S.ROLL && this.grounded && this.stateT > 0.3) {
+      if (!this._rollMoving) this.speed = 0;
+      this._returnToLoco(1.2);
+      if (this.AIR_CONTROL) {
+        inAction = ACTION_STATES.has(this.state);
+      }
+    }
+
+    // ── PROCESS VERTICAL PHYSICS (GRAVITY & JUMPING) ───────
+    if (!this.grounded) {
+      this.jumpVel -= this.GRAV * dt;
+      if (this.jumpVel < -25) this.jumpVel = -25; // Clamp terminal velocity
+
+      // Fall detection: transition to JUMP_LOOP when falling off platforms.
+      // Requires 0.35s airborne so stair-step ledge snaps (resolve in <0.1s) don't trigger fall animation.
+      if (this.jumpVel < -3.5 && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && !inAction && this._airborneTime > 0.35) {
+        this._setState(S.JUMP_LOOP);
+        this.anim.play('Jump_Loop', true, 0.3);
+      }
+    } else {
+      // Resolve vertical velocity when grounded to eliminate collision jitter
+      if (this.jumpVel <= 0) {
+        // Track capsule Y delta to detect if we are currently climbing up steps/slopes
+        const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+
+        if (deltaY > 0.005) {
+          // If collision response is pushing us UP the steps, do not apply downward snap pressure!
+          this.jumpVel = 0;
+        } else {
+          // Apply a gentle downward snap pressure only when moving on stairs/ramps to prevent flying off step edges
+          this.jumpVel = hasMove && this.onScalable ? -3.5 : 0;
+        }
+      }
+    }
+
+    // ── PROCESS CROUCHING COLLISION HEIGHT ADJUSTMENTS ─────
+    const targetEllipsoidY = this.crouching ? this._crouchEllipsoidY : this._standEllipsoidY;
+    const targetOffset = this.crouching ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
+
+    // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches
+    if (this.root.ellipsoid) {
+      this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-14 * dt));
+      this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-14 * dt));
+    }
+
+    // ── PROCESS HORIZONTAL PHYSICS (LOCOMOTION) ────────────
+    let dir = new BABYLON.Vector3(0, 0, 0);
+
+    const canMove = !inAction || this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.JUMP_LAND;
+    if (canMove && !this.sitting) {
+      // Compute camera-relative direction
+      const camFwd = this._camForward();
+      const camRgt = this._camRight(camFwd);
+
+      if (!this.grounded) {
+        // Air control logic:
+        if (this.AIR_CONTROL) {
+          // Full steering in mid-air:
+          if (hasMove) {
+            dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+            if (dir.length() > 0.01) dir.normalize();
+          }
+
+          let tgtSpeed = this.speed;
+          if (hasMove) {
+            let idealTgt = isSprinting ? this.SPD_SPRINT : this.SPD_WALK;
+            idealTgt *= inputMag;
+            tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
+          } else {
+            tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
+          }
+          this.speed = tgtSpeed;
+        } else {
+          // Zero steering in mid-air: keep momentum direction and takeoff speed
+          dir = this.moveDir;
+        }
+      } else {
+        // Standard grounded logic:
+        if (hasMove) {
+          dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+          if (dir.length() > 0.01) dir.normalize();
+        }
+
+        // Target Speed calculation
+        let tgt = 0;
+        if (hasMove) {
+          if (this.crouching) {
+            tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
+          } else if (isSprinting) {
+            tgt = this.SPD_SPRINT;
+          } else {
+            tgt = this.SPD_WALK;
+          }
+
+          // Analog speed modifier
+          tgt *= inputMag;
+
+          // Slope / Stairs speed modifier (Dynamic effort scaling)
+          const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+          if (deltaY > 0.003) {
+            // Climbing up: reduce speed based on steepness (up to 22%)
+            const climbEffort = Math.min(0.22, (deltaY / dt) * 0.15);
+            tgt *= (1.0 - climbEffort);
+          } else if (deltaY < -0.003) {
+            // Descending: increase speed slightly (up to 8%)
+            const fallPull = Math.min(0.08, (-deltaY / dt) * 0.08);
+            tgt *= (1.0 + fallPull);
+          }
+        }
+
+        const rate = hasMove ? this.ACCEL : this.DECEL;
+        this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
+        if (this.speed < 0.05) this.speed = 0;
+      }
+
+      // Smooth target angle before rotating to kill camera micro-jitter
+      // (Only rotate character if moving or steering in mid-air with some air control)
+      const shouldRotate = hasMove && dir.length() > 0.05 && (this.grounded || this.AIR_CONTROL > 0.05);
+      if (shouldRotate) {
+        const tgtAngle = Math.atan2(dir.x, dir.z);
+        if (this._smoothTgt === undefined) this._smoothTgt = tgtAngle;
+        this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-30 * dt));
+        const k = this.grounded ? 8 : 4;
+        this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
+        this.root.rotation.y = this.rotY;
+      }
+
+      // Move the Capsule using collisions!
+      const horizontalDisplacement = dir.scale(this.speed * dt);
+      const verticalDisplacement = new BABYLON.Vector3(0, this.jumpVel * dt, 0);
+      const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
+
+      this.root.moveWithCollisions(totalDisplacement);
+
+      if (this.speed > 0) {
+        this.moveDir.copyFrom(dir);
+      }
+    } else if (this.state === S.ROLL) {
+      const snapDown = this.grounded ? -4.0 : this.jumpVel;
+      const vert = new BABYLON.Vector3(0, snapDown * dt, 0);
+      if (this._rollMoving) {
+        // Steer roll direction mid-air when AIR_CONTROL is enabled
+        if (!this.grounded && this.AIR_CONTROL && (inputX !== 0 || inputZ !== 0)) {
+          const camFwd = this._camForward();
+          const airDir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
+          if (airDir.length() > 0.01) {
+            airDir.normalize();
+            BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
+          }
+        }
+        this.root.moveWithCollisions(this._rollDir.scale(this.speed * dt).add(vert));
+      } else {
+        this.root.moveWithCollisions(vert);
+      }
+    }
+
+    // Teleport back if character falls out of bounds
+    if (this.root.position.y < -15) {
+      this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
+      this.root.rotation.y = 0;
+      this.rotY = 0;
+      this.jumpVel = 0;
+      this.speed = 0;
+    }
+
+    // ── UPDATE LOCOMOTION ANIMATIONS ──────────────────────
+    const canLoco = !inAction;
+    if (canLoco && !this.sitting) {
+      this._updateLocoAnim(hasMove, isSprinting, inputZ < -0.2);
+    }
+
+    // ── UPDATE PROCEDURAL PARTICLES ────────────────────────
+    if (this.dustPS) {
+      const feetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
+      this.dustPS.emitter = feetPos;
+
+      // Play dust trails while walking, sprinting or rolling on ground
+      if (this.grounded && hasMove && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
+        this.dustPS.manualEmitCount = -1; // Reset to continuous emission mode
+        this.dustPS.emitRate = this.state === S.SPRINT ? 180 : (this.state === S.WALK ? 25 : 80);
+        if (!this.dustPS.isStarted()) {
+          this.dustPS.start();
+        }
+      } else {
+        this.dustPS.emitRate = 0;
+      }
+    }
+
+    // ── ADVANCED PROCEDURAL VISUALS & SUSPENSION ─────────
+    // 1. Visual Y-Suspension
+    const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+    // Compensate visual mesh local Y for capsule height shifts
+    this.visualLocalY -= deltaY;
+    // Smoothly return visual mesh local Y to its target crouch/stand state Y
+    this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-14 * dt));
+    // Clamp to prevent visual separating too far from capsule boundaries.
+    // Extremely important: clamp the lower bound tightly (targetLocalY - 0.02) to prevent clipping into stairs/slopes,
+    // while keeping a generous upper bound (targetLocalY + 0.35) for beautiful step-down suspension!
+    this.visualLocalY = Math.max(this.targetLocalY - 0.02, Math.min(this.targetLocalY + 0.35, this.visualLocalY));
+    this.visualMesh.position.y = this.visualLocalY;
+
+    // 1b. Kinetic Locomotion Bobbing
+    if (this.grounded && hasMove && this.speed > 0.1 && !inAction) {
+      // Bob speed and amplitude scale with movement state
+      const bobFreq = this.state === S.SPRINT ? 14.5 : 9.5;
+      const bobAmpY = this.state === S.SPRINT ? 0.032 : 0.016;
+      const bobAmpX = this.state === S.SPRINT ? 0.020 : 0.009;
+
+      this._bobTime += dt * bobFreq;
+      const bobOffsetH = Math.cos(this._bobTime * 0.5) * bobAmpX;
+      const bobOffsetY = Math.sin(this._bobTime) * bobAmpY;
+
+      // Apply bobbing offsets locally to the visual mesh (temporary offset, not compounded into visualLocalY to prevent sinking!)
+      this.visualMesh.position.x = bobOffsetH;
+      this.visualMesh.position.y = this.visualLocalY + bobOffsetY;
+    } else {
+      // Smoothly return visual mesh local X back to center when resting
+      this.visualMesh.position.x = lerp(this.visualMesh.position.x, 0, 1 - Math.exp(-12 * dt));
+      this._bobTime = 0;
+    }
+
+    // 2. Procedural Leaning (Pitch & Roll)
+    // Leaning forward when moving forward, backward when decelerating/braking
+    const currentSpeedRatio = this.speed / this.SPD_SPRINT;
+    const acceleration = (this.speed - this._lastSpeed) / dt;
+    let targetPitch = 0;
+
+    if (this.speed > 0.1 && (this.keys['KeyW'] || this.keys['ArrowUp'] || (this.isTouch && this.touchVector.y > 0.1))) {
+      // Leaning forward proportional to speed
+      targetPitch = currentSpeedRatio * 0.12;
+    } else if (acceleration < -4.0 && this.speed > 1.0) {
+      // Braking lean: lean back slightly when decelerating
+      targetPitch = -0.06;
+    }
+    this.tiltPitch = lerp(this.tiltPitch, targetPitch, 1 - Math.exp(-10 * dt));
+
+    // Banking into turns (Roll) based on angular velocity (Y-rotation changes)
+    let turnDelta = this.rotY - this._lastRotY;
+    while (turnDelta > Math.PI) turnDelta -= 2 * Math.PI;
+    while (turnDelta < -Math.PI) turnDelta += 2 * Math.PI;
+
+    let targetRoll = 0;
+    if (this.speed > 0.5) {
+      // Roll proportional to turning delta and current speed ratio
+      targetRoll = -turnDelta * 0.4 * Math.min(1.0, currentSpeedRatio * 1.5);
+    }
+    this.tiltRoll = lerp(this.tiltRoll, targetRoll, 1 - Math.exp(-8 * dt));
+
+    // Apply pitch and roll to local visual mesh rotation, preserving initial Yaw
+    if (this.visualMesh.rotationQuaternion) {
+      BABYLON.Quaternion.RotationYawPitchRollToRef(this._initialVisualYaw, this.tiltPitch, this.tiltRoll, this.visualMesh.rotationQuaternion);
+    } else {
+      this.visualMesh.rotation.x = this.tiltPitch;
+      this.visualMesh.rotation.y = this._initialVisualYaw;
+      this.visualMesh.rotation.z = this.tiltRoll;
+    }
+
+    // 3. Procedural Squash & Stretch Scaling
+    // Stretch while in air falling/jumping
+    if (!this.grounded) {
+      if (this.jumpVel > 1.0) {
+        // Stretching upwards on rise
+        this.targetScale.set(0.92, 1.12, 0.92);
+      } else if (this.jumpVel < -2.0) {
+        // Stretching downwards on fall
+        this.targetScale.set(0.90, 1.15, 0.90);
+      }
+    } else {
+      // Check if we just landed this frame and squash
+      if (wasGrounded === false) {
+        if (this.jumpVel < -4.0) {
+          // Heavy landing squash & trigger heavy camera shake
+          this.targetScale.set(1.22, 0.72, 1.22);
+          this._camShake = 0.22;
+        } else {
+          // Soft landing squash & trigger soft camera shake
+          this.targetScale.set(1.10, 0.88, 1.10);
+          this._camShake = 0.08;
+        }
+        // Smoothly restore to normal scale after squash duration
+        setTimeout(() => {
+          this.targetScale.set(1, 1, 1);
+        }, 120);
+      }
+    }
+
+    // Interpolate visual mesh scale smoothly
+    BABYLON.Vector3.LerpToRef(this.visualMesh.scaling, this.targetScale, 1 - Math.exp(-12 * dt), this.visualMesh.scaling);
+
+    // 4. Dynamic Camera Shake & FOV Expansion
+    // Decay camera shake intensity
+    if (this._camShake > 0.002) {
+      this._camShake = lerp(this._camShake, 0, 1 - Math.exp(-8 * dt));
+      // Perturb camera orientation slightly to convey landing impact weight
+      this.camera.beta += Math.sin(performance.now() * 0.048) * this._camShake * 0.05;
+      this.camera.alpha += Math.cos(performance.now() * 0.054) * this._camShake * 0.04;
+    }
+
+    // Dynamic FOV based on speed (tunnel vision expansion)
+    const targetFOV = this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * 0.10;
+    this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+
+    // Save tracking states for next frame calculations
+    this._lastRotY = this.rotY;
+    this._lastSpeed = this.speed;
+
+    // Speed update callback / HUD
+    if (this.callbacks.onSpeedChange) {
+      this.callbacks.onSpeedChange(this.speed);
+    } else {
+      const hudSpeed = document.getElementById('hud-speed');
+      if (hudSpeed) {
+        hudSpeed.textContent = `spd: ${this.speed.toFixed(1)}`;
+      }
+    }
+
+    // Save current Y position for vertical stairs stabilization in the next frame
+    this._lastY = this.root.position.y;
+  }
+
+  _updateLocoAnim(hasMove, sprint, backward, blend = 0.35) {
+    if (!this.grounded) return;
+
+    const charRoot = this.visualMesh;
+    if (!charRoot) return;
+
+    const dt = this.scene.getEngine().getDeltaTime() / 1000;
+
+    if (this.crouching) {
+      const want = hasMove ? (sprint ? S.CROUCH_RUN : S.CROUCH_WALK) : S.CROUCH_IDLE;
+
+      // Sinks 8 cm relative to rest pose for a smooth visual crouch down
+      this.targetLocalY = this._standMeshY - 0.08;
+
+      const speedRatio = want === S.CROUCH_RUN ? 3.2 : 1.8;
+
+      if (this.state !== want) {
+        this._setState(want);
+      }
+
+      this.anim.play(
+        want === S.CROUCH_IDLE ? 'Crouch_Idle_Loop' : 'Crouch_Fwd_Loop',
+        true,
+        blend,
+        null,
+        want === S.CROUCH_IDLE ? 1.0 : speedRatio
+      );
+      return;
+    } else {
+      this.targetLocalY = this._standMeshY;
+    }
+
+    if (this.weapon) {
+      return;
+    }
+
+    // Determine state based on speed and input
+    let wantState = S.IDLE;
+    if (this.speed > 0.05) {
+      wantState = sprint ? S.SPRINT : S.WALK;
+    }
+
+    if (this.state !== wantState || this.anim.curName !== 'Locomotion') {
+      this._setState(wantState);
+    }
+
+    // Play the unified Locomotion Blend Tree
+    this.anim.play('Locomotion', true, blend);
+
+    // Feed current physical speed to dynamically blend weights
+    const loco = this.anim.g.get('Locomotion');
+    if (loco) {
+      loco.updateSpeed(this.speed);
+    }
+  }
+}
+
+// Expose classes and definitions to the global window object for easy consumption in classical script-based setups
+window.S = S;
+window.ACTION_STATES = ACTION_STATES;
+window.AnimCtrl = AnimCtrl;
+window.CharCtrl = CharCtrl;
+window.normBone = normBone;
+window.cleanAnimName = cleanAnimName;
+window.lerp = lerp;
+window.lerpAngle = lerpAngle;

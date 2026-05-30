@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Animation Engine</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+  <div id="loading">
+    <h1>ANIMATION ENGINE</h1>
+    <p>BABYLONJS 9 · MIXAMO · AAA CONTROLLER</p>
+    <div class="bar-bg">
+      <div class="bar" id="bar"></div>
+    </div>
+    <div class="bar-label" id="bar-label">Initializing...</div>
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <!-- MOBILE TOUCH CONTROLS -->
+  <div id="mobile-ctrls">
+    <div id="joystick-zone">
+      <div id="joystick-ring">
+        <div id="joystick-knob"></div>
+      </div>
+    </div>
+    <div id="action-btns">
+      <button id="btn-sprint" class="touch-btn">SPRINT</button>
+      <button id="btn-jump" class="touch-btn">JUMP</button>
+      <button id="btn-roll" class="touch-btn">ROLL</button>
+      <button id="btn-crouch" class="touch-btn">CROUCH</button>
+      <button id="btn-act" class="touch-btn">ACT</button>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div class="panel">
+      <div class="state-label">State</div>
+      <div class="state-val" id="hud-state">IDLE</div>
+      <div class="state-label" style="margin-top:4px">Animation</div>
+      <div class="anim-val" id="hud-anim">—</div>
+      <div class="weapon-val" id="hud-weapon"></div>
+      <div class="speed-val" id="hud-speed"></div>
+    </div>
+    <div class="panel keys-grid">
+      <div class="krow"><span>W A S D</span>Move</div>
+      <div class="krow"><span>Shift</span>Sprint</div>
+      <div class="krow"><span>Ctrl</span>Crouch</div>
+      <div class="krow"><span>Space</span>Jump</div>
+      <div class="krow"><span>R</span>Roll/Dodge</div>
+      <div class="krow"><span>Q</span>Punch Combo</div>
+      <div class="krow"><span>E</span>Spell</div>
+      <div class="krow"><span>F</span>Function</div>
+    </div>
+  </div>
+
+  <div id="xhair"></div>
+  <div id="combo"></div>
+
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+  <script src="https://cdn.babylonjs.com/inspector/babylon.inspector.bundle.js"></script>
+  <script src="js/character-controller.js"></script>
+  <script src="js/app.js"></script>
+</body>
+
+</html>
