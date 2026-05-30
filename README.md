@@ -87,21 +87,33 @@ const charCtrl = new CharCtrl(playerCapsule, visualMesh, camera, animCtrl, scene
 });
 ```
 
----
+## 🔄 Animation Pipeline & Rig Correction
 
-## 🔄 Animation Rig Correction Utility (`merge_animations.mjs`)
+This framework is designed around a 3D character from **Mixamo** retargeted with high-quality animations from the **Universal Animation Library by Quaternius**.
 
-Combines multiple skeletal animation GLBs (e.g. from Mixamo) into a single optimized GLB file, applying axis remapping, Draco compression, and manifest generations.
+### 📦 All-in-One Embedded Assets
+To achieve optimal loading performance and zero-overhead network delivery, the final asset (`character_animated.glb`) packages **both the 3D character mesh and all skeletal animations embedded inside a single, highly compressed file**. This makes the asset extremely easy to distribute, load, and manage inside your Babylon.js scene.
+
+### 🛠️ Merging Animations (`merge_animations.mjs`)
+You can use the local script [merge_animations.mjs](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/merge_animations.mjs) to retarget and blend skeletal animations from external GLB files (e.g., Mixamo or Blender animations) directly onto your character model:
 
 ```bash
-# Install dependencies
+# Install tool dependencies
 npm install fs-extra @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions draco3dgltf
 
-# Run merging pipeline
+# Run the merging utility
 node js/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_animated.glb
 ```
+
+### ⚡ Advanced Automated Pipeline: FBX2GLB
+For a fully automated and advanced asset workflow, you can use **FBX2GLB-Batch-Convert-Optimizer**, an advanced batch converter and optimizer utility. It handles converting FBX characters and animations directly to GLB, optimizing textures/geometry, and automatically merging them into a single consolidated file:
+
+👉 **GitHub Repository**: [FBX2GLB-Batch-Convert-Optimizer](https://github.com/crazyramirez/FBX2GLB-Batch-Convert-Optimizer)
+
+This utility allows you to easily convert FBX folders, apply Draco mesh compression, bake textures, and automatically run the `merge_animations` script in a single-command batch pipeline.
 
 ---
 
 ## 📚 Credits & Attributions
+*   **Character Rig**: Customized **Mixamo** skeletal rig.
 *   **Animations**: Built using the [Universal Animation Library by Quaternius](https://quaternius.com/packs/universalanimationlibrary.html).
