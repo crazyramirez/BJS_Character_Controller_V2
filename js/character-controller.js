@@ -435,6 +435,7 @@ class CharCtrl {
     this.state = S.IDLE;
     this.stateT = 0;
     this.crouching = false;
+    this.sprinting = false;
     this.sitting = false;
     this.weapon = null; // null | 'spell'
     this.comboIdx = 0;
@@ -718,6 +719,20 @@ class CharCtrl {
           }
         } else {
           this.crouching = true;
+          this.sprinting = false; // Crouching cancels sprinting
+          this._idle();
+        }
+      }
+    } else if (this._matchesAction(code, 'SPRINT')) {
+      if (this.grounded && !inAction && !this.sitting) {
+        if (this.sprinting) {
+          this.sprinting = false;
+          this._idle();
+        } else {
+          this.sprinting = true;
+          if (this.crouching && this._canUncrouch()) {
+            this.crouching = false; // Sprinting cancels crouching
+          }
           this._idle();
         }
       }
@@ -911,7 +926,7 @@ class CharCtrl {
       inputZ = this.touchVector.y;
     }
 
-    const isSprinting = this._isPressed('SPRINT') || this.keys['btn-sprint'];
+    const isSprinting = this.sprinting;
     const hasMove = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
 
     if (hasMove) {
@@ -1033,7 +1048,7 @@ class CharCtrl {
       inputZ = this.touchVector.y;
     }
 
-    const isSprinting = this._isPressed('SPRINT') || this.keys['btn-sprint'];
+    const isSprinting = this.sprinting;
     const inputMag = Math.min(1.0, Math.sqrt(inputX * inputX + inputZ * inputZ));
     const hasMove = inputMag > 0.15;
 
