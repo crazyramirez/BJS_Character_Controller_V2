@@ -78,8 +78,13 @@ async function loadCharacter(scene, shadow, camera) {
 
 
   // ── CAMERA FOLLOW ─────────────────────────────────────
+  const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  // On mobile, shifting the camera target down (e.g., to -0.2m) frames the character higher up on the screen,
+  // preventing them from being covered by the user's thumbs and touch controls.
+  const cameraYOffset = isMobileDev ? -0.25 : 0.4;
+
   scene.registerBeforeRender(() => {
-    const tgt = playerCapsule.position.add(V3(0, 0.4, 0)); // Capsule center + 0.4m offset = chest height (1.3m relative to feet)
+    const tgt = playerCapsule.position.add(V3(0, cameraYOffset, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.12);
   });
 
