@@ -466,6 +466,7 @@ class CharCtrl {
     this._standMeshY = this.visualMesh.position.y;
     this._crouchEllipsoidY = 0.55;
     this._lastY = this.root.position.y;
+    this._highestAirborneY = this.root.position.y;
 
     // Perfect controller procedural & suspension variables
     this.targetLocalY = this._standMeshY;
@@ -1079,20 +1080,11 @@ class CharCtrl {
       this.grounded = this._checkGrounded();
     }
 
-    // Track consecutive airborne time (resets on any grounded frame)
-    if (!this.grounded) {
-      this._airborneTime += dt;
-    } else {
-      this._airborneTime = 0;
-    }
-
-    // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
-    if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
-      this.jumpVel = -4.0;
-    }
-
     // Landing / roll recovery
+    let landingTriggered = false;
     if (this.grounded && !wasGrounded) {
+      landingTriggered = true;
+      const fallHeight = this._highestAirborneY - this.root.position.y;
       if (this.state === S.ROLL) {
         if (!this._rollMoving) this.speed = 0;
         this._returnToLoco(0.06);
@@ -1100,7 +1092,7 @@ class CharCtrl {
         this._rollOnLand = false;
         this._emitLandingDust();
         this._roll();
-      } else if (this.jumpVel < -3.0 && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
+      } else if (this.jumpVel < -3.0 && fallHeight > 0.4) {
         this._rollOnLand = false;
         this._setState(S.JUMP_LAND);
         this.anim.play('Jump_Land', false, 0.15, () => this._returnToLoco(), 1.35);
@@ -1112,6 +1104,20 @@ class CharCtrl {
       }
     } else if (this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP || (this.state === S.JUMP_LAND && hasMove && this.stateT > 0.15))) {
       this._returnToLoco();
+    }
+
+    // Track consecutive airborne time and maximum height reached
+    if (!this.grounded) {
+      this._airborneTime += dt;
+      this._highestAirborneY = Math.max(this._highestAirborneY, this.root.position.y);
+    } else {
+      this._airborneTime = 0;
+      this._highestAirborneY = this.root.position.y;
+    }
+
+    // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
+    if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
+      this.jumpVel = -4.0;
     }
 
     let inAction = ACTION_STATES.has(this.state);
@@ -1448,12 +1454,12 @@ class CharCtrl {
     if (this.isTouch) {
       const btnCrouch = document.getElementById('btn-crouch');
       const btnSprint = document.getElementById('btn-sprint');
-      
+
       if (btnCrouch) {
         if (this.crouching) btnCrouch.classList.add('active');
         else btnCrouch.classList.remove('active');
       }
-      
+
       if (btnSprint) {
         if (this.sprinting) btnSprint.classList.add('active');
         else btnSprint.classList.remove('active');
