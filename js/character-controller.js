@@ -28,6 +28,23 @@ function cleanAnimName(raw) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// KEY BINDINGS CONFIGURATION
+// ═══════════════════════════════════════════════════════════
+const KEYS = {
+  MOVE_FORWARD: ['KeyW', 'ArrowUp'],
+  MOVE_BACKWARD: ['KeyS', 'ArrowDown'],
+  MOVE_LEFT: ['KeyA', 'ArrowLeft'],
+  MOVE_RIGHT: ['KeyD', 'ArrowRight'],
+  SPRINT: ['ShiftLeft', 'ShiftRight'],
+  CROUCH: ['ControlLeft', 'ControlRight'],
+  JUMP: ['Space'],
+  ROLL: ['KeyR'],
+  PUNCH: ['KeyQ'],
+  SPELL: ['KeyE'],
+  INTERACT: ['KeyF'],
+};
+
+// ═══════════════════════════════════════════════════════════
 // STATES
 // ═══════════════════════════════════════════════════════════
 const S = {
@@ -66,9 +83,16 @@ class LocoBlendGroup {
     const walk = this.anim.g.get('Walk_Loop');
     const sprint = this.anim.g.get('Sprint_Loop');
 
+    const char = this.anim.charCtrl;
+    const spdWalk = char ? char.SPD_WALK : 2.4;
+    const spdSprint = char ? char.SPD_SPRINT : 6.0;
+
+    const walkRatio = spdWalk * (1.5 / 2.4);
+    const sprintRatio = spdSprint * (1.1 / 6.0);
+
     if (idle && !idle.isPlaying) idle.start(true, 1.0, idle.from, idle.to, false);
-    if (walk && !walk.isPlaying) walk.start(true, 1.5, walk.from, walk.to, false);
-    if (sprint && !sprint.isPlaying) sprint.start(true, 1.1, sprint.from, sprint.to, false);
+    if (walk && !walk.isPlaying) walk.start(true, walkRatio, walk.from, walk.to, false);
+    if (sprint && !sprint.isPlaying) sprint.start(true, sprintRatio, sprint.from, sprint.to, false);
 
     this.updateWeights();
   }
@@ -104,8 +128,9 @@ class LocoBlendGroup {
     let wIdle = 0, wWalk = 0, wSprint = 0;
     const v = this.speed;
 
-    const spdWalk = 2.4; // Matches SPD_WALK
-    const spdSprint = 6.0; // Matches SPD_SPRINT
+    const char = this.anim.charCtrl;
+    const spdWalk = char ? char.SPD_WALK : 2.4;
+    const spdSprint = char ? char.SPD_SPRINT : 6.0;
 
     if (v <= 0) {
       wIdle = 1.0;
@@ -341,7 +366,11 @@ class CharCtrl {
     this.visualMesh = visualMesh; // Visual character mesh
     this.camera = camera;
     this.anim = anim;
+    anim.charCtrl = this;
     this.scene = scene;
+
+    // Key Bindings
+    this.keyBindings = Object.assign({}, KEYS, options.keys || {});
 
     // Callbacks & Custom UI configuration
     this.callbacks = Object.assign({
@@ -354,9 +383,9 @@ class CharCtrl {
     const config = Object.assign({
       GRAV: 22,
       JUMP_PWR: 9.5,
-      SPD_WALK: 2.4,
+      SPD_WALK: 2.2,
       SPD_JOG: 3,
-      SPD_SPRINT: 6,
+      SPD_SPRINT: 5,
       SPD_CROUCH: 2,
       SPD_CROUCH_RUN: 3.6,
       ACCEL: 14,
@@ -396,7 +425,7 @@ class CharCtrl {
     this.speed = 0;
     this.rotY = 0;
     this.jumpVel = 0;
-    this.grounded = true;
+    this.grounded = false;
     this.onScalable = false;
     this._airborneTime = 0;
     this._rollOnLand = false;
@@ -503,6 +532,24 @@ class CharCtrl {
       this.dustPS.manualEmitCount = 30; // Emit 30 particles instantly
       this.dustPS.start();              // Force restart to process manual emission
     }
+  }
+
+  _isPressed(action) {
+    const keysForAction = this.keyBindings[action];
+    if (!keysForAction) return false;
+    if (Array.isArray(keysForAction)) {
+      return keysForAction.some(k => this.keys[k]);
+    }
+    return !!this.keys[keysForAction];
+  }
+
+  _matchesAction(code, action) {
+    const keysForAction = this.keyBindings[action];
+    if (!keysForAction) return false;
+    if (Array.isArray(keysForAction)) {
+      return keysForAction.includes(code);
+    }
+    return keysForAction === code;
   }
 
   // ── INPUT ──────────────────────────────────────────────
@@ -659,61 +706,49 @@ class CharCtrl {
   _keyDown(code) {
     const inAction = ACTION_STATES.has(this.state);
 
-    switch (code) {
-      case 'ControlLeft': case 'ControlRight':
-        if (this.grounded && !inAction && !this.sitting) {
-          if (this.crouching) {
-            if (this._canUncrouch()) {
-              this.crouching = false;
-              this._idle();
-            } else {
-              this._showCombo('CEILING BLOCKED');
-              setTimeout(() => this._hideCombo(), 1200);
-            }
-          } else {
-            this.crouching = true;
+    if (this._matchesAction(code, 'CROUCH')) {
+      if (this.grounded && !inAction && !this.sitting) {
+        if (this.crouching) {
+          if (this._canUncrouch()) {
+            this.crouching = false;
             this._idle();
-          }
-        }
-        break;
-
-      case 'Space':
-        if (this.grounded && !inAction && !this.sitting) {
-          if (this.crouching) {
-            if (this._canUncrouch()) {
-              this.crouching = false;
-              this._jump();
-            } else {
-              this._showCombo('CEILING BLOCKED');
-              setTimeout(() => this._hideCombo(), 1200);
-            }
           } else {
-            this._jump();
+            this._showCombo('CEILING BLOCKED');
+            setTimeout(() => this._hideCombo(), 1200);
           }
-        } else if (!this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
-          this._rollOnLand = true;
+        } else {
+          this.crouching = true;
+          this._idle();
         }
-        break;
-
-      case 'KeyR':
-        if (this.grounded && !inAction && !this.sitting && !this._rollActive)
-          this._roll();
-        break;
-
-      case 'KeyQ':
-        if (this.grounded && !inAction && !this.weapon && !this.sitting)
-          this._punch();
-        break;
-
-      case 'KeyE':
-        if (!inAction && !this.sitting)
-          this._spellCast();
-        break;
-
-      case 'KeyF':
-        if (inAction) break;
-        if (!this.sitting) this._interact();
-        break;
+      }
+    } else if (this._matchesAction(code, 'JUMP')) {
+      if (this.grounded && !inAction && !this.sitting) {
+        if (this.crouching) {
+          if (this._canUncrouch()) {
+            this.crouching = false;
+            this._jump();
+          } else {
+            this._showCombo('CEILING BLOCKED');
+            setTimeout(() => this._hideCombo(), 1200);
+          }
+        } else {
+          this._jump();
+        }
+      } else if (!this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
+        this._rollOnLand = true;
+      }
+    } else if (this._matchesAction(code, 'ROLL')) {
+      if (this.grounded && !inAction && !this.sitting && !this._rollActive)
+        this._roll();
+    } else if (this._matchesAction(code, 'PUNCH')) {
+      if (this.grounded && !inAction && !this.weapon && !this.sitting)
+        this._punch();
+    } else if (this._matchesAction(code, 'SPELL')) {
+      if (!inAction && !this.sitting)
+        this._spellCast();
+    } else if (this._matchesAction(code, 'INTERACT')) {
+      if (inAction) return;
+      if (!this.sitting) this._interact();
     }
   }
 
@@ -743,10 +778,10 @@ class CharCtrl {
     this._setState(S.ROLL);
 
     let inputX = 0, inputZ = 0;
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
+    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
+    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
+    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
     if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
       inputX = this.touchVector.x; inputZ = this.touchVector.y;
     }
@@ -866,17 +901,17 @@ class CharCtrl {
     let inputX = 0;
     let inputZ = 0;
 
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
+    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
+    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
+    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
 
     if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
       inputX = this.touchVector.x;
       inputZ = this.touchVector.y;
     }
 
-    const isSprinting = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['btn-sprint'];
+    const isSprinting = this._isPressed('SPRINT') || this.keys['btn-sprint'];
     const hasMove = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
 
     if (hasMove) {
@@ -988,17 +1023,17 @@ class CharCtrl {
     let inputX = 0;
     let inputZ = 0;
 
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) inputZ += 1;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) inputZ -= 1;
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) inputX += 1;
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) inputX -= 1;
+    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
+    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
+    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
+    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
 
     if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
       inputX = this.touchVector.x;
       inputZ = this.touchVector.y;
     }
 
-    const isSprinting = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['btn-sprint'];
+    const isSprinting = this._isPressed('SPRINT') || this.keys['btn-sprint'];
     const inputMag = Math.min(1.0, Math.sqrt(inputX * inputX + inputZ * inputZ));
     const hasMove = inputMag > 0.15;
 
@@ -1239,8 +1274,10 @@ class CharCtrl {
     // ── ADVANCED PROCEDURAL VISUALS & SUSPENSION ─────────
     // 1. Visual Y-Suspension
     const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
-    // Compensate visual mesh local Y for capsule height shifts
-    this.visualLocalY -= deltaY;
+    if (this.grounded && wasGrounded) {
+      // Compensate visual mesh local Y for capsule height shifts
+      this.visualLocalY -= deltaY;
+    }
     // Smoothly return visual mesh local Y to its target crouch/stand state Y
     this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-14 * dt));
     // Clamp to prevent visual separating too far from capsule boundaries.
@@ -1275,7 +1312,7 @@ class CharCtrl {
     const acceleration = (this.speed - this._lastSpeed) / dt;
     let targetPitch = 0;
 
-    if (this.speed > 0.1 && (this.keys['KeyW'] || this.keys['ArrowUp'] || (this.isTouch && this.touchVector.y > 0.1))) {
+    if (this.speed > 0.1 && (this._isPressed('MOVE_FORWARD') || (this.isTouch && this.touchVector.y > 0.1))) {
       // Leaning forward proportional to speed
       targetPitch = currentSpeedRatio * 0.12;
     } else if (acceleration < -4.0 && this.speed > 1.0) {
@@ -1382,7 +1419,7 @@ class CharCtrl {
       // Sinks 8 cm relative to rest pose for a smooth visual crouch down
       this.targetLocalY = this._standMeshY - 0.08;
 
-      const speedRatio = want === S.CROUCH_RUN ? 3.2 : 1.8;
+      const speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
 
       if (this.state !== want) {
         this._setState(want);

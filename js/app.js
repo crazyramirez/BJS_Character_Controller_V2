@@ -18,6 +18,7 @@ function hideLoad() {
   setTimeout(() => el.remove(), 700);
 }
 
+
 // ═══════════════════════════════════════════════════════════
 // SCENE BOOTSTRAP
 // ═══════════════════════════════════════════════════════════
@@ -75,6 +76,7 @@ async function loadCharacter(scene, shadow, camera) {
   const animCtrl = new AnimCtrl(filteredGroups, scene);
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene);
 
+
   // ── CAMERA FOLLOW ─────────────────────────────────────
   scene.registerBeforeRender(() => {
     const tgt = playerCapsule.position.add(V3(0, 0.4, 0)); // Capsule center + 0.4m offset = chest height (1.3m relative to feet)
@@ -87,7 +89,7 @@ async function loadCharacter(scene, shadow, camera) {
 // ═══════════════════════════════════════════════════════════
 // CREATE SCENE
 // ═══════════════════════════════════════════════════════════
-async function createScene() {
+async function createDemoScene() {
   const scene = new BABYLON.Scene(engine);
   scene.clearColor = new BABYLON.Color4(0.04, 0.04, 0.09, 1);
   scene.gravity = V3(0, -9.8, 0);
@@ -271,7 +273,7 @@ async function createScene() {
 // ═══════════════════════════════════════════════════════════
 // RUN
 // ═══════════════════════════════════════════════════════════
-createScene()
+createDemoScene()
   .then(scene => {
     engine.runRenderLoop(() => scene.render());
   })
