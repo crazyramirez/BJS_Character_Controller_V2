@@ -902,18 +902,20 @@ class CharCtrl {
 
   _spellCast() {
     this._setState(S.SPELL_ENTER);
-    this.anim.play('Spell_Simple_Enter', false, 0.1, () => {
+    // Increased blend duration from 0.1 to 0.35 for an incredibly smooth and premium stand-up transition when casting spells from a crouch
+    this.anim.play('Spell_Simple_Enter', false, 0.35, () => {
       this._setState(S.SPELL_SHOOT);
-      this.anim.play('Spell_Simple_Shoot', false, 0.08, () => {
+      this.anim.play('Spell_Simple_Shoot', false, 0.15, () => {
         this._setState(S.SPELL_EXIT);
-        this.anim.play('Spell_Simple_Exit', false, 0.1, () => this._returnToLoco());
+        this.anim.play('Spell_Simple_Exit', false, 0.2, () => this._returnToLoco(0.35));
       });
     });
   }
 
   _interact() {
     this._setState(S.INTERACT);
-    this.anim.play('Interact', false, 0.1, () => this._returnToLoco());
+    // Increased blend duration from 0.1 to 0.35 for a gorgeous smooth stand-up transition when interacting from a crouch
+    this.anim.play('Interact', false, 0.35, () => this._returnToLoco(0.35));
   }
 
   // ── IDLE ───────────────────────────────────────────────
