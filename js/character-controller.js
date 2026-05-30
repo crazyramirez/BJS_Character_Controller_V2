@@ -387,7 +387,8 @@ class CharCtrl {
         'btn-jump': 'Space',
         'btn-roll': 'KeyR',
         'btn-crouch': 'ControlLeft',
-        'btn-act': 'KeyF'
+        'btn-act': 'KeyF',
+        'btn-spell': 'KeyE'
       }
     }, options.touch || {});
 

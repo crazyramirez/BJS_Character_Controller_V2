@@ -6,8 +6,8 @@
 
 body {
   overflow: hidden;
-  background: #000;
-  font-family: 'Courier New', monospace;
+  background: #0b0b14;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
   user-select: none;
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -33,6 +33,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding: 20px;
   z-index: 999;
   transition: opacity .6s;
 }
@@ -42,6 +43,8 @@ body {
   color: #00ff99;
   letter-spacing: 6px;
   margin-bottom: 8px;
+  font-weight: 800;
+  text-align: center;
 }
 
 #loading p {
@@ -49,6 +52,8 @@ body {
   font-size: 12px;
   margin-bottom: 30px;
   letter-spacing: 2px;
+  font-weight: 600;
+  text-align: center;
 }
 
 .bar-bg {
@@ -84,65 +89,77 @@ body {
 }
 
 .panel {
-  background: rgba(0, 0, 0, .65);
-  border: 1px solid rgba(255, 255, 255, .1);
-  backdrop-filter: blur(6px);
-  border-radius: 8px;
-  padding: 10px 14px;
+  background: rgba(8, 8, 16, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 12px;
+  padding: 12px 16px;
   margin-bottom: 10px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
 
 .state-label {
-  font-size: 10px;
-  color: #556;
+  font-size: 9px;
+  color: #6c6c8c;
   letter-spacing: 2px;
   text-transform: uppercase;
+  font-weight: 600;
 }
 
 .state-val {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 800;
   color: #00ff99;
   letter-spacing: 1px;
   margin: 2px 0;
+  text-shadow: 0 0 10px rgba(0, 255, 153, 0.2);
 }
 
 .anim-val {
-  font-size: 11px;
-  color: #aaf;
+  font-size: 12px;
+  color: #aeb4ff;
+  font-weight: 500;
 }
 
 .weapon-val {
-  font-size: 11px;
-  color: #fa0;
+  font-size: 12px;
+  color: #ffa500;
   margin-top: 2px;
+  font-weight: 600;
 }
 
 .speed-val {
   font-size: 11px;
-  color: #888;
+  color: #8c8c9c;
+  font-family: monospace;
 }
 
 .keys-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 3px 12px;
-  font-size: 10px;
+  gap: 8px 16px;
+  font-size: 11px;
 }
 
 .krow {
-  color: #668;
+  color: #8c8c9c;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .krow span {
   display: inline-block;
-  background: rgba(255, 255, 255, .1);
-  border: 1px solid rgba(255, 255, 255, .2);
-  border-radius: 3px;
-  padding: 1px 5px;
-  color: #aaa;
-  font-size: 9px;
-  margin-right: 3px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: #e0e0e6;
+  font-size: 11px;
+  margin-right: 8px;
+  font-family: monospace;
+  font-weight: bold;
 }
 
 /* ── CROSSHAIR ── */
@@ -189,17 +206,20 @@ body {
   bottom: 60px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 14px;
-  color: #ff6;
-  letter-spacing: 2px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #ffcc00;
+  letter-spacing: 3px;
   pointer-events: none;
   opacity: 0;
-  transition: opacity .3s;
-  text-shadow: 0 0 10px #ff0;
+  transition: opacity .3s, transform 0.3s;
+  text-shadow: 0 0 15px rgba(255, 204, 0, 0.6);
+  text-transform: uppercase;
 }
 
 #combo.show {
   opacity: 1;
+  transform: translateX(-50%) scale(1.1);
 }
 
 /* ── SWIM INDICATOR ── */
@@ -238,8 +258,8 @@ body.touch-device #mobile-ctrls {
 
 #joystick-zone {
   position: absolute;
-  bottom: 40px;
-  left: 40px;
+  bottom: 20px;
+  left: 20px;
   width: 140px;
   height: 140px;
   display: flex;
@@ -290,28 +310,31 @@ body.touch-device #mobile-ctrls {
 
 #action-btns {
   position: absolute;
-  bottom: 30px;
-  right: 30px;
+  bottom: 20px;
+  right: 20px;
   display: grid;
   grid-template-areas:
-    ". sprint act"
-    "crouch roll jump";
+    "crouch sprint spell"
+    "roll act jump";
   gap: 12px;
   pointer-events: auto;
+  align-items: center;
+  justify-items: center;
 }
 
 .touch-btn {
-  width: 60px;
-  height: 60px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(8px);
-  color: rgba(255, 255, 255, 0.8);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.85);
   font-family: inherit;
-  font-size: 9px;
-  font-weight: bold;
-  letter-spacing: 1px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -319,7 +342,7 @@ body.touch-device #mobile-ctrls {
   user-select: none;
   touch-action: manipulation;
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .touch-btn:active {
@@ -347,10 +370,9 @@ body.touch-device #mobile-ctrls {
   grid-area: jump;
   width: 70px;
   height: 70px;
-  margin-top: -5px;
   background: rgba(0, 255, 153, 0.07);
   border-color: rgba(0, 255, 153, 0.25);
-  font-size: 10px;
+  font-size: 9px;
 }
 
 #btn-roll {
@@ -373,10 +395,22 @@ body.touch-device #mobile-ctrls {
   box-shadow: 0 0 15px rgba(255, 102, 0, 0.4);
 }
 
+#btn-spell {
+  grid-area: spell;
+  background: rgba(168, 85, 247, 0.05);
+  border-color: rgba(168, 85, 247, 0.25);
+}
+
+#btn-spell:active {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.6);
+  box-shadow: 0 0 15px rgba(168, 85, 247, 0.4);
+}
+
 /* Modify existing hud for touch compatibility */
 body.touch-device #hud {
-  top: auto;
-  bottom: 200px;
+  top: 16px;
+  bottom: auto;
   left: 16px;
   max-width: calc(100vw - 32px);
 }
@@ -473,4 +507,19 @@ body.touch-device .keys-grid {
   transform: scale(1.2);
   background: #00ffcc;
   box-shadow: 0 0 12px rgba(0, 255, 204, 0.9);
+}
+
+/* ── RESPONSIVE / MOBILE OPTIMIZATIONS ── */
+@media (max-width: 600px) {
+  #loading h1 {
+    font-size: 20px;
+    letter-spacing: 3px;
+    line-height: 1.4;
+  }
+
+  #loading p {
+    font-size: 10px;
+    letter-spacing: 1px;
+    margin-bottom: 20px;
+  }
 }

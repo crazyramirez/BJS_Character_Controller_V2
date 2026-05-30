@@ -4,6 +4,10 @@
 
 An advanced 3D character animation and third-person controller framework built with **Babylon.js**. This framework features high-fidelity collision physics, dynamic locomotion blend trees, procedural dust particles, advanced visual suspension mechanics, combat combos, spell casting, and built-in mobile touch support.
 
+🎮 **Live Demo**: [https://viseni.com/_demos_/bjs_character_controller_v2/](https://viseni.com/_demos_/bjs_character_controller_v2/)
+
+![BJS Character Controller V2 Screenshot](assets/screenshot.jpg)
+
 ---
 
 ## 🎮 Demo Features & Engine Mechanics
