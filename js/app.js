@@ -308,8 +308,16 @@ createDemoScene()
 const hud = $('hud');
 const toggle = $('hud-toggle');
 if (toggle && hud) {
+  // Load persisted state on startup
+  const isCollapsed = localStorage.getItem('hud-collapsed') === 'true';
+  if (isCollapsed) {
+    hud.classList.add('collapsed');
+  }
+
   toggle.addEventListener('click', () => {
     hud.classList.toggle('collapsed');
+    // Save to localStorage
+    localStorage.setItem('hud-collapsed', hud.classList.contains('collapsed'));
   });
 }
 
