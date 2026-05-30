@@ -1,143 +1,189 @@
 <a href="https://www.viseni.com" target="_blank"><img src="https://www.viseni.com/_demos_/viseni-logo-white.webp" style="width: 200px; margin-bottom: 50px"></a>
 
+# 3D Character Animation Engine & Controller in Babylon.js
 
-# Motor de Animación de Personajes 3D en Babylon.js
-
-Este proyecto es un motor de animación y controlador de personajes en tercera persona desarrollado con **Babylon.js**. Cuenta con un sistema de movimiento basado en físicas de colisión, un árbol de mezcla de locomoción dinámico, efectos de partículas, soporte de combos, lanzamiento de hechizos y soporte completo para dispositivos móviles.
-
----
-
-## 🎮 Cómo Funciona el Juego Demo
-
-El demo presenta un escenario en tercera persona donde controlas a un personaje tridimensional dentro de un entorno con colisiones activas.
-
-### Características del Engine en el Demo:
-*   **Físicas de Movimiento Estables**: El personaje utiliza un colisionador de cápsula con físicas de colisión (`moveWithCollisions`) que le permiten interactuar con el entorno, subir escaleras y deslizarse por rampas de forma suave sin vibraciones verticales.
-*   **Locomotion Blend Tree**: El sistema de locomoción calcula en tiempo real la velocidad física de la cápsula y realiza una interpolación lineal de pesos entre tres animaciones principales (`Idle_Loop`, `Walk_Loop` y `Sprint_Loop`) integradas en el grupo virtual `Locomotion`.
-*   **Partículas Procedimentales de Polvo**: Se emiten partículas de humo/polvo en los pies del personaje al correr a alta velocidad o al aterrizar tras caídas de altura (impacto).
-*   **Soporte Táctil Integrado**: Si se detecta un dispositivo con pantalla táctil, la aplicación activa un joystick analógico digital en pantalla y botones de acción flotantes con retroalimentación háptica.
-*   **Post-Procesado Avanzado**: Incluye mapeo de tonos ACES, Bloom difuminado de alto contraste, FXAA y aberración cromática.
-
-### Controles de Teclado y Ratón:
-*   `W`, `A`, `S`, `D` / `Flechas`: Mover el personaje relativo a la orientación de la cámara.
-*   `Shift (Mayús)`: Correr / Sprint.
-*   `Ctrl (Control)`: Agacharse / Crouch.
-*   `Espacio`: Saltar (con físicas de gravedad y detección de aterrizaje).
-*   `R`: Rodar / Dodge roll (con impulso horizontal).
-*   `Q`: Combo de golpes (Jab simple; si se pulsa de nuevo en el tiempo correcto, ejecuta Cross con aviso visual).
-*   `E`: Lanzamiento de magia (hechizo simple con entrada, disparo y salida).
-*   `F`: Interactuar / Activar palancas.
-*   `Arrastrar Ratón`: Rotar cámara orbital alrededor del personaje.
+An advanced 3D character animation and third-person controller framework built with **Babylon.js**. This framework features high-fidelity collision physics, dynamic locomotion blend trees, procedural dust particles, advanced visual suspension mechanics, combat combos, spell casting, and built-in mobile touch support.
 
 ---
 
-## 🛠️ Cómo Implementar el Character Controller en tu Propio Juego
+## 🎮 Demo Features & Engine Mechanics
 
-El controlador está diseñado de forma modular en dos clases principales dentro de `js/character-controller.js`:
-1.  **`AnimCtrl`**: Gestor de animaciones, transiciones cruzadas (cross-fade) suavizadas por hardware, pesos dinámicos y grupos virtuales.
-2.  **`CharCtrl`**: Gestor de físicas, entradas por teclado/táctil, gravedad, partículas y lógica de estado del personaje.
+The demo showcases a third-person sandbox where a 3D character interacts with a physical environment under active collisions. 
 
-Ambas clases están **totalmente desacopladas de la interfaz de usuario (DOM)**, lo que te permite usarlas en cualquier aplicación de Babylon.js sin requerir un HTML específico.
+### Core Engine Capabilities:
+*   **Stable Collision Physics**: Utilizes a capsule collider with `moveWithCollisions` physics for fluid world navigation, smooth step-climbing, and ramp-sliding without vertical jitter.
+*   **Locomotion Blend Tree**: A unified `Locomotion` virtual group interpolates animation weights in real time between `Idle_Loop`, `Walk_Loop`, and `Sprint_Loop` based on physical velocity.
+*   **Procedural Footstep & Impact Particles**: Generates dynamic smoke/dust trails at the character's feet during walking, sprinting, and rolling, with heavy bursts emitted upon impact landing.
+*   **Advanced Visual Suspension & Kinetic Animation**:
+    *   **Y-Suspension**: Absorbs height shocks when stepping up or down, smoothly returning the visual mesh to its height baseline.
+    *   **Kinetic Locomotion Bobbing**: Simulates physical stride weight shifts by translating the mesh locally along the X and Y axes depending on walk/sprint frequencies.
+    *   **Procedural Leaning (Pitch & Roll)**: Leans the character forward during acceleration, backward during braking, and banks (rolls) the character into sharp turns.
+    *   **Squash & Stretch**: Elastic scale distortion stretching the mesh vertically during jumps/falls and squashing it on impact.
+*   **Dynamic Camera Mechanics**:
+    *   **Tunnel Vision (FOV Expansion)**: Smoothly expands the camera Field of View (FOV) at higher velocities.
+    *   **Landing Impact Shake**: Triggers multi-axis rotational camera shake depending on landing height/velocity.
+*   **Dynamic Stair & Slope Speed Adjustments**: Automatically scales movement speed based on vertical displacement rate (reducing speed by up to 22% when climbing, and increasing it by up to 8% when descending).
+*   **Ledge Snap System**: Applies downward snap pressure when walking off steps to prevent floating and eliminate micro-airborne physics state switching.
+*   **Crouch Ellipsoid Scaling**: Dynamically shrinks and offsets the physical capsule collider when crouching, allowing the character to fit under low obstacles.
+*   **Mobile-Ready & Adaptive Inputs**: Automatically detects touch displays, spawning a dual-zone analog joystick and floating action buttons with full multi-touch capture.
+*   **High-End Post-Processing**: Includes ACES tone mapping, contrast and exposure color grading, FXAA anti-aliasing, and soft vignette/aberration overlays.
 
-### Paso 1: Importar los archivos necesarios
-Copia los scripts `js/character-controller.js` a tu proyecto y cárgalos en tu HTML o impórtalos en tus módulos JS.
+### Keyboard & Mouse Controls:
+*   `W`, `A`, `S`, `D` / `Arrow Keys`: Move relative to camera orientation.
+*   `Shift`: Sprint.
+*   `Ctrl`: Crouch (toggles capsule height; uncrouching is blocked if a ceiling is detected).
+*   `Space`: Jump (with gravity phase animations; triggers dodge-roll recovery on landing if held).
+*   `R`: Dodge roll (provides horizontal momentum).
+*   `Q`: Punch combo (triggers a Jab; tap again with correct timing to follow up with a Cross).
+*   `E`: Spell casting (three-stage cast: enter, shoot, exit).
+*   `F`: Interact / Trigger mechanisms.
+*   `Mouse Drag`: Orbit camera around the character.
 
-### Paso 2: Integración de Código en tu Escena
-A continuación se muestra un ejemplo limpio para instanciar y usar los controladores:
+---
+
+## 🛠️ Implementing the Character Controller in Your Game
+
+The framework is split into two modular classes in [character-controller.js](file:///d:/DEV/bjs_character_animation_controller_v2/js/character-controller.js):
+1.  **`AnimCtrl`**: Handles animation state transitions, cross-fades, custom defaults, and virtual groups (like locomotion blend trees).
+2.  **`CharCtrl`**: Drives collision physics, keyboard/touch input listeners, procedural visuals, gravity, and particle emission.
+
+Both classes are **decoupled from the DOM/UI**, making them easy to port to any Babylon.js application.
+
+### Step 1: Include Required Scripts
+Ensure `character-controller.js` is imported or included in your HTML before your main application code.
+
+### Step 2: Instantiate and Configure
+Below is a clean script demonstrating how to set up the capsule, bind the visual mesh, and initialize the controllers:
 
 ```javascript
-// 1. Cargar el modelo GLB de tu personaje (debe contener los huesos y animaciones)
-const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', 'assets/', 'tu_personaje.glb', scene);
+// 1. Load the animated GLB character model
+const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', 'assets/', 'character_combined.glb', scene);
 const charVisualMesh = charRes.meshes[0];
 
-// 2. Configurar sombras y desactivar pickability para evitar obstruir raycasts físicos
+// 2. Configure shadows and disable raycast pickability on character meshes
 charRes.meshes.forEach(m => {
   shadowGenerator.addShadowCaster(m, true);
   m.receiveShadows = true;
   m.isPickable = false;
 });
 
-// 3. Crear el colisionador de la cápsula física
+// 3. Create the physical capsule collider
 const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.35, height: 1.8 }, scene);
 playerCapsule.position.set(0, 1.3, 0);
-playerCapsule.visibility = 0; // Ocultar colisionador
+playerCapsule.visibility = 0; // Hide the physics capsule
 playerCapsule.checkCollisions = true;
 playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);
 
-// 4. Emparentar el mesh visual al colisionador de cápsula
+// 4. Parent visual mesh to capsule collider and offset Y
 charVisualMesh.setParent(playerCapsule);
-charVisualMesh.position.set(0, -0.98, 0); // Offset para que los pies toquen la base
+charVisualMesh.position.set(0, -0.98, 0); // Offset to align feet with the base
 charVisualMesh.rotation.set(0, 0, 0);
 
-// 5. Instanciar AnimCtrl pasándole la lista de animaciones nativas del GLB
+// 5. Instantiate AnimCtrl using base animations
 const animCtrl = new AnimCtrl(charRes.animationGroups, scene);
 
-// 6. Instanciar CharCtrl con configuraciones personalizadas y callbacks de UI
+// 6. Instantiate CharCtrl with customized physics values and callbacks
 const charCtrl = new CharCtrl(playerCapsule, charVisualMesh, camera, animCtrl, scene, {
-  // Ajustes de constantes físicas
   config: {
-    GRAV: 22,            // Gravedad
-    JUMP_PWR: 9.5,       // Fuerza de salto
-    SPD_WALK: 2.4,       // Velocidad de caminata
-    SPD_SPRINT: 6.0,     // Velocidad de carrera
-    ACCEL: 14,           // Aceleración lineal
-    DECEL: 16,           // Desaceleración
-    AIR_CONTROL: true    // Control aéreo (true para control total, false para bloquear dirección y velocidad de despegue)
+    GRAV: 22,             // Gravity strength
+    JUMP_PWR: 9.5,        // Jump launch velocity
+    SPD_WALK: 2.4,        // Walk speed (m/s)
+    SPD_SPRINT: 6.0,      // Sprint speed (m/s)
+    ACCEL: 14,            // Ground acceleration rate
+    DECEL: 16,            // Ground deceleration rate
+    ROT_SPD: 50,          // Rotation turn rate
+    AIR_CONTROL: true     // Allow steering while airborne
   },
-  // Suscribir eventos a tu propio HUD o UI del juego
   callbacks: {
     onStateChange: (state) => {
-      miUI.actualizarEstado(state);
+      myHUD.updateState(state);
     },
     onSpeedChange: (speed) => {
-      miUI.actualizarMarcadorVelocidad(speed);
+      myHUD.updateSpeedometer(speed);
     },
-    onCombo: (textoCombo, estaActivo) => {
-      miUI.mostrarCartelCombo(textoCombo, estaActivo);
+    onCombo: (comboText, isActive) => {
+      myHUD.displayComboBanner(comboText, isActive);
     }
   }
 });
 
-// 7. Actualizar el target de la cámara para que siga al colisionador del jugador
+// 7. Establish camera follow routine
 scene.registerBeforeRender(() => {
-  const targetPoint = playerCapsule.position.add(new BABYLON.Vector3(0, 0.4, 0));
+  const targetPoint = playerCapsule.position.add(new BABYLON.Vector3(0, 0.4, 0)); // Target chest level
   camera.target = BABYLON.Vector3.Lerp(camera.target, targetPoint, 0.12);
 });
 ```
 
 ---
 
-## 🔄 Fusión y Optimización de Animaciones (`merge_animations.mjs`)
+## ⚙️ Advanced Configuration Options
 
-El archivo `merge_animations.mjs` es un script de terminal basado en Node.js que combina las animaciones de un archivo GLB de animaciones (por ejemplo, exportado desde Mixamo) directamente dentro del archivo GLB del personaje. 
+The `CharCtrl` constructor accepts an options object to customize physics constants, mobile buttons, and callbacks.
 
-Esto genera un **archivo GLB único** (`character_combined.glb`) que almacena tanto el modelo 3D como toda su biblioteca de animaciones, optimizado para ser cargado de un solo golpe de red.
+### Configuration Constants (`config`)
+| Option | Default | Description |
+|---|---|---|
+| `GRAV` | `22` | Acceleration due to gravity. |
+| `JUMP_PWR` | `9.5` | Upward velocity applied during jumps. |
+| `SPD_WALK` | `2.4` | Base walking speed. |
+| `SPD_JOG` | `3` | Base jogging speed. |
+| `SPD_SPRINT` | `6` | Sprinting speed. |
+| `SPD_CROUCH` | `2` | Speed while crouch-walking. |
+| `SPD_CROUCH_RUN` | `3.6`| Speed while crouch-sprinting. |
+| `ACCEL` | `14` | How quickly the character reaches target speed. |
+| `DECEL` | `16` | Friction deceleration rate when stopping. |
+| `ROT_SPD` | `50` | Yaw turning rotation interpolation speed. |
+| `AIR_CONTROL` | `false`| If true, players can steer the character mid-air. |
 
-### Características de `merge_animations.mjs`:
-*   **Corrección Cuaterniónica Automática**: Retargetea las rotaciones de los huesos mediante un cambio de base matemático en el espacio de mundo. Esto corrige la discrepancia de orientación de ejes entre la armadura de animación (Mixamo/Unity) y el modelo del personaje final.
-*   **Evita Deformación de Extremidades**: Descarta canales de escala (`IGNORE_SCALE`) en todos los huesos y las traslaciones en huesos no raíz (`IGNORE_NON_ROOT_TRANSLATION`), evitando que las extremidades se estiren o encojan de forma anormal al usar animaciones de personajes con proporciones distintas.
-*   **Compresión Draco**: Integra compresión geométrica Draco y remuestreo de curvas de animación (`resample`), lo que reduce radicalmente el tamaño del archivo GLB de salida en más de un 70%.
-*   **Generador de Manifiesto**: Crea de manera automática un archivo de texto plano contiguo (`character_combined_animations.txt`) con los nombres limpios de todas las animaciones disponibles, facilitando el desarrollo.
+### Mobile Touch Controls Mapping (`touch`)
+By default, touch integrations map floating screen button interactions to specific physical key codes:
+```javascript
+touch: {
+  zoneId: 'joystick-zone', // DOM ID of joystick drag area
+  ringId: 'joystick-ring', // DOM ID of joystick backdrop ring
+  knobId: 'joystick-knob', // DOM ID of sliding central knob
+  buttons: {
+    'btn-sprint': 'ShiftLeft',
+    'btn-jump': 'Space',
+    'btn-roll': 'KeyR',
+    'btn-crouch': 'ControlLeft',
+    'btn-act': 'KeyF'
+  }
+}
+```
 
-### Requisitos Previos:
-Debes tener instalado Node.js y las dependencias de optimización gráfica.
+---
+
+## 🔄 Animation Retargeting & Merging CLI (`merge_animations.mjs`)
+
+The framework includes [merge_animations.mjs](file:///d:/DEV/bjs_character_animation_controller_v2/js/merge_animations.mjs), a Node.js command-line utility used to combine external skeletal animations (such as those exported from Mixamo) directly into your base character GLB.
+
+This produces a **single consolidated GLB file** containing all the necessary animations, significantly reducing network request overhead.
+
+### Key Capabilities of the Script:
+*   **Automatic Quaternion Axis Correction**: Corrects the coordinate system differences between skeletal armatures (e.g., Mixamo/Unity) and the target character's rest pose using base-change transformations.
+*   **Proportional Scale Preservation**: Ignores scale channels (`IGNORE_SCALE`) and strips translations on non-root bones (`IGNORE_NON_ROOT_TRANSLATION`), preventing limb deformation when retargeting between characters of different sizes.
+*   **Draco Geometry Compresion**: Integrates Google Draco compression and curve resampling to reduce the final combined GLB file size by up to 70%.
+*   **Manifest Generation**: Automatically outputs a plain-text manifest file (`character_combined_animations.txt`) listing the clean names of all packaged animations.
+
+### Prerequisites:
+Install Node.js and the glTF-Transform pipeline dependencies:
 ```bash
 npm install fs-extra @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions draco3dgltf
 ```
 
-### Cómo ejecutar el Script:
-Crea un directorio de entrada `_input/` y coloca el modelo 3D del personaje (`character.glb`) y el archivo consolidado de animaciones (`animations.glb`). Luego ejecuta:
-
+### Usage Command:
+Place your base skeletal character GLB and your animations GLB in an input directory, then execute:
 ```bash
-node merge_animations.mjs -c _input/character.glb -a _input/animations.glb -o assets/character_combined.glb
+node js/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_combined.glb
 ```
 
-#### Parámetros del CLI:
-*   `-c`, `--character`: Ruta al archivo GLB del personaje base (con esqueleto).
-*   `-a`, `--animations`: Ruta al archivo GLB que contiene las pistas de animación.
-*   `-o`, `--output`: Ruta de salida para el archivo GLB único combinado.
+#### CLI Flags:
+*   `-c`, `--character`: Path to the source character mesh model.
+*   `-a`, `--animations`: Path to the source GLB containing target skeletal animations.
+*   `-o`, `--output`: Path where the consolidated GLB will be written.
 
-#### Micro-ajustes de Postura rápidos:
-Si los brazos del personaje quedan demasiado pegados al cuerpo o las piernas cruzadas debido a diferencias en el rigging de Mixamo, puedes editar las siguientes constantes al inicio de `merge_animations.mjs` antes de correr el comando:
-*   `ARM_SPREAD_ANGLE = -5`: Ajusta en grados la separación de los brazos del cuerpo.
-*   `LEG_SPREAD_ANGLE = 5`: Abre o cierra la separación de las piernas hacia los lados.
+#### Manual Rig Correction Parameters:
+If the character's limbs cross or stick too close to the body due to skeletal differences, open `merge_animations.mjs` and tweak the angle offsets:
+*   `ARM_SPREAD_ANGLE = -5`: Separation angle offset (in degrees) for the upper arms.
+*   `LEG_SPREAD_ANGLE = 5`: Outward spread angle offset (in degrees) for the upper legs.
