@@ -145,11 +145,35 @@ async function createDemoScene() {
   fill.diffuse = C3(0.4, 0.5, 1.0);
 
   // ── SHADOWS ────────────────────────────────────────────
-  const shadow = new BABYLON.ShadowGenerator(1024, sun); // Increased to 2048 for high-definition shadows
-  shadow.usePercentageCloserFiltering = true;
-  shadow.filteringQuality = BABYLON.ShadowGenerator.QUALITY_HIGH; // Soft PCF shadows (5x5 kernel)
-  shadow.bias = 0.01;
-  shadow.normalBias = 0.002;
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  // Optimize shadow map size for mobile devices
+  const shadowSize = isMobile ? 512 : 1024;
+  const shadow = new BABYLON.ShadowGenerator(shadowSize, sun);
+
+  if (isIOS) {
+    // iOS WebGL precision limits (mediump) cause severe shadow acne / striping with PCF.
+    // Blurred Exponential Shadow Maps (ESM) provide beautiful soft shadows and are immune to precision-based acne.
+    shadow.useBlurExponentialShadowMap = true;
+    shadow.useKernelBlur = true;
+    shadow.blurKernel = 16;
+    shadow.blurScale = 2;
+    shadow.depthScale = 25; // Controls the softness edge transition
+    shadow.bias = 0.005;
+  } else if (isMobile) {
+    // Android/other mobile: use optimized medium quality PCF
+    shadow.usePercentageCloserFiltering = true;
+    shadow.filteringQuality = BABYLON.ShadowGenerator.QUALITY_MEDIUM;
+    shadow.bias = 0.015;
+    shadow.normalBias = 0.005;
+  } else {
+    // Desktop: high quality PCF
+    shadow.usePercentageCloserFiltering = true;
+    shadow.filteringQuality = BABYLON.ShadowGenerator.QUALITY_HIGH;
+    shadow.bias = 0.01;
+    shadow.normalBias = 0.002;
+  }
 
   const colorBase = C3(0.57, 0.59, 0.52);
   // ── GROUND ─────────────────────────────────────────────
