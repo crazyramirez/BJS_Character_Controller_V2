@@ -106,8 +106,12 @@ async function createDemoScene() {
   scene.collisionsEnabled = true;
 
   // ── CAMERA ─────────────────────────────────────────────
-  const camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, Math.PI / 3.5, 8, V3(0, 1.2, 0), scene);
-  camera.lowerRadiusLimit = 1.5;
+  const isMobileCam = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const initialRadius = isMobileCam ? 5.2 : 8; // Zoom in closer on mobile for high detail
+  const initialBeta = isMobileCam ? Math.PI / 3.0 : Math.PI / 3.5; // Slightly lower perspective on mobile (dramatic hero angle)
+
+  const camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, initialBeta, initialRadius, V3(0, 1.2, 0), scene);
+  camera.lowerRadiusLimit = 1.2;
   camera.upperRadiusLimit = 18;
   camera.lowerBetaLimit = 0.05;
   camera.upperBetaLimit = Math.PI / 2.05;
