@@ -314,8 +314,8 @@ body.touch-device #mobile-ctrls {
   right: 20px;
   display: grid;
   grid-template-areas:
-    "crouch sprint spell"
-    "roll act jump";
+    "spell act crouch"
+    "roll sprint jump";
   gap: 12px;
   pointer-events: auto;
   align-items: center;
