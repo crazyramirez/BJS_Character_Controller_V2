@@ -525,11 +525,19 @@ class CharCtrl {
 
     this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
 
-    // Strict camera lock registered right before rendering (emulates a perfect TargetCamera follow)
     this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
       if (this.CAM_FOLLOW_LOCK) {
         this.camera.angularSensibilityX = 999999999; // Strict horizontal block
-        this.camera.alpha = -this.rotY - Math.PI / 2;
+
+        // Lerp camera alpha smoothly to prevent jittering and synchronize with camera target lerping
+        const dt = this.scene.getEngine().getDeltaTime() / 1000;
+        if (dt > 0 && dt < 0.1) {
+          const targetAlpha = -this.rotY - Math.PI / 2;
+          this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-14 * dt));
+        } else {
+          this.camera.alpha = -this.rotY - Math.PI / 2;
+        }
+
         // Lock camera zoom distance to maintain a constant distance
         if (this._originalRadius !== undefined) {
           this.camera.radius = this._originalRadius;
