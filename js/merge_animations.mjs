@@ -54,7 +54,7 @@ for (let i = 0; i < args.length; i++) {
   else if ((args[i] === '-o' || args[i] === '--output') && args[i + 1]) { outputPath = args[++i]; }
 }
 charPath = charPath || '../assets/character.glb';
-animPath = animPath || '../assets/animations.glb';
+animPath = animPath || './assets//animations.glb';
 outputPath = outputPath || '../assets/character_animated.glb';
 
 // ── Bone name mapping ───────────────────────────────────────────────────────
@@ -489,6 +489,18 @@ async function main() {
       resample(),
       dracoCompress(),
     );
+  }
+
+  // Flatten RootNode: promote children directly to scene
+  console.log('Flattening RootNode...');
+  for (const scene of charDoc.getRoot().listScenes()) {
+    for (const node of scene.listChildren()) {
+      if (node.getName() !== 'RootNode') continue;
+      for (const child of node.listChildren()) {
+        scene.addChild(child);
+      }
+      node.dispose();
+    }
   }
 
   // Write
