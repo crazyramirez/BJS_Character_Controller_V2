@@ -561,23 +561,56 @@ class CharCtrl {
 
     this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
 
+    // Track last known alpha/beta to compute mouse deltas each frame
+    this._lastCameraAlpha = this.camera.alpha;
+    this._lastCameraBeta = this.camera.beta;
+
     this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
       if (this.CAM_FOLLOW_LOCK) {
-        this.camera.angularSensibilityX = 999999999; // Strict horizontal block
+        // Restore full mouse sensitivity
+        this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
 
-        // Lerp camera alpha smoothly to prevent jittering and synchronize with camera target lerping
+        // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
+        const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
+        if (Math.abs(alphaDelta) > 0.0001) {
+          this.rotY -= alphaDelta;
+          this.root.rotation.y = this.rotY;
+        }
+
+        // Push camera alpha to match rotY (single source of truth)
         const dt = this.scene.getEngine().getDeltaTime() / 1000;
         if (dt > 0 && dt < 0.1) {
           const targetAlpha = -this.rotY - Math.PI / 2;
           this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-14 * dt));
-        } else {
-          this.camera.alpha = -this.rotY - Math.PI / 2;
+        }
+        this._lastCameraAlpha = this.camera.alpha;
+
+        // Apply mouse/touch pitch delta to CAM_FOLLOW_PITCH and sync HUD
+        // Only when pointer is actively dragging — ignore drift from camera target lerp
+        const betaDelta = this.camera.beta - this._lastCameraBeta;
+        if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
+          const lo = this.camera.lowerBetaLimit || 0.05;
+          const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
+          this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.CAM_FOLLOW_PITCH + betaDelta));
+          localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+          // Sync HUD slider and label
+          const slider = document.getElementById('slider-cam-pitch');
+          const label = document.getElementById('cam-pitch-val');
+          if (slider && label) {
+            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
+            slider.value = deg;
+            label.textContent = deg + '°';
+          }
         }
 
-        // Lock camera zoom distance to maintain configured follow distance
+        // Force radius to configured distance
         this.camera.radius = this.CAM_FOLLOW_DIST;
-        // Lock camera pitch angle to a slightly higher vertical overview angle
+        // Apply configured pitch
         this.camera.beta = this.CAM_FOLLOW_PITCH;
+        this._lastCameraBeta = this.camera.beta;
+      } else {
+        this._lastCameraAlpha = this.camera.alpha;
+        this._lastCameraBeta = this.camera.beta;
       }
     });
 
@@ -659,13 +692,33 @@ class CharCtrl {
     window.addEventListener('focus', this._boundReset);
     window.addEventListener('blur', this._boundReset);
 
-    // Double click on desktop/mouse to recenter camera
     const canvasEl = this.scene.getEngine().getRenderingCanvas();
     if (canvasEl) {
-      this._boundDblClick = () => {
-        this._recenterCamera();
-      };
+      // Double click to recenter camera
+      this._boundDblClick = () => { this._recenterCamera(); };
       canvasEl.addEventListener('dblclick', this._boundDblClick);
+
+      // Track pointer drag state to distinguish intentional pitch input from camera drift
+      this._pointerDragging = false;
+      this._boundPointerDown = () => { this._pointerDragging = true; };
+      this._boundPointerUp = () => { this._pointerDragging = false; };
+      canvasEl.addEventListener('pointerdown', this._boundPointerDown);
+      canvasEl.addEventListener('pointerup', this._boundPointerUp);
+      canvasEl.addEventListener('pointercancel', this._boundPointerUp);
+
+      // Scroll wheel updates CAM_FOLLOW_DIST when follow lock is active
+      this._boundWheel = (e) => {
+        if (!this.CAM_FOLLOW_LOCK) return;
+        const delta = e.deltaY > 0 ? 1 : -1;
+        const sensitivity = 0.5;
+        const newDist = Math.max(
+          this.camera.lowerRadiusLimit || 1.2,
+          Math.min(this.camera.upperRadiusLimit || 18, this.CAM_FOLLOW_DIST + delta * sensitivity)
+        );
+        this.CAM_FOLLOW_DIST = newDist;
+        localStorage.setItem('cam-follow-dist', newDist);
+      };
+      canvasEl.addEventListener('wheel', this._boundWheel, { passive: true });
     }
   }
 
@@ -828,10 +881,16 @@ class CharCtrl {
       this.dustPS.dispose();
     }
 
-    // 5. Remove canvas dblclick listener
+    // 5. Remove canvas listeners
     const canvasEl = this.scene.getEngine().getRenderingCanvas();
-    if (canvasEl && this._boundDblClick) {
-      canvasEl.removeEventListener('dblclick', this._boundDblClick);
+    if (canvasEl) {
+      if (this._boundDblClick) canvasEl.removeEventListener('dblclick', this._boundDblClick);
+      if (this._boundWheel) canvasEl.removeEventListener('wheel', this._boundWheel);
+      if (this._boundPointerDown) canvasEl.removeEventListener('pointerdown', this._boundPointerDown);
+      if (this._boundPointerUp) {
+        canvasEl.removeEventListener('pointerup', this._boundPointerUp);
+        canvasEl.removeEventListener('pointercancel', this._boundPointerUp);
+      }
     }
   }
 
@@ -1307,7 +1366,7 @@ class CharCtrl {
     if (canMove && !this.sitting) {
       if (this.CAM_FOLLOW_LOCK) {
         // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
-        // 1. A/D rotates the character directly
+        // 1. A/D rotates the character; observer pushes camera.alpha to match rotY
         if (inputX !== 0) {
           const steerSpeed = 2.8; // Radians per second
           this.rotY += inputX * steerSpeed * dt;
