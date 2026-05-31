@@ -706,3 +706,34 @@ body.touch-device .keys-grid {
   background-color: #00ff99;
   box-shadow: 0 0 6px rgba(0, 255, 153, 0.8);
 }
+
+/* ── INDEPENDENT HUD FPS OVERLAY ── */
+#hud-fps {
+  position: fixed;
+  top: 114px;
+  /* Perfectly aligned inside the HUD panel vertically below spd: X */
+  left: 32px;
+  font-size: 11px;
+  color: #00aaff;
+  font-family: monospace;
+  transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 120;
+  pointer-events: none;
+}
+
+/* Slide FPS to the top right corner with a premium glass border when the main HUD collapses */
+#hud.collapsed+#hud-fps {
+  top: 16px;
+  left: auto;
+  right: 16px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #00ff99;
+  background: rgba(8, 8, 16, 0.65);
+  border: 1px solid rgba(0, 255, 153, 0.25);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+}
