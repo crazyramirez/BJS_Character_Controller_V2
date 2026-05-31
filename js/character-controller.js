@@ -561,11 +561,35 @@ class CharCtrl {
 
     this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
 
-    // Track last known alpha/beta to compute mouse deltas each frame
+    // Track last known alpha/beta/radius to compute mouse/zoom deltas each frame
     this._lastCameraAlpha = this.camera.alpha;
     this._lastCameraBeta = this.camera.beta;
+    this._lastCameraRadius = this.camera.radius;
 
     this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
+      // Sync camera radius zoom updates (wheel, trackpad, pinch) back to CAM_FOLLOW_DIST and HUD
+      const now = performance.now();
+      const isWheelZooming = (now - (this._lastWheelTime || 0)) < 200;
+      const isTouchPinchZooming = this._pointerDragging && (this._activePointers ? this._activePointers.size >= 2 : false);
+      const isUserZooming = isWheelZooming || isTouchPinchZooming;
+
+      const radiusDelta = this.camera.radius - this._lastCameraRadius;
+      if (isUserZooming && Math.abs(radiusDelta) > 0.0001) {
+        const slider = document.getElementById('slider-cam-dist');
+        const minVal = slider ? parseFloat(slider.min) : 2;
+        const maxVal = slider ? parseFloat(slider.max) : 15;
+        this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
+        localStorage.setItem('cam-follow-dist', this.CAM_FOLLOW_DIST);
+
+        const label = document.getElementById('cam-dist-val');
+        if (slider) {
+          slider.value = this.CAM_FOLLOW_DIST;
+        }
+        if (label) {
+          label.textContent = this.CAM_FOLLOW_DIST.toFixed(1) + 'm';
+        }
+      }
+
       if (this.CAM_FOLLOW_LOCK) {
         // Restore full mouse sensitivity
         this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
@@ -612,6 +636,8 @@ class CharCtrl {
         this._lastCameraAlpha = this.camera.alpha;
         this._lastCameraBeta = this.camera.beta;
       }
+
+      this._lastCameraRadius = this.camera.radius;
     });
 
     // Start idle
@@ -699,24 +725,26 @@ class CharCtrl {
       canvasEl.addEventListener('dblclick', this._boundDblClick);
 
       // Track pointer drag state to distinguish intentional pitch input from camera drift
+      this._activePointers = new Set();
+      this._lastWheelTime = 0;
       this._pointerDragging = false;
-      this._boundPointerDown = () => { this._pointerDragging = true; };
-      this._boundPointerUp = () => { this._pointerDragging = false; };
+      this._boundPointerDown = (e) => {
+        this._activePointers.add(e.pointerId);
+        this._pointerDragging = true;
+      };
+      this._boundPointerUp = (e) => {
+        this._activePointers.delete(e.pointerId);
+        if (this._activePointers.size === 0) {
+          this._pointerDragging = false;
+        }
+      };
       canvasEl.addEventListener('pointerdown', this._boundPointerDown);
       canvasEl.addEventListener('pointerup', this._boundPointerUp);
       canvasEl.addEventListener('pointercancel', this._boundPointerUp);
 
-      // Scroll wheel updates CAM_FOLLOW_DIST when follow lock is active
-      this._boundWheel = (e) => {
-        if (!this.CAM_FOLLOW_LOCK) return;
-        const delta = e.deltaY > 0 ? 1 : -1;
-        const sensitivity = 0.5;
-        const newDist = Math.max(
-          this.camera.lowerRadiusLimit || 1.2,
-          Math.min(this.camera.upperRadiusLimit || 18, this.CAM_FOLLOW_DIST + delta * sensitivity)
-        );
-        this.CAM_FOLLOW_DIST = newDist;
-        localStorage.setItem('cam-follow-dist', newDist);
+      // Track scroll wheel activity
+      this._boundWheel = () => {
+        this._lastWheelTime = performance.now();
       };
       canvasEl.addEventListener('wheel', this._boundWheel, { passive: true });
     }
