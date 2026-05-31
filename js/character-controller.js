@@ -36,7 +36,8 @@ const DEFAULT_CHAR_CONFIG = {
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
     CAM_FOLLOW_LOCK: false, // If true, the camera is locked behind the character's facing direction
     CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
-    CAM_FOLLOW_DIST: 8.0 // Camera follow lock distance (radius in meters)
+    CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
+    DOUBLE_JUMP_ENABLED: true // If true, the character can perform a double jump in mid-air
   },
 
   // Mobile / Touch controls configuration
@@ -468,7 +469,8 @@ class CharCtrl {
     this.ACCEL = config.ACCEL;
     this.DECEL = config.DECEL;
     this.ROT_SPD = config.ROT_SPD;
-    this.AIR_CONTROL = config.AIR_CONTROL;
+    const savedAirControl = localStorage.getItem('air-control-enabled');
+    this.AIR_CONTROL = savedAirControl !== null ? (savedAirControl === 'true') : (config.AIR_CONTROL !== undefined ? config.AIR_CONTROL : false);
     // Load configurable states from localStorage, falling back to configuration block defaults
     const savedCamFollowLock = localStorage.getItem('cam-follow-lock');
     this.CAM_FOLLOW_LOCK = savedCamFollowLock !== null ? (savedCamFollowLock === 'true') : config.CAM_FOLLOW_LOCK;
@@ -484,6 +486,9 @@ class CharCtrl {
 
     const savedCamFollowDist = localStorage.getItem('cam-follow-dist');
     this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
+
+    const savedDoubleJump = localStorage.getItem('double-jump-enabled');
+    this.DOUBLE_JUMP_ENABLED = savedDoubleJump !== null ? (savedDoubleJump === 'true') : (config.DOUBLE_JUMP_ENABLED !== undefined ? config.DOUBLE_JUMP_ENABLED : true);
 
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
@@ -506,6 +511,8 @@ class CharCtrl {
     this.state = S.IDLE;
     this.stateT = 0;
     this.crouching = false;
+    this._forcedCrouchFromRoll = false;
+    this._hasDoubleJumped = false;
     this.sprinting = false;
     this.sitting = false;
     this.weapon = null; // null | 'spell'
@@ -534,8 +541,9 @@ class CharCtrl {
 
     // Capture initial dimensions for automatic crouch scaling
     this._standEllipsoidY = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
+    this._standEllipsoidWidth = this.root.ellipsoid ? this.root.ellipsoid.x : 0.35;
     this._standMeshY = this.visualMesh.position.y;
-    this._crouchEllipsoidY = 0.55;
+    this._crouchEllipsoidY = 0.65;
     this._lastY = this.root.position.y;
     this._highestAirborneY = this.root.position.y;
 
@@ -931,6 +939,7 @@ class CharCtrl {
         if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
+            this._forcedCrouchFromRoll = false;
             this._returnToLoco();
           } else {
             this._showCombo('CEILING BLOCKED');
@@ -938,6 +947,7 @@ class CharCtrl {
           }
         } else {
           this.crouching = true;
+          this._forcedCrouchFromRoll = false;
           this._returnToLoco();
         }
       }
@@ -953,23 +963,36 @@ class CharCtrl {
       }
     } else if (this._matchesAction(code, 'JUMP')) {
       if (this.grounded && !inAction && !this.sitting) {
-        if (this.crouching) {
+        if (this._isCeilingBlocked()) {
+          this._showCombo('CEILING BLOCKED');
+          setTimeout(() => this._hideCombo(), 1200);
+        } else if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
+            this._forcedCrouchFromRoll = false;
             this._jump();
-          } else {
-            this._showCombo('CEILING BLOCKED');
-            setTimeout(() => this._hideCombo(), 1200);
           }
         } else {
           this._jump();
         }
       } else if (!this.grounded && (this.state === S.JUMP_START || this.state === S.JUMP_LOOP)) {
-        this._rollOnLand = true;
+        if (this.DOUBLE_JUMP_ENABLED && !this._hasDoubleJumped) {
+          this._doubleJump();
+        } else {
+          this._rollOnLand = true;
+          this._showCombo('ROLL QUEUED');
+          setTimeout(() => this._hideCombo(), 1200);
+        }
       }
     } else if (this._matchesAction(code, 'ROLL')) {
-      if (this.grounded && !inAction && !this.sitting && !this._rollActive)
+      if (this.grounded && !inAction && !this.sitting && !this._rollActive) {
+        if (this.crouching && this._isCeilingBlocked()) {
+          this._showCombo('NO SPACE TO ROLL');
+          setTimeout(() => this._hideCombo(), 1200);
+          return;
+        }
         this._roll();
+      }
     } else if (this._matchesAction(code, 'PUNCH')) {
       if (this.grounded && !inAction && !this.weapon && !this.sitting)
         this._punch();
@@ -998,6 +1021,57 @@ class CharCtrl {
       if (this.state === S.JUMP_START && !this.grounded) {
         this._setState(S.JUMP_LOOP);
         this.anim.play('Jump_Loop', true, 0.25);
+      }
+    });
+  }
+
+  _doubleJump() {
+    this._hasDoubleJumped = true;
+    this.jumpVel = this.JUMP_PWR * 1.0;
+    this._setState(S.JUMP_START);
+
+    // Update takeoff momentum (moveDir) at the moment of double jump to respect new input direction!
+    let inputX = 0, inputZ = 0;
+    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
+    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
+    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
+    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
+    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
+      inputX = this.touchVector.x; inputZ = this.touchVector.y;
+    }
+
+    if (this.CAM_FOLLOW_LOCK) {
+      if (inputZ !== 0) {
+        let newDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+        if (inputZ < 0) newDir.scaleInPlace(-1);
+        this.moveDir = newDir;
+        this.speed = Math.max(this.speed, this.SPD_WALK);
+      }
+    } else {
+      const camFwd = this._camForward();
+      const camRgt = this._camRight(camFwd);
+      let newDir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+      if (newDir.length() > 0.01) {
+        newDir.normalize();
+        this.moveDir = newDir;
+        this.speed = Math.max(this.speed, this.SPD_WALK);
+      }
+    }
+
+    this.targetScale.set(1.15, 0.78, 1.15);
+    setTimeout(() => {
+      if (!this.grounded) {
+        this.targetScale.set(0.92, 1.14, 0.92);
+      }
+    }, 100);
+
+    this._showCombo('DOUBLE JUMP');
+    setTimeout(() => this._hideCombo(), 1200);
+
+    this.anim.play('Jump_Start', false, 0.15, () => {
+      if (this.state === S.JUMP_START && !this.grounded) {
+        this._setState(S.JUMP_LOOP);
+        this.anim.play('Jump_Loop', true, 0.2);
       }
     });
   }
@@ -1031,8 +1105,15 @@ class CharCtrl {
 
     // Reliable 1-second timer to exit the roll state and return to locomotion
     setTimeout(() => {
-      if (this.state !== S.ROLL) return;
       this._rollActive = false;
+      if (this.state !== S.ROLL) return;
+
+      // If we are under a low obstacle/ceiling when the roll ends, automatically force crouching
+      if (this._isCeilingBlocked()) {
+        this.crouching = true;
+        this._forcedCrouchFromRoll = true;
+      }
+
       const rollAg = this.anim.g.get('Roll');
       if (rollAg) {
         this.anim.activeTransitions = this.anim.activeTransitions.filter(t => {
@@ -1236,21 +1317,25 @@ class CharCtrl {
     return hitAny;
   }
 
-  _canUncrouch() {
-    if (!this.crouching) return true;
-
-    const rayStart = this.root.position.clone(); // Start at capsule center (Y = 0 local)
+  _isCeilingBlocked() {
+    // Start raycast at the bottom of the feet (ground level) instead of the capsule center
+    // to avoid starting the ray inside/above a low ceiling, which would fail to detect it.
+    const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.9, 0));
     const upDir = new BABYLON.Vector3(0, 1, 0);
-    // Ray length needs to reach the standing head Y (0.96) plus a tiny 0.1m clearance margin
-    const rayLen = this._standEllipsoidY + 0.1;
+    // Ray length needs to reach the full standing height (2 * ellipsoidY = 1.92m) plus clearance margin
+    const rayLen = (this._standEllipsoidY * 2.0) + 0.1;
 
     const ray = new BABYLON.Ray(rayStart, upDir, rayLen);
     const pick = this.scene.pickWithRay(ray, (mesh) => {
       return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
     });
 
-    // If it hits a ceiling mesh, we cannot uncrouch!
-    return !(pick && pick.hit);
+    return !!(pick && pick.hit);
+  }
+
+  _canUncrouch() {
+    if (!this.crouching) return true;
+    return !this._isCeilingBlocked();
   }
 
   // ── UPDATE ─────────────────────────────────────────────
@@ -1258,6 +1343,15 @@ class CharCtrl {
     const dt = this.scene.getEngine().getDeltaTime() / 1000;
     if (dt <= 0 || dt > 0.1) return;
     this.stateT += dt;
+
+    // Automatic uncrouch if we were forced to crouch after a roll and are now clear of obstacles
+    if (this._forcedCrouchFromRoll && this.crouching) {
+      if (!this._isCeilingBlocked()) {
+        this.crouching = false;
+        this._forcedCrouchFromRoll = false;
+        this._returnToLoco(0.2);
+      }
+    }
 
     // Input Gathering (Supports Keyboard & Mobile Analog Touch) - Calculated early for landing checks
     let inputX = 0;
@@ -1289,6 +1383,7 @@ class CharCtrl {
     let landingTriggered = false;
     if (this.grounded && !wasGrounded) {
       landingTriggered = true;
+      this._hasDoubleJumped = false; // Reset double jump!
       const fallHeight = this._highestAirborneY - this.root.position.y;
       if (this.state === S.ROLL) {
         this._emitLandingDust();
@@ -1369,14 +1464,16 @@ class CharCtrl {
       }
     }
 
-    // ── PROCESS CROUCHING COLLISION HEIGHT ADJUSTMENTS ─────
+    // ── PROCESS CROUCHING / ROLLING COLLISION HEIGHT ADJUSTMENTS ─────
     // If we are performing a standing action (like spell casting or interacting) while crouching,
     // we temporarily restore standing collision bounds and target height so that the character stands properly.
     const isTempStandingAction = inAction && (this.state === S.SPELL_ENTER || this.state === S.SPELL_SHOOT || this.state === S.SPELL_EXIT || this.state === S.INTERACT);
-    const useCrouchHeight = this.crouching && !isTempStandingAction;
+    const useCrouchHeight = (this.crouching && !isTempStandingAction) || this.state === S.ROLL;
 
     const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
     const targetOffset = useCrouchHeight ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
+    // Make the ellipsoid slightly wider when sprinting (from 0.35 to 0.65) so the head doesn't clip into low ceilings/walls when leaning forward at high speeds
+    const targetEllipsoidWidth = (this.state === S.SPRINT) ? 0.65 : this._standEllipsoidWidth;
 
     if (isTempStandingAction) {
       this.targetLocalY = this._standMeshY;
@@ -1386,6 +1483,10 @@ class CharCtrl {
     if (this.root.ellipsoid) {
       this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-4 * dt));
       this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
+
+      const newWidth = lerp(this.root.ellipsoid.x, targetEllipsoidWidth, 1 - Math.exp(-4 * dt));
+      this.root.ellipsoid.x = newWidth;
+      this.root.ellipsoid.z = newWidth;
     }
 
     // ── PROCESS HORIZONTAL PHYSICS (LOCOMOTION) ────────────
@@ -1394,36 +1495,41 @@ class CharCtrl {
     const canMove = !inAction || this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.JUMP_LAND;
     if (canMove && !this.sitting) {
       if (this.CAM_FOLLOW_LOCK) {
-        // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
-        // 1. A/D rotates the character; observer pushes camera.alpha to match rotY
-        if (inputX !== 0) {
-          const steerSpeed = 2.8; // Radians per second
-          this.rotY += inputX * steerSpeed * dt;
-          this.root.rotation.y = this.rotY;
-        }
-
-        // 2. W/S moves forward/backward relative to character heading
-        if (inputZ !== 0) {
-          dir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
-          if (inputZ < 0) dir.scaleInPlace(-1);
-        }
-
-        // 3. Direct Target Speed (only W/S drives physical movement speed)
-        let tgt = 0;
-        if (inputZ !== 0) {
-          if (this.crouching) {
-            tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
-          } else if (isSprinting) {
-            tgt = this.SPD_SPRINT;
-          } else {
-            tgt = this.SPD_WALK;
+        if (!this.grounded && !this.AIR_CONTROL) {
+          // Zero steering in mid-air under follow lock: keep momentum direction and takeoff speed
+          dir = this.moveDir;
+        } else {
+          // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
+          // 1. A/D rotates the character; observer pushes camera.alpha to match rotY
+          if (inputX !== 0) {
+            const steerSpeed = 2.8; // Radians per second
+            this.rotY += inputX * steerSpeed * dt;
+            this.root.rotation.y = this.rotY;
           }
-          tgt *= Math.abs(inputZ);
-        }
 
-        const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
-        this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
-        if (this.speed < 0.05) this.speed = 0;
+          // 2. W/S moves forward/backward relative to character heading
+          if (inputZ !== 0) {
+            dir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+            if (inputZ < 0) dir.scaleInPlace(-1);
+          }
+
+          // 3. Direct Target Speed (only W/S drives physical movement speed)
+          let tgt = 0;
+          if (inputZ !== 0) {
+            if (this.crouching) {
+              tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
+            } else if (isSprinting) {
+              tgt = this.SPD_SPRINT;
+            } else {
+              tgt = this.SPD_WALK;
+            }
+            tgt *= Math.abs(inputZ);
+          }
+
+          const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
+          this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
+          if (this.speed < 0.05) this.speed = 0;
+        }
       } else {
         // ── STANDARD CAMERA-RELATIVE LOCOMOTION ────────────
         // Compute camera-relative direction

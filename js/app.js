@@ -297,6 +297,24 @@ async function createDemoScene() {
     });
   }
 
+  const toggleDoubleJump = $('toggle-double-jump');
+  if (toggleDoubleJump) {
+    toggleDoubleJump.checked = charCtrl.DOUBLE_JUMP_ENABLED;
+    toggleDoubleJump.addEventListener('change', (e) => {
+      charCtrl.DOUBLE_JUMP_ENABLED = e.target.checked;
+      localStorage.setItem('double-jump-enabled', e.target.checked);
+    });
+  }
+
+  const toggleAirControl = $('toggle-air-control');
+  if (toggleAirControl) {
+    toggleAirControl.checked = charCtrl.AIR_CONTROL;
+    toggleAirControl.addEventListener('change', (e) => {
+      charCtrl.AIR_CONTROL = e.target.checked;
+      localStorage.setItem('air-control-enabled', e.target.checked);
+    });
+  }
+
   if (sliderFovMax && fovMaxVal) {
     sliderFovMax.value = charCtrl.DYNAMIC_FOV_MAX;
     fovMaxVal.textContent = charCtrl.DYNAMIC_FOV_MAX.toFixed(2);
@@ -391,3 +409,17 @@ if (toggle && hud) {
 }
 
 window.addEventListener('resize', () => engine.resize());
+
+// ── HUD FOCUS RELEASE (BLUR) CONTROLLER ──────────────────
+// Prevents Spacebar (Jump) from triggering switches or range inputs in the HUD after click.
+const interactiveElements = document.querySelectorAll('#hud input, #hud button, #hud-toggle');
+interactiveElements.forEach(el => {
+  const releaseFocus = () => {
+    el.blur();
+    const canvasEl = $('c');
+    if (canvasEl) canvasEl.focus();
+  };
+  el.addEventListener('click', releaseFocus);
+  el.addEventListener('change', releaseFocus);
+  el.addEventListener('input', releaseFocus);
+});
