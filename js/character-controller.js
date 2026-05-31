@@ -439,12 +439,19 @@ class CharCtrl {
     this.DECEL = config.DECEL;
     this.ROT_SPD = config.ROT_SPD;
     this.AIR_CONTROL = config.AIR_CONTROL;
-    this.DYNAMIC_FOV = config.DYNAMIC_FOV;
-    this.DYNAMIC_FOV_MAX = config.DYNAMIC_FOV_MAX;
-    this.CAM_FOLLOW_LOCK = config.CAM_FOLLOW_LOCK;
+    // Load configurable states from localStorage, falling back to configuration block defaults
+    const savedCamFollowLock = localStorage.getItem('cam-follow-lock');
+    this.CAM_FOLLOW_LOCK = savedCamFollowLock !== null ? (savedCamFollowLock === 'true') : config.CAM_FOLLOW_LOCK;
+
+    const savedDynamicFov = localStorage.getItem('dynamic-fov');
+    this.DYNAMIC_FOV = savedDynamicFov !== null ? (savedDynamicFov === 'true') : config.DYNAMIC_FOV;
+
+    const savedDynamicFovMax = localStorage.getItem('dynamic-fov-max');
+    this.DYNAMIC_FOV_MAX = savedDynamicFovMax !== null ? parseFloat(savedDynamicFovMax) : config.DYNAMIC_FOV_MAX;
+
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
-    console.log("[CharCtrl] CAM_FOLLOW_LOCK status loaded:", this.CAM_FOLLOW_LOCK);
+    console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX);
 
     // Mobile / Touch controls configuration
     this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});

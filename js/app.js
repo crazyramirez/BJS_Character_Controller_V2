@@ -281,6 +281,7 @@ async function createDemoScene() {
     toggleCamLock.checked = charCtrl.CAM_FOLLOW_LOCK;
     toggleCamLock.addEventListener('change', (e) => {
       charCtrl.CAM_FOLLOW_LOCK = e.target.checked;
+      localStorage.setItem('cam-follow-lock', e.target.checked);
     });
   }
 
@@ -292,6 +293,7 @@ async function createDemoScene() {
     toggleDynamicFov.checked = charCtrl.DYNAMIC_FOV;
     toggleDynamicFov.addEventListener('change', (e) => {
       charCtrl.DYNAMIC_FOV = e.target.checked;
+      localStorage.setItem('dynamic-fov', e.target.checked);
     });
   }
 
@@ -302,6 +304,7 @@ async function createDemoScene() {
       const val = parseFloat(e.target.value);
       charCtrl.DYNAMIC_FOV_MAX = val;
       fovMaxVal.textContent = val.toFixed(2);
+      localStorage.setItem('dynamic-fov-max', val);
     });
   }
 
