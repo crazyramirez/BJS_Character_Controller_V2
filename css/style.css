@@ -258,8 +258,8 @@ body.touch-device #mobile-ctrls {
 
 #joystick-zone {
   position: absolute;
-  bottom: 10px;
-  left: 10px;
+  bottom: 15px;
+  left: 15px;
   width: 140px;
   height: 140px;
   display: flex;
@@ -695,13 +695,13 @@ body.touch-device .keys-grid {
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.switch-toggle input:checked + .slider-toggle {
+.switch-toggle input:checked+.slider-toggle {
   background-color: rgba(0, 255, 153, 0.15);
   border-color: rgba(0, 255, 153, 0.4);
   box-shadow: 0 0 10px rgba(0, 255, 153, 0.15);
 }
 
-.switch-toggle input:checked + .slider-toggle:before {
+.switch-toggle input:checked+.slider-toggle:before {
   transform: translateX(12px);
   background-color: #00ff99;
   box-shadow: 0 0 6px rgba(0, 255, 153, 0.8);

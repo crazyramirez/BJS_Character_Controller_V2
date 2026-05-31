@@ -1592,6 +1592,12 @@ class CharCtrl {
       }
     }
 
+    // Update FPS inside the HUD
+    const hudFps = document.getElementById('hud-fps');
+    if (hudFps) {
+      hudFps.textContent = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
+    }
+
     // Update active visual state for mobile toggle buttons
     if (this.isTouch) {
       const btnCrouch = document.getElementById('btn-crouch');
