@@ -599,6 +599,7 @@ class CharCtrl {
         if (Math.abs(alphaDelta) > 0.0001) {
           this.rotY -= alphaDelta;
           this.root.rotation.y = this.rotY;
+          this._lastYawTurnTime = performance.now();
         }
 
         // Push camera alpha to match rotY (single source of truth)
@@ -1780,8 +1781,11 @@ class CharCtrl {
       return;
     }
 
-    // Detect turning in place under follow lock
-    const turning = this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') || (this.isTouch && Math.abs(this.touchVector.x) > 0.15);
+    // Detect turning in place under follow lock (including manual camera rotation via mouse/trackpad/touch)
+    const isMouseOrTouchTurning = (performance.now() - (this._lastYawTurnTime || 0)) < 100;
+    const turning = this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
+      (this.isTouch && Math.abs(this.touchVector.x) > 0.15) ||
+      isMouseOrTouchTurning;
 
     if (this.CAM_FOLLOW_LOCK && turning && !hasMove) {
       if (this.state !== S.WALK || this.anim.curName !== 'Locomotion') {
