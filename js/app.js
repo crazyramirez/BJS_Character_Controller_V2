@@ -308,6 +308,38 @@ async function createDemoScene() {
     });
   }
 
+  const sliderCamPitch = $('slider-cam-pitch');
+  const camPitchVal = $('cam-pitch-val');
+  if (sliderCamPitch && camPitchVal) {
+    const initialDeg = Math.round(charCtrl.CAM_FOLLOW_PITCH * 180 / Math.PI);
+    sliderCamPitch.value = initialDeg;
+    camPitchVal.textContent = initialDeg + '°';
+    sliderCamPitch.addEventListener('input', (e) => {
+      const deg = parseInt(e.target.value);
+      const rad = deg * Math.PI / 180;
+      charCtrl.CAM_FOLLOW_PITCH = rad;
+      camPitchVal.textContent = deg + '°';
+      localStorage.setItem('cam-follow-pitch', rad);
+    });
+  }
+
+  const sliderCamDist = $('slider-cam-dist');
+  const camDistVal = $('cam-dist-val');
+  if (sliderCamDist && camDistVal) {
+    sliderCamDist.value = charCtrl.CAM_FOLLOW_DIST;
+    camDistVal.textContent = charCtrl.CAM_FOLLOW_DIST.toFixed(1) + 'm';
+    sliderCamDist.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      charCtrl.CAM_FOLLOW_DIST = val;
+      camDistVal.textContent = val.toFixed(1) + 'm';
+      localStorage.setItem('cam-follow-dist', val);
+      // Immediately update camera radius if follow lock is enabled so the user sees the adjustment instantly
+      if (charCtrl.CAM_FOLLOW_LOCK) {
+        camera.radius = val;
+      }
+    });
+  }
+
   setLoad(100, 'Ready!');
   setTimeout(hideLoad, 550);
 

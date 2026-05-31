@@ -55,12 +55,32 @@
         <div class="speed-val" id="hud-speed"></div>
         <!-- HUD Settings Toggles -->
         <div style="margin-top: 26px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08);">
-          <div class="hud-toggle-container" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+          <!-- Slider for CAM_FOLLOW_DIST -->
+          <div class="weight-container" id="cam-dist-container" style="margin-bottom: 8px;">
+            <div class="weight-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="weight-label" style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Cam Follow Distance</span>
+              <span class="weight-val" id="cam-dist-val" style="font-size: 11px; font-weight: bold; color: #00ff99;">8.0m</span>
+            </div>
+            <div class="slider-wrapper" style="display: flex; align-items: center;">
+              <input type="range" id="slider-cam-dist" min="2" max="15" step="0.5" value="8" class="weight-slider" style="width: 100%; pointer-events: auto;">
+            </div>
+          </div>
+          <div class="hud-toggle-container" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
             <span>Lock Camera (Follow)</span>
             <label class="switch-toggle">
               <input type="checkbox" id="toggle-cam-lock">
               <span class="slider-toggle"></span>
             </label>
+          </div>
+          <!-- Slider for CAM_FOLLOW_PITCH -->
+          <div class="weight-container" id="cam-pitch-container" style="margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; margin-bottom: 8px;">
+            <div class="weight-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="weight-label" style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Cam Follow Pitch</span>
+              <span class="weight-val" id="cam-pitch-val" style="font-size: 11px; font-weight: bold; color: #00ff99;">60°</span>
+            </div>
+            <div class="slider-wrapper" style="display: flex; align-items: center;">
+              <input type="range" id="slider-cam-pitch" min="15" max="80" step="1" value="60" class="weight-slider" style="width: 100%; pointer-events: auto;">
+            </div>
           </div>
           <div class="hud-toggle-container" style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff;">
             <span>Dynamic FOV</span>
@@ -72,7 +92,7 @@
           <!-- Slider for DYNAMIC_FOV_MAX -->
           <div class="weight-container" id="fov-max-container" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
             <div class="weight-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span class="weight-label" style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Max FOV Intensity</span>
+              <span class="weight-label" style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Dynamic FOV Intensity</span>
               <span class="weight-val" id="fov-max-val" style="font-size: 11px; font-weight: bold; color: #00ff99;">0.10</span>
             </div>
             <div class="slider-wrapper" style="display: flex; align-items: center;">

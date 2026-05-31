@@ -34,7 +34,9 @@ const DEFAULT_CHAR_CONFIG = {
     AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
-    CAM_FOLLOW_LOCK: false // If true, the camera is locked behind the character's facing direction
+    CAM_FOLLOW_LOCK: false, // If true, the camera is locked behind the character's facing direction
+    CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
+    CAM_FOLLOW_DIST: 8.0 // Camera follow lock distance (radius in meters)
   },
 
   // Mobile / Touch controls configuration
@@ -477,9 +479,15 @@ class CharCtrl {
     const savedDynamicFovMax = localStorage.getItem('dynamic-fov-max');
     this.DYNAMIC_FOV_MAX = savedDynamicFovMax !== null ? parseFloat(savedDynamicFovMax) : config.DYNAMIC_FOV_MAX;
 
+    const savedCamFollowPitch = localStorage.getItem('cam-follow-pitch');
+    this.CAM_FOLLOW_PITCH = savedCamFollowPitch !== null ? parseFloat(savedCamFollowPitch) : (config.CAM_FOLLOW_PITCH !== undefined ? config.CAM_FOLLOW_PITCH : Math.PI / 3.0);
+
+    const savedCamFollowDist = localStorage.getItem('cam-follow-dist');
+    this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
+
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
-    console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX);
+    console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
     // Mobile / Touch controls configuration
     this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});
@@ -566,12 +574,10 @@ class CharCtrl {
           this.camera.alpha = -this.rotY - Math.PI / 2;
         }
 
-        // Lock camera zoom distance to maintain a constant distance
-        if (this._originalRadius !== undefined) {
-          this.camera.radius = this._originalRadius;
-        }
-        // Lock camera pitch angle to a slightly higher vertical overview angle (60 degrees)
-        this.camera.beta = Math.PI / 3.0;
+        // Lock camera zoom distance to maintain configured follow distance
+        this.camera.radius = this.CAM_FOLLOW_DIST;
+        // Lock camera pitch angle to a slightly higher vertical overview angle
+        this.camera.beta = this.CAM_FOLLOW_PITCH;
       }
     });
 
