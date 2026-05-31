@@ -161,6 +161,34 @@ class LocoBlendGroup {
     } else {
       this.speed = speed;
     }
+
+    // Dynamically adjust Walk_Loop and Sprint_Loop speedRatio
+    const walk = this.anim.g.get('Walk_Loop');
+    const sprint = this.anim.g.get('Sprint_Loop');
+    const char = this.anim.charCtrl;
+
+    if (char) {
+      const backward = char._isPressed('MOVE_BACKWARD') || (char.isTouch && char.touchVector.y < -0.2);
+      const sign = (char.CAM_FOLLOW_LOCK && backward) ? -1 : 1;
+
+      if (walk) {
+        if (char.CAM_FOLLOW_LOCK && char.state === S.WALK && char.speed < 0.1) {
+          // Turning in place shuffle speed
+          walk.speedRatio = 2.2;
+        } else {
+          // Normal walking speed ratio (with sign for backwards movement)
+          const spdWalk = char.SPD_WALK;
+          walk.speedRatio = sign * spdWalk * (1.5 / 2.4);
+        }
+      }
+
+      if (sprint) {
+        // Normal sprinting speed ratio (with sign for backwards movement)
+        const spdSprint = char.SPD_SPRINT;
+        sprint.speedRatio = sign * spdSprint * (1.1 / 6.0);
+      }
+    }
+
     this.updateWeights();
   }
 
@@ -1632,7 +1660,12 @@ class CharCtrl {
       // Sinks 8 cm relative to rest pose for a smooth visual crouch down
       this.targetLocalY = this._standMeshY - 0.08;
 
-      const speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
+      let speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
+
+      // Invert crouch animation direction when moving backward under follow lock
+      if (this.CAM_FOLLOW_LOCK && backward) {
+        speedRatio = -speedRatio;
+      }
 
       if (this.state !== want) {
         this._setState(want);
@@ -1651,6 +1684,24 @@ class CharCtrl {
     }
 
     if (this.weapon) {
+      return;
+    }
+
+    // Detect turning in place under follow lock
+    const turning = this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') || (this.isTouch && Math.abs(this.touchVector.x) > 0.15);
+
+    if (this.CAM_FOLLOW_LOCK && turning && !hasMove) {
+      if (this.state !== S.WALK || this.anim.curName !== 'Locomotion') {
+        this._setState(S.WALK);
+      }
+      this.anim.play('Locomotion', true, blend);
+      const loco = this.anim.g.get('Locomotion');
+      if (loco) {
+        // We want a virtual walk weight of 0.15 when turning in place.
+        // wWalk = v / spdWalk = 0.15 => v = 0.15 * spdWalk
+        const spdWalk = this.SPD_WALK;
+        loco.updateSpeed(0.2 * spdWalk);
+      }
       return;
     }
 
