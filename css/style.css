@@ -650,3 +650,59 @@ body.touch-device .keys-grid {
 #hud.collapsed #hud-toggle .toggle-icon {
   transform: rotate(180deg);
 }
+
+/* ── HUD SETTINGS TOGGLES (SWITCHES) ── */
+.hud-toggle-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.switch-toggle {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 16px;
+  pointer-events: auto;
+}
+
+.switch-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider-toggle {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.slider-toggle:before {
+  position: absolute;
+  content: "";
+  height: 10px;
+  width: 10px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #8c8c9c;
+  border-radius: 50%;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.switch-toggle input:checked + .slider-toggle {
+  background-color: rgba(0, 255, 153, 0.15);
+  border-color: rgba(0, 255, 153, 0.4);
+  box-shadow: 0 0 10px rgba(0, 255, 153, 0.15);
+}
+
+.switch-toggle input:checked + .slider-toggle:before {
+  transform: translateX(12px);
+  background-color: #00ff99;
+  box-shadow: 0 0 6px rgba(0, 255, 153, 0.8);
+}

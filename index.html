@@ -53,6 +53,33 @@
         <div class="anim-val" id="hud-anim">—</div>
         <div class="weapon-val" id="hud-weapon"></div>
         <div class="speed-val" id="hud-speed"></div>
+        <!-- HUD Settings Toggles -->
+        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08);">
+          <div class="hud-toggle-container" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Lock Camera (Follow)</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-cam-lock">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+          <div class="hud-toggle-container" style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff;">
+            <span>Dynamic FOV</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-dynamic-fov" checked>
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+          <!-- Slider for DYNAMIC_FOV_MAX -->
+          <div class="weight-container" id="fov-max-container" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+            <div class="weight-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="weight-label" style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Max FOV Intensity</span>
+              <span class="weight-val" id="fov-max-val" style="font-size: 11px; font-weight: bold; color: #00ff99;">0.10</span>
+            </div>
+            <div class="slider-wrapper" style="display: flex; align-items: center;">
+              <input type="range" id="slider-fov-max" min="0" max="1" step="0.05" value="0.10" class="weight-slider" style="width: 100%; pointer-events: auto;">
+            </div>
+          </div>
+        </div>
         <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: #aeb4ff; font-weight: 500;">
           <span style="color: #00ff99; font-weight: bold; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;">Tip:</span> Press <span style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">Space</span> in air to queue a <span style="color:#ffcc00; font-weight: 600;">Double Jump (Landing Roll)</span>
         </div>

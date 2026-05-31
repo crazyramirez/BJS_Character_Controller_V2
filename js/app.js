@@ -275,6 +275,36 @@ async function createDemoScene() {
   // ── LOAD CHARACTER ─────────────────────────────────────
   const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera);
 
+  // Hook up HUD setting toggles dynamically
+  const toggleCamLock = $('toggle-cam-lock');
+  if (toggleCamLock) {
+    toggleCamLock.checked = charCtrl.CAM_FOLLOW_LOCK;
+    toggleCamLock.addEventListener('change', (e) => {
+      charCtrl.CAM_FOLLOW_LOCK = e.target.checked;
+    });
+  }
+
+  const toggleDynamicFov = $('toggle-dynamic-fov');
+  const sliderFovMax = $('slider-fov-max');
+  const fovMaxVal = $('fov-max-val');
+
+  if (toggleDynamicFov) {
+    toggleDynamicFov.checked = charCtrl.DYNAMIC_FOV;
+    toggleDynamicFov.addEventListener('change', (e) => {
+      charCtrl.DYNAMIC_FOV = e.target.checked;
+    });
+  }
+
+  if (sliderFovMax && fovMaxVal) {
+    sliderFovMax.value = charCtrl.DYNAMIC_FOV_MAX;
+    fovMaxVal.textContent = charCtrl.DYNAMIC_FOV_MAX.toFixed(2);
+    sliderFovMax.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      charCtrl.DYNAMIC_FOV_MAX = val;
+      fovMaxVal.textContent = val.toFixed(2);
+    });
+  }
+
   setLoad(100, 'Ready!');
   setTimeout(hideLoad, 550);
 

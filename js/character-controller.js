@@ -33,7 +33,8 @@ const DEFAULT_CHAR_CONFIG = {
     ROT_SPD: 40,          // Character yaw rotation speed responsiveness
     AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
-    DYNAMIC_FOV_MAX: 0.10 // Maximum camera FOV expansion amount added at full sprint speed
+    DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
+    CAM_FOLLOW_LOCK: false // If true, the camera is locked behind the character's facing direction
   },
 
   // Mobile / Touch controls configuration
@@ -440,6 +441,10 @@ class CharCtrl {
     this.AIR_CONTROL = config.AIR_CONTROL;
     this.DYNAMIC_FOV = config.DYNAMIC_FOV;
     this.DYNAMIC_FOV_MAX = config.DYNAMIC_FOV_MAX;
+    this.CAM_FOLLOW_LOCK = config.CAM_FOLLOW_LOCK;
+    this._originalSensibilityX = this.camera.angularSensibilityX;
+    this._originalRadius = this.camera.radius;
+    console.log("[CharCtrl] CAM_FOLLOW_LOCK status loaded:", this.CAM_FOLLOW_LOCK);
 
     // Mobile / Touch controls configuration
     this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});
@@ -512,6 +517,20 @@ class CharCtrl {
     }
 
     this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
+
+    // Strict camera lock registered right before rendering (emulates a perfect TargetCamera follow)
+    this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
+      if (this.CAM_FOLLOW_LOCK) {
+        this.camera.angularSensibilityX = 999999999; // Strict horizontal block
+        this.camera.alpha = -this.rotY - Math.PI / 2;
+        // Lock camera zoom distance to maintain a constant distance
+        if (this._originalRadius !== undefined) {
+          this.camera.radius = this._originalRadius;
+        }
+        // Lock camera pitch angle to a slightly higher vertical overview angle (60 degrees)
+        this.camera.beta = Math.PI / 3.0;
+      }
+    });
 
     // Start idle
     this._idle();
@@ -738,9 +757,12 @@ class CharCtrl {
       window.removeEventListener('blur', this._boundReset);
     }
 
-    // 2. Remove update observer from scene
+    // 2. Remove update and camera lock observers from scene
     if (this._updateObserver) {
       this.scene.onBeforeRenderObservable.remove(this._updateObserver);
+    }
+    if (this._cameraLockObserver) {
+      this.scene.onBeforeCameraRenderObservable.remove(this._cameraLockObserver);
     }
 
     // 3. Remove touch and button event listeners
@@ -1234,42 +1256,24 @@ class CharCtrl {
 
     const canMove = !inAction || this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.JUMP_LAND;
     if (canMove && !this.sitting) {
-      // Compute camera-relative direction
-      const camFwd = this._camForward();
-      const camRgt = this._camRight(camFwd);
-
-      if (!this.grounded) {
-        // Air control logic:
-        if (this.AIR_CONTROL) {
-          // Full steering in mid-air:
-          if (hasMove) {
-            dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
-            if (dir.length() > 0.01) dir.normalize();
-          }
-
-          let tgtSpeed = this.speed;
-          if (hasMove) {
-            let idealTgt = isSprinting ? this.SPD_SPRINT : this.SPD_WALK;
-            idealTgt *= inputMag;
-            tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
-          } else {
-            tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
-          }
-          this.speed = tgtSpeed;
-        } else {
-          // Zero steering in mid-air: keep momentum direction and takeoff speed
-          dir = this.moveDir;
-        }
-      } else {
-        // Standard grounded logic:
-        if (hasMove) {
-          dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
-          if (dir.length() > 0.01) dir.normalize();
+      if (this.CAM_FOLLOW_LOCK) {
+        // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
+        // 1. A/D rotates the character directly
+        if (inputX !== 0) {
+          const steerSpeed = 2.8; // Radians per second
+          this.rotY += inputX * steerSpeed * dt;
+          this.root.rotation.y = this.rotY;
         }
 
-        // Target Speed calculation
+        // 2. W/S moves forward/backward relative to character heading
+        if (inputZ !== 0) {
+          dir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+          if (inputZ < 0) dir.scaleInPlace(-1);
+        }
+
+        // 3. Direct Target Speed (only W/S drives physical movement speed)
         let tgt = 0;
-        if (hasMove) {
+        if (inputZ !== 0) {
           if (this.crouching) {
             tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
           } else if (isSprinting) {
@@ -1277,31 +1281,83 @@ class CharCtrl {
           } else {
             tgt = this.SPD_WALK;
           }
-
-          // Analog speed modifier
-          tgt *= inputMag;
-
-          // Slope / Stairs speed modifier (Dynamic effort scaling)
-          const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
-          if (deltaY > 0.003) {
-            // Climbing up: reduce speed based on steepness (up to 22%)
-            const climbEffort = Math.min(0.22, (deltaY / dt) * 0.15);
-            tgt *= (1.0 - climbEffort);
-          } else if (deltaY < -0.003) {
-            // Descending: increase speed slightly (up to 8%)
-            const fallPull = Math.min(0.08, (-deltaY / dt) * 0.08);
-            tgt *= (1.0 + fallPull);
-          }
+          tgt *= Math.abs(inputZ);
         }
 
-        const rate = hasMove ? this.ACCEL : this.DECEL;
+        const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
         this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
         if (this.speed < 0.05) this.speed = 0;
+      } else {
+        // ── STANDARD CAMERA-RELATIVE LOCOMOTION ────────────
+        // Compute camera-relative direction
+        const camFwd = this._camForward();
+        const camRgt = this._camRight(camFwd);
+
+        if (!this.grounded) {
+          // Air control logic:
+          if (this.AIR_CONTROL) {
+            // Full steering in mid-air:
+            if (hasMove) {
+              dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+              if (dir.length() > 0.01) dir.normalize();
+            }
+
+            let tgtSpeed = this.speed;
+            if (hasMove) {
+              let idealTgt = isSprinting ? this.SPD_SPRINT : this.SPD_WALK;
+              idealTgt *= inputMag;
+              tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
+            } else {
+              tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
+            }
+            this.speed = tgtSpeed;
+          } else {
+            // Zero steering in mid-air: keep momentum direction and takeoff speed
+            dir = this.moveDir;
+          }
+        } else {
+          // Standard grounded logic:
+          if (hasMove) {
+            dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+            if (dir.length() > 0.01) dir.normalize();
+          }
+
+          // Target Speed calculation
+          let tgt = 0;
+          if (hasMove) {
+            if (this.crouching) {
+              tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
+            } else if (isSprinting) {
+              tgt = this.SPD_SPRINT;
+            } else {
+              tgt = this.SPD_WALK;
+            }
+
+            // Analog speed modifier
+            tgt *= inputMag;
+
+            // Slope / Stairs speed modifier (Dynamic effort scaling)
+            const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+            if (deltaY > 0.003) {
+              // Climbing up: reduce speed based on steepness (up to 22%)
+              const climbEffort = Math.min(0.22, (deltaY / dt) * 0.15);
+              tgt *= (1.0 - climbEffort);
+            } else if (deltaY < -0.003) {
+              // Descending: increase speed slightly (up to 8%)
+              const fallPull = Math.min(0.08, (-deltaY / dt) * 0.08);
+              tgt *= (1.0 + fallPull);
+            }
+          }
+
+          const rate = hasMove ? this.ACCEL : this.DECEL;
+          this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
+          if (this.speed < 0.05) this.speed = 0;
+        }
       }
 
       // Smooth target angle before rotating to kill camera micro-jitter
       // (Only rotate character if moving or steering in mid-air with some air control)
-      const shouldRotate = hasMove && dir.length() > 0.05 && (this.grounded || this.AIR_CONTROL > 0.05);
+      const shouldRotate = !this.CAM_FOLLOW_LOCK && hasMove && dir.length() > 0.05 && (this.grounded || this.AIR_CONTROL > 0.05);
       if (shouldRotate) {
         const tgtAngle = Math.atan2(dir.x, dir.z);
         if (this._smoothTgt === undefined) this._smoothTgt = tgtAngle;
@@ -1352,7 +1408,8 @@ class CharCtrl {
     // ── UPDATE LOCOMOTION ANIMATIONS ──────────────────────
     const canLoco = !inAction;
     if (canLoco && !this.sitting) {
-      this._updateLocoAnim(hasMove, isSprinting, inputZ < -0.2);
+      const activeLocoMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
+      this._updateLocoAnim(activeLocoMove, isSprinting, inputZ < -0.2);
     }
 
     // ── UPDATE PROCEDURAL PARTICLES ────────────────────────
@@ -1361,7 +1418,8 @@ class CharCtrl {
       this.dustPS.emitter = feetPos;
 
       // Play dust trails while walking, sprinting or rolling on ground
-      if (this.grounded && hasMove && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
+      const activeMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
+      if (this.grounded && activeMove && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
         this.dustPS.manualEmitCount = -1; // Reset to continuous emission mode
         this.dustPS.emitRate = this.state === S.SPRINT ? 180 : (this.state === S.WALK ? 25 : 80);
         if (!this.dustPS.isStarted()) {
@@ -1499,6 +1557,11 @@ class CharCtrl {
     // Dynamic FOV based on speed (tunnel vision expansion)
     const targetFOV = this.DYNAMIC_FOV ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX) : this._initialCameraFOV;
     this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+
+    // Lock camera behind the character if follow lock is active
+    if (!this.CAM_FOLLOW_LOCK && this.camera.angularSensibilityX === 999999999) {
+      this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
+    }
 
     // Save tracking states for next frame calculations
     this._lastRotY = this.rotY;
