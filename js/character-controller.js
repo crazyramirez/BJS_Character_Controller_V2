@@ -605,9 +605,14 @@ class CharCtrl {
         // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
         const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
         if (Math.abs(alphaDelta) > 0.0001) {
-          this.rotY -= alphaDelta;
-          this.root.rotation.y = this.rotY;
-          this._lastYawTurnTime = performance.now();
+          // Block manual rotation in the air if air control is disabled
+          if (!this.grounded && !this.AIR_CONTROL) {
+            this.camera.alpha = this._lastCameraAlpha;
+          } else {
+            this.rotY -= alphaDelta;
+            this.root.rotation.y = this.rotY;
+            this._lastYawTurnTime = performance.now();
+          }
         }
 
         // Push camera alpha to match rotY (single source of truth)
@@ -622,17 +627,22 @@ class CharCtrl {
         // Only when pointer is actively dragging — ignore drift from camera target lerp
         const betaDelta = this.camera.beta - this._lastCameraBeta;
         if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
-          const lo = this.camera.lowerBetaLimit || 0.05;
-          const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
-          this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.CAM_FOLLOW_PITCH + betaDelta));
-          localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
-          // Sync HUD slider and label
-          const slider = document.getElementById('slider-cam-pitch');
-          const label = document.getElementById('cam-pitch-val');
-          if (slider && label) {
-            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
-            slider.value = deg;
-            label.textContent = deg + '°';
+          // Block manual camera pitch in the air if air control is disabled
+          if (!this.grounded && !this.AIR_CONTROL) {
+            this.camera.beta = this._lastCameraBeta;
+          } else {
+            const lo = this.camera.lowerBetaLimit || 0.05;
+            const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
+            this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.CAM_FOLLOW_PITCH + betaDelta));
+            localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+            // Sync HUD slider and label
+            const slider = document.getElementById('slider-cam-pitch');
+            const label = document.getElementById('cam-pitch-val');
+            if (slider && label) {
+              const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
+              slider.value = deg;
+              label.textContent = deg + '°';
+            }
           }
         }
 
@@ -642,8 +652,14 @@ class CharCtrl {
         this.camera.beta = this.CAM_FOLLOW_PITCH;
         this._lastCameraBeta = this.camera.beta;
       } else {
-        this._lastCameraAlpha = this.camera.alpha;
-        this._lastCameraBeta = this.camera.beta;
+        // Under standard camera mode, if air control is false and they are in mid-air, lock camera alpha/beta!
+        if (!this.grounded && !this.AIR_CONTROL) {
+          this.camera.alpha = this._lastCameraAlpha;
+          this.camera.beta = this._lastCameraBeta;
+        } else {
+          this._lastCameraAlpha = this.camera.alpha;
+          this._lastCameraBeta = this.camera.beta;
+        }
       }
 
       this._lastCameraRadius = this.camera.radius;
