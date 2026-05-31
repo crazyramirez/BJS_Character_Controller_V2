@@ -710,8 +710,8 @@ body.touch-device .keys-grid {
 /* ── INDEPENDENT HUD FPS OVERLAY ── */
 #hud-fps {
   position: fixed;
-  top: 114px;
-  /* Perfectly aligned inside the HUD panel vertically below spd: X */
+  top: 122px;
+  /* Perfectly aligned inside the HUD panel vertically below spd: X with balanced spacing */
   left: 32px;
   font-size: 11px;
   color: #00aaff;
