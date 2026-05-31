@@ -590,6 +590,15 @@ class CharCtrl {
     window.addEventListener('keyup', this._boundKeyUp);
     window.addEventListener('focus', this._boundReset);
     window.addEventListener('blur', this._boundReset);
+
+    // Double click on desktop/mouse to recenter camera
+    const canvasEl = this.scene.getEngine().getRenderingCanvas();
+    if (canvasEl) {
+      this._boundDblClick = () => {
+        this._recenterCamera();
+      };
+      canvasEl.addEventListener('dblclick', this._boundDblClick);
+    }
   }
 
   _resetInputState() {
@@ -746,6 +755,12 @@ class CharCtrl {
     if (this.dustPS) {
       this.dustPS.stop();
       this.dustPS.dispose();
+    }
+
+    // 5. Remove canvas dblclick listener
+    const canvasEl = this.scene.getEngine().getRenderingCanvas();
+    if (canvasEl && this._boundDblClick) {
+      canvasEl.removeEventListener('dblclick', this._boundDblClick);
     }
   }
 
@@ -1013,8 +1028,8 @@ class CharCtrl {
     // Origin at slightly above the bottom of the capsule (sits at Y = -0.95 relative to center)
     const originYOffset = -0.9;
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
-    // On flat ground, we use a tight ray (0.08m) so that the character snaps instantly and never floats.
-    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : 0.08;
+    // On flat ground, we use a tight ray (0.20m) so that the character snaps instantly and never floats.
+    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : 0.20;
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
     const radius = 0.22; // Slightly inset from capsule width of 0.35
@@ -1041,7 +1056,7 @@ class CharCtrl {
         hitAny = true;
         // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
         if (pick.pickedMesh.meshType === "scalable" ||
-          (pick.pickedMesh.name && /step|stair|ramp/i.test(pick.pickedMesh.name))) {
+          (pick.pickedMesh.name && /step|stair|ramp|platform|floor/i.test(pick.pickedMesh.name))) {
           onScalable = true;
         } else {
           const normal = pick.getNormal(true);
@@ -1172,6 +1187,17 @@ class CharCtrl {
         if (deltaY > 0.005) {
           // If collision response is pushing us UP the steps, do not apply downward snap pressure!
           this.jumpVel = 0;
+
+          // Detect single step climbing:
+          // Must be grounded, moving forward/input active, NOT on stairs/ramps (onScalable is false),
+          // and not already performing another action.
+          const inAction = ACTION_STATES.has(this.state);
+          if (this.grounded && hasMove && !this.onScalable && !inAction) {
+            this._setState(S.JUMP_LAND);
+            // Play JUMP_LAND animation with a lower weight (0.35) for a subtler, more natural step-up blend
+            this.anim.play('Jump_Land', false, 0.1, () => this._returnToLoco(), 1.65, 0.25);
+            this._emitLandingDust();
+          }
         } else {
           // Apply a gentle downward snap pressure only when moving on stairs/ramps to prevent flying off step edges
           this.jumpVel = hasMove && this.onScalable ? -3.5 : 0;
