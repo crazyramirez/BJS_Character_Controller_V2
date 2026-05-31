@@ -20,6 +20,7 @@ An advanced third-person character locomotion and physics framework built with *
     *   **Landing Impact Camera Shake**: Triggers multi-axis rotational camera shake depending on landing height and landing physics velocity.
     *   **Mobile-Adaptive Framing & Recenter**: Lowers the target center on mobile to keep the character perfectly visible above thumbs and touch overlays, supporting seamless screen double-tap (and desktop double-click) recenter transitions.
     *   **Camera Follow Lock (`CAM_FOLLOW_LOCK`)**: A customizable setting that locks the camera angle directly behind the character's facing direction at all times (locking horizontal alpha, vertical overview beta to a perfect `60°` pitch, and radius zoom distance). When active, it automatically transitions the locomotion to a classic **Direct Steering Action Control (Tank Controls)**: W/S moves the player locally along their heading direction while A/D directly rotates the character yaw (turning the camera with it), eliminating all camera jitter.
+    *   **Dynamic Zoom & HUD Sync**: The camera follow distance (`CAM_FOLLOW_DIST`) and the HUD slider are fully synchronized in real-time. Any zoom inputs (mouse wheel, trackpad scrolls, or mobile multi-touch pinch gestures) directly update the follow distance, saving the value to `localStorage` and updating the UI automatically. To prevent physical movement and collision adjustments from causing camera distance drift, sync is intelligently restricted to periods of active user zoom interaction.
 *   **Procedural Footstep Particles**: Generates dynamic dust trails at the feet during locomotion, with impactful landing bursts based on fall velocity.
 *   **Advanced Visual Suspension & Slope Alignment**:
     *   **Y-Suspension & Morphing**: Dampens vertical height shocks when walking up/down steps. Automatically morphs collision bounds and visual offsets during standing actions (magics, interactions) when crouched.
@@ -30,9 +31,14 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Single-Step Climbing Animation**: Automatically detects when the character climbs over a single step/obstacle (rather than stairs or ramps) and briefly plays a low-weight `JUMP_LAND` animation to simulate a natural and realistic step-up impulse.
 *   **Smart Landing Physics & Height Filtering**: Evaluates vertical impact velocity (`jumpVel < -3.0`) and tracks peak airborne height to calculate the exact physical drop distance (`fallHeight > 0.4m`). This allows the controller to ignore tiny stair drops or curbs while perfectly triggering the landing animation (`Jump_Land`) and visual squash effects on real falls and jumps. The execution order resolves calculations *before* grounded state resets, ensuring perfect precision.
 *   **Bulletproof Dodge Roll Timer**: The `ROLL` animation state transitions flawlessly to walking/running upon landing using a precise 700ms JavaScript timing clock, ensuring the roll is never cut off or interrupted by landing physics.
+*   **Advanced Double Jump Mechanics**: Allows the character to perform a double jump in mid-air (`_doubleJump`). This features full directional momentum redirection at the moment of the second takeoff, even when air control is disabled. It can be toggled on/off directly from a dedicated HUD switch and persists across page reloads.
+*   **Ceiling Roll Protection & Auto-Uncrouch**: Block rolls if crouching under low ceilings, preventing glitching through obstacles. If a roll ends under a low ceiling, the character is safely forced into the crouching state, and will automatically stand up (auto-uncrouch) as soon as they emerge into an open area.
+*   **Dynamic Collision Width Adjustments**: Widens the capsule ellipsoid radius (X/Z) from `0.35m` to `0.65m` when sprinting to prevent the head and body meshes from clipping into walls and low obstacles when leaning forward at high speeds.
+*   **HUD Click Autofocus Release (Blur)**: Implements immediate focus release (`blur()`) on all HUD interactive buttons, checkboxes, and sliders upon click or change, immediately returning focus to the Babylon canvas. This completely prevents the Spacebar key (Jump) from accidentally toggling HUD elements.
+*   **Customizable Air Control Setting**: A toggleable HUD switch is available to enable/disable mid-air steering. When disabled (`AIR_CONTROL: false`), the player's flight trajectory is locked to their takeoff momentum in both standard and camera follow lock locomotion styles.
 *   **High-End HUD & Mobile Touch UI**: Fully custom glassmorphism virtual joystick and responsive action buttons.
     *   **Integrated Collapsing panel**: Double-click/tap on canvas recenters camera seamlessly. The HUD collapses into a compact glowing glass bead in the screen corner and persists its state via `localStorage`.
-    *   **Real-time HUD Settings Switches**: Integrated interactive tactile glassmorphism switches inside the main HUD panel to toggle `Camera Follow Lock` and `Dynamic FOV` in real time, plus a high-precision slider to dynamically scale `Max FOV Intensity` (from `0.00` to `1.00`) with instant hot-reload feedback.
+    *   **Real-time HUD Settings Switches**: Integrated interactive tactile glassmorphism switches inside the main HUD panel to toggle `Camera Follow Lock`, `Dynamic FOV`, `Double Jump`, and `Air Control` in real time, plus a high-precision slider to dynamically scale `Max FOV Intensity` (from `0.00` to `1.00`) with instant hot-reload feedback.
 
 ---
 
@@ -42,8 +48,8 @@ An advanced third-person character locomotion and physics framework built with *
 *   `W`, `A`, `S`, `D` / `Arrow Keys`: Camera-relative movement.
 *   `Shift`: Sprint (Persistent Toggle / Latch Mode button).
 *   `Ctrl`: Crouch (Persistent Toggle / Latch Mode button; blocked under ceilings).
-*   `Space`: Jump (Hold in air to queue a landing dodge-roll recovery).
-*   `R`: Dodge roll (Horizontal momentum).
+*   `Space`: Jump & Double Jump (1st press: standard jump. While in mid-air: 2nd press executes a Double Jump with full directional redirection; 3rd press queues a landing dodge-roll recovery. If double jump is disabled, pressing a 2nd time in mid-air queues the landing roll).
+*   `R`: Dodge roll (Horizontal momentum; blocked when crouching under low ceilings/obstacles).
 *   `Q`: Punch.
 *   `E`: Spell casting (Automatic stand-up when crouched).
 *   `F`: Interaction (Automatic stand-up when crouched).
