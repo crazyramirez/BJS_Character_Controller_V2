@@ -1054,18 +1054,23 @@ class CharCtrl {
 
       if (pick && pick.hit) {
         hitAny = true;
+        this._groundNormal = pick.getNormal(true);
         // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
         if (pick.pickedMesh.meshType === "scalable" ||
           (pick.pickedMesh.name && /step|stair|ramp|platform|floor/i.test(pick.pickedMesh.name))) {
           onScalable = true;
         } else {
-          const normal = pick.getNormal(true);
+          const normal = this._groundNormal;
           if (normal && normal.y < 0.99 && normal.y > 0.5) {
             onScalable = true;
           }
         }
         break;
       }
+    }
+
+    if (!hitAny) {
+      this._groundNormal = null;
     }
 
     this.onScalable = onScalable;
@@ -1375,11 +1380,14 @@ class CharCtrl {
       this.visualLocalY -= deltaY;
     }
     // Smoothly return visual mesh local Y to its target crouch/stand state Y (slowed to 4 for svelte transitions during spells/interactions)
-    this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-4 * dt));
+    // On stairs and ramps (onScalable), we use a middle-ground rate of 12 for high responsiveness with pleasant spring compliance.
+    const suspensionRate = this.onScalable ? 12 : 4;
+    this.visualLocalY = lerp(this.visualLocalY, this.targetLocalY, 1 - Math.exp(-suspensionRate * dt));
     // Clamp to prevent visual separating too far from capsule boundaries.
     // Extremely important: clamp the lower bound tightly (targetLocalY - 0.02) to prevent clipping into stairs/slopes,
-    // while keeping a generous upper bound (targetLocalY + 0.35) for beautiful step-down suspension!
-    this.visualLocalY = Math.max(this.targetLocalY - 0.02, Math.min(this.targetLocalY + 0.35, this.visualLocalY));
+    // while keeping a flexible upper bound (targetLocalY + 0.35 on flat ground, but restricted to targetLocalY + 0.16 on ramps for compliance without floating)!
+    const maxUpperSuspension = this.onScalable ? 0.16 : 0.35;
+    this.visualLocalY = Math.max(this.targetLocalY - 0.02, Math.min(this.targetLocalY + maxUpperSuspension, this.visualLocalY));
     this.visualMesh.position.y = this.visualLocalY;
 
     // 1b. Kinetic Locomotion Bobbing
@@ -1414,6 +1422,15 @@ class CharCtrl {
     } else if (acceleration < -4.0 && this.speed > 1.0) {
       // Braking lean: lean back slightly when decelerating
       targetPitch = -0.06;
+    }
+
+    // Dynamic Slope Pitch Alignment: Rotate visual mesh pitch to align with ground incline/slope normal
+    if (this.grounded && this._groundNormal) {
+      const fwd = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+      const normalDotFwd = this._groundNormal.x * fwd.x + this._groundNormal.z * fwd.z;
+      // Pitch angle calculated from surface normal projection
+      const slopePitch = Math.atan2(normalDotFwd, this._groundNormal.y);
+      targetPitch += slopePitch;
     }
     this.tiltPitch = lerp(this.tiltPitch, targetPitch, 1 - Math.exp(-10 * dt));
 

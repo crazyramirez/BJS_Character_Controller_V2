@@ -18,17 +18,19 @@ An advanced third-person character locomotion and physics framework built with *
     *   **Natural Lerped Follow**: Smoothly tracks the character's height using adaptive linear interpolation (Lerp), eliminating rigid camera cuts and stutter.
     *   **Dynamic Tunnel Vision (FOV Expansion)**: Automatically expands the camera Field of View (FOV) at higher velocities to increase the sensation of speed. Fully toggleable (`DYNAMIC_FOV`) with fine-tunable limits (`DYNAMIC_FOV_MAX`).
     *   **Landing Impact Camera Shake**: Triggers multi-axis rotational camera shake depending on landing height and landing physics velocity.
-    *   **Mobile-Adaptive Framing & Recenter**: Lowers the target center on mobile to keep the character perfectly visible above the thumbs and touch overlay, with a seamless double-tap screen recentering transition.
+    *   **Mobile-Adaptive Framing & Recenter**: Lowers the target center on mobile to keep the character perfectly visible above thumbs and touch overlays, supporting seamless screen double-tap (and desktop double-click) recenter transitions.
 *   **Procedural Footstep Particles**: Generates dynamic dust trails at the feet during locomotion, with impactful landing bursts based on fall velocity.
-*   **Advanced Visual Suspension**:
+*   **Advanced Visual Suspension & Slope Alignment**:
     *   **Y-Suspension & Morphing**: Dampens vertical height shocks when walking up/down steps. Automatically morphs collision bounds and visual offsets during standing actions (magics, interactions) when crouched.
+    *   **Dynamic Slope Alignment (Pitch Tilt)**: Automatically projects the ground normal relative to the character's forward direction to tilt the body pitch angle (leaning forward when climbing up, backward when descending) during both movement and standstill, resolving floating visual lag.
     *   **Leaning & Banking**: Automatically pitches forward on acceleration, backward on braking, and banks into sharp angular turns.
     *   **Squash & Stretch**: Elastic scale distortions on jumps, falls, and landing impact.
-*   **Ledge Snap & Stairs Snapping**: Downward snap pressure prevents micro-airborne jitter on ramps and stairs.
+*   **Ledge Snap & Stairs Snapping**: Downward snap pressure prevents micro-airborne jitter on ramps and stairs, optimized with custom platform and floor naming filters for perfect grounding.
+*   **Single-Step Climbing Animation**: Automatically detects when the character climbs over a single step/obstacle (rather than stairs or ramps) and briefly plays a low-weight `JUMP_LAND` animation to simulate a natural and realistic step-up impulse.
 *   **Smart Landing Physics & Height Filtering**: Evaluates vertical impact velocity (`jumpVel < -3.0`) and tracks peak airborne height to calculate the exact physical drop distance (`fallHeight > 0.4m`). This allows the controller to ignore tiny stair drops or curbs while perfectly triggering the landing animation (`Jump_Land`) and visual squash effects on real falls and jumps. The execution order resolves calculations *before* grounded state resets, ensuring perfect precision.
 *   **Bulletproof Dodge Roll Timer**: The `ROLL` animation state transitions flawlessly to walking/running upon landing using a precise 700ms JavaScript timing clock, ensuring the roll is never cut off or interrupted by landing physics.
 *   **High-End Mobile Touch UI**: Fully custom glassmorphism virtual joystick and responsive action buttons.
-    *   **Integrated Collapsing panel**: Double-click/tap recenters camera seamlessly. The HUD collapses into a compact glowing glass bead in the screen corner and persists its state via `localStorage`.
+    *   **Integrated Collapsing panel**: Double-click/tap on canvas recenters camera seamlessly. The HUD collapses into a compact glowing glass bead in the screen corner and persists its state via `localStorage`.
 
 ---
 
