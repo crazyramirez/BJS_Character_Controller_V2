@@ -1,6 +1,82 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════════
+// CONFIGURABLE CHARACTER VARIABLES & SETTINGS
+// ═══════════════════════════════════════════════════════════
+const DEFAULT_CHAR_CONFIG = {
+  // Key Bindings
+  KEYS: {
+    MOVE_FORWARD: ['KeyW', 'ArrowUp'],      // Move forward
+    MOVE_BACKWARD: ['KeyS', 'ArrowDown'],   // Move backward
+    MOVE_LEFT: ['KeyA', 'ArrowLeft'],       // Move left
+    MOVE_RIGHT: ['KeyD', 'ArrowRight'],     // Move right
+    SPRINT: ['ShiftLeft', 'ShiftRight'],    // Run / Sprint
+    CROUCH: ['ControlLeft', 'ControlRight'],// Crouch
+    JUMP: ['Space'],                        // Jump / Double jump (in mid-air)
+    ROLL: ['KeyR'],                         // Roll / Dodge
+    PUNCH: ['KeyQ'],                        // Punch combo (Jab & Cross)
+    SPELL: ['KeyE'],                        // Cast spell
+    INTERACT: ['KeyF'],                     // Interact / Pick up items
+  },
+
+  // Physics & Speeds Config
+  PHYSICS: {
+    GRAV: 22,             // Gravity force pulling the character down
+    JUMP_PWR: 9.5,        // Vertical takeoff impulse force for jumping
+    SPD_WALK: 2.5,        // Maximum physical walking speed
+    SPD_JOG: 3,           // Maximum physical jogging speed (blend speed threshold)
+    SPD_SPRINT: 5,        // Maximum physical sprinting speed
+    SPD_CROUCH: 2,        // Maximum physical crouching walk speed
+    SPD_CROUCH_RUN: 3.6,  // Maximum physical crouching run speed
+    ACCEL: 14,            // Movement acceleration rate (speed-up responsiveness)
+    DECEL: 16,            // Movement deceleration rate (braking/stopping responsiveness)
+    ROT_SPD: 40,          // Character yaw rotation speed responsiveness
+    AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
+    DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
+    DYNAMIC_FOV_MAX: 0.10 // Maximum camera FOV expansion amount added at full sprint speed
+  },
+
+  // Mobile / Touch controls configuration
+  TOUCH: {
+    zoneId: 'joystick-zone',
+    ringId: 'joystick-ring',
+    knobId: 'joystick-knob',
+    buttons: {
+      'btn-sprint': 'ShiftLeft',
+      'btn-jump': 'Space',
+      'btn-roll': 'KeyR',
+      'btn-crouch': 'ControlLeft',
+      'btn-act': 'KeyF',
+      'btn-spell': 'KeyE'
+    }
+  }
+};
+
+
+// ═══════════════════════════════════════════════════════════
+// STATES
+// ═══════════════════════════════════════════════════════════
+const S = {
+  IDLE: 'IDLE', WALK: 'WALK', JOG: 'JOG', SPRINT: 'SPRINT',
+  WALK_FORMAL: 'WALK_FORMAL',
+  CROUCH_IDLE: 'CROUCH_IDLE', CROUCH_WALK: 'CROUCH_WALK', CROUCH_RUN: 'CROUCH_RUN',
+  JUMP_START: 'JUMP_START', JUMP_LOOP: 'JUMP_LOOP', JUMP_LAND: 'JUMP_LAND',
+  ROLL: 'ROLL',
+  PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
+  SPELL_ENTER: 'SPELL_ENTER', SPELL_SHOOT: 'SPELL_SHOOT', SPELL_EXIT: 'SPELL_EXIT',
+  INTERACT: 'INTERACT', PICKUP: 'PICKUP',
+};
+
+const ACTION_STATES = new Set([
+  S.JUMP_START, S.JUMP_LOOP, S.JUMP_LAND, S.ROLL,
+  S.PUNCH_JAB, S.PUNCH_CROSS,
+  S.SPELL_ENTER, S.SPELL_SHOOT, S.SPELL_EXIT,
+  S.INTERACT, S.PICKUP,
+]);
+
+const KEYS = DEFAULT_CHAR_CONFIG.KEYS;
+
+// ═══════════════════════════════════════════════════════════
 // UTILS & MATH HELPERS
 // ═══════════════════════════════════════════════════════════
 function lerp(a, b, t) {
@@ -27,43 +103,6 @@ function cleanAnimName(raw) {
   return parts[parts.length - 1].trim();
 }
 
-// ═══════════════════════════════════════════════════════════
-// KEY BINDINGS CONFIGURATION
-// ═══════════════════════════════════════════════════════════
-const KEYS = {
-  MOVE_FORWARD: ['KeyW', 'ArrowUp'],
-  MOVE_BACKWARD: ['KeyS', 'ArrowDown'],
-  MOVE_LEFT: ['KeyA', 'ArrowLeft'],
-  MOVE_RIGHT: ['KeyD', 'ArrowRight'],
-  SPRINT: ['ShiftLeft', 'ShiftRight'],
-  CROUCH: ['ControlLeft', 'ControlRight'],
-  JUMP: ['Space'],
-  ROLL: ['KeyR'],
-  PUNCH: ['KeyQ'],
-  SPELL: ['KeyE'],
-  INTERACT: ['KeyF'],
-};
-
-// ═══════════════════════════════════════════════════════════
-// STATES
-// ═══════════════════════════════════════════════════════════
-const S = {
-  IDLE: 'IDLE', WALK: 'WALK', JOG: 'JOG', SPRINT: 'SPRINT',
-  WALK_FORMAL: 'WALK_FORMAL',
-  CROUCH_IDLE: 'CROUCH_IDLE', CROUCH_WALK: 'CROUCH_WALK', CROUCH_RUN: 'CROUCH_RUN',
-  JUMP_START: 'JUMP_START', JUMP_LOOP: 'JUMP_LOOP', JUMP_LAND: 'JUMP_LAND',
-  ROLL: 'ROLL',
-  PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
-  SPELL_ENTER: 'SPELL_ENTER', SPELL_SHOOT: 'SPELL_SHOOT', SPELL_EXIT: 'SPELL_EXIT',
-  INTERACT: 'INTERACT', PICKUP: 'PICKUP',
-};
-
-const ACTION_STATES = new Set([
-  S.JUMP_START, S.JUMP_LOOP, S.JUMP_LAND, S.ROLL,
-  S.PUNCH_JAB, S.PUNCH_CROSS,
-  S.SPELL_ENTER, S.SPELL_SHOOT, S.SPELL_EXIT,
-  S.INTERACT, S.PICKUP,
-]);
 
 // ═══════════════════════════════════════════════════════════
 // LOCOMOTION BLEND TREE
@@ -114,7 +153,13 @@ class LocoBlendGroup {
   }
 
   updateSpeed(speed) {
-    this.speed = speed;
+    const dt = this.anim.scene.getEngine().getDeltaTime() / 1000;
+    if (dt > 0 && dt < 0.1) {
+      // Smoothly interpolate the blend tree speed for svelte, fluid transitions
+      this.speed = lerp(this.speed, speed, 1 - Math.exp(-8 * dt));
+    } else {
+      this.speed = speed;
+    }
     this.updateWeights();
   }
 
@@ -380,19 +425,7 @@ class CharCtrl {
     }, options.callbacks || {});
 
     // Physics & Speeds Config
-    const config = Object.assign({
-      GRAV: 22,
-      JUMP_PWR: 9.5,
-      SPD_WALK: 2.2,
-      SPD_JOG: 3,
-      SPD_SPRINT: 5,
-      SPD_CROUCH: 2,
-      SPD_CROUCH_RUN: 3.6,
-      ACCEL: 14,
-      DECEL: 16,
-      ROT_SPD: 50,
-      AIR_CONTROL: false   // true (full control) or false (no control) in mid-air
-    }, options.config || {});
+    const config = Object.assign({}, DEFAULT_CHAR_CONFIG.PHYSICS, options.config || {});
 
     this.GRAV = config.GRAV;
     this.JUMP_PWR = config.JUMP_PWR;
@@ -405,21 +438,11 @@ class CharCtrl {
     this.DECEL = config.DECEL;
     this.ROT_SPD = config.ROT_SPD;
     this.AIR_CONTROL = config.AIR_CONTROL;
+    this.DYNAMIC_FOV = config.DYNAMIC_FOV;
+    this.DYNAMIC_FOV_MAX = config.DYNAMIC_FOV_MAX;
 
     // Mobile / Touch controls configuration
-    this.touchConfig = Object.assign({
-      zoneId: 'joystick-zone',
-      ringId: 'joystick-ring',
-      knobId: 'joystick-knob',
-      buttons: {
-        'btn-sprint': 'ShiftLeft',
-        'btn-jump': 'Space',
-        'btn-roll': 'KeyR',
-        'btn-crouch': 'ControlLeft',
-        'btn-act': 'KeyF',
-        'btn-spell': 'KeyE'
-      }
-    }, options.touch || {});
+    this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});
 
     // Physics running state
     this.speed = 0;
@@ -830,9 +853,12 @@ class CharCtrl {
       this.speed = 0;
     }
 
-    this.anim.play('Roll', false, 0.2, () => {
+    this.anim.play('Roll', false, 0.2, null, 1.1);
+
+    // Reliable 1-second timer to exit the roll state and return to locomotion
+    setTimeout(() => {
+      if (this.state !== S.ROLL) return;
       this._rollActive = false;
-      // Cancel any outgoing transition on Roll and force weight to 0 immediately
       const rollAg = this.anim.g.get('Roll');
       if (rollAg) {
         this.anim.activeTransitions = this.anim.activeTransitions.filter(t => {
@@ -846,7 +872,7 @@ class CharCtrl {
         rollAg.stop();
       }
       this._returnToLoco(0.2);
-    }, 1.1);
+    }, 700);
   }
 
   _punch() {
@@ -1086,8 +1112,10 @@ class CharCtrl {
       landingTriggered = true;
       const fallHeight = this._highestAirborneY - this.root.position.y;
       if (this.state === S.ROLL) {
-        if (!this._rollMoving) this.speed = 0;
-        this._returnToLoco(0.06);
+        this._emitLandingDust();
+        if (!this._rollActive) {
+          this._returnToLoco(0.06);
+        }
       } else if (this._rollOnLand && this.speed > 1.0) {
         this._rollOnLand = false;
         this._emitLandingDust();
@@ -1122,14 +1150,7 @@ class CharCtrl {
 
     let inAction = ACTION_STATES.has(this.state);
 
-    // Blend into walk/run before roll ends
-    if (this.state === S.ROLL && this.grounded && this.stateT > 0.3) {
-      if (!this._rollMoving) this.speed = 0;
-      this._returnToLoco(1.2);
-      if (this.AIR_CONTROL) {
-        inAction = ACTION_STATES.has(this.state);
-      }
-    }
+    // Let the roll animation play to completion naturally via its callback
 
     // ── PROCESS VERTICAL PHYSICS (GRAVITY & JUMPING) ───────
     if (!this.grounded) {
@@ -1254,7 +1275,7 @@ class CharCtrl {
         const tgtAngle = Math.atan2(dir.x, dir.z);
         if (this._smoothTgt === undefined) this._smoothTgt = tgtAngle;
         this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-30 * dt));
-        const k = this.grounded ? 8 : 4;
+        const k = this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08);
         this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
         this.root.rotation.y = this.rotY;
       }
@@ -1433,7 +1454,7 @@ class CharCtrl {
     }
 
     // Dynamic FOV based on speed (tunnel vision expansion)
-    const targetFOV = this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * 0.10;
+    const targetFOV = this.DYNAMIC_FOV ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX) : this._initialCameraFOV;
     this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
 
     // Save tracking states for next frame calculations
