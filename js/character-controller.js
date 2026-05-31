@@ -1428,8 +1428,8 @@ class CharCtrl {
     if (this.grounded && this._groundNormal) {
       const fwd = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
       const normalDotFwd = this._groundNormal.x * fwd.x + this._groundNormal.z * fwd.z;
-      // Pitch angle calculated from surface normal projection
-      const slopePitch = Math.atan2(normalDotFwd, this._groundNormal.y);
+      // Pitch angle calculated from surface normal projection, scaled down (65%) for a stylish, natural lean
+      const slopePitch = Math.atan2(normalDotFwd, this._groundNormal.y) * 1;
       targetPitch += slopePitch;
     }
     this.tiltPitch = lerp(this.tiltPitch, targetPitch, 1 - Math.exp(-10 * dt));
