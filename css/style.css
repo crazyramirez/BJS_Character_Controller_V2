@@ -737,3 +737,83 @@ body.touch-device .keys-grid {
   padding: 4px 8px;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
 }
+
+/* ── BUY ME A COFFEE PANEL ── */
+.bmac-panel {
+  transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, margin 0.45s ease, padding 0.45s ease, border-width 0.45s ease;
+  max-height: 200px;
+  opacity: 1;
+  overflow: hidden;
+}
+
+.bmac-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.bmac-tag {
+  font-size: 9px;
+  color: #ffcc00;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 800;
+  text-shadow: 0 0 8px rgba(255, 204, 0, 0.3);
+}
+
+.bmac-text {
+  font-size: 11px;
+  color: #8c8c9c;
+  line-height: 1.4;
+}
+
+.bmac-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+  background: linear-gradient(135deg, #ffdd00, #ffaa00);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  color: #0b0b14;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  text-decoration: none;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 4px 15px rgba(255, 170, 0, 0.25);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bmac-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(255, 170, 0, 0.4);
+  background: linear-gradient(135deg, #ffea00, #ffbb00);
+}
+
+.bmac-btn:active {
+  transform: translateY(1px);
+  box-shadow: 0 2px 10px rgba(255, 170, 0, 0.2);
+}
+
+.bmac-icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* Collapsed state support */
+#hud.collapsed .panel.bmac-panel {
+  max-height: 0;
+  opacity: 0;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  pointer-events: none;
+}

@@ -411,8 +411,8 @@ if (toggle && hud) {
 window.addEventListener('resize', () => engine.resize());
 
 // ── HUD FOCUS RELEASE (BLUR) CONTROLLER ──────────────────
-// Prevents Spacebar (Jump) from triggering switches or range inputs in the HUD after click.
-const interactiveElements = document.querySelectorAll('#hud input, #hud button, #hud-toggle');
+// Prevents Spacebar (Jump) from triggering switches, range inputs, or links in the HUD after click.
+const interactiveElements = document.querySelectorAll('#hud input, #hud button, #hud-toggle, #hud a');
 interactiveElements.forEach(el => {
   const releaseFocus = () => {
     el.blur();
