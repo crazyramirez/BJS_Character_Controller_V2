@@ -598,6 +598,34 @@ class CharCtrl {
         }
       }
 
+      // Sync manual camera pitch drag back to CAM_FOLLOW_PITCH and sync HUD in both modes!
+      const betaDelta = this.camera.beta - this._lastCameraBeta;
+      if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
+        // Block manual camera pitch in the air if air control is disabled
+        if (!this.grounded && !this.AIR_CONTROL) {
+          this.camera.beta = this._lastCameraBeta;
+        } else {
+          const lo = this.camera.lowerBetaLimit || 0.05;
+          const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
+          this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.camera.beta));
+          localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+          // Sync HUD slider and label
+          const slider = document.getElementById('slider-cam-pitch');
+          const label = document.getElementById('cam-pitch-val');
+          if (slider && label) {
+            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
+            slider.value = deg;
+            label.textContent = deg + '°';
+          }
+        }
+      }
+
+      // Enforce configured radius and pitch in all modes when not dragging to maintain consistency and prevent drifting
+      this.camera.radius = this.CAM_FOLLOW_DIST;
+      if (!this._pointerDragging) {
+        this.camera.beta = this.CAM_FOLLOW_PITCH;
+      }
+
       if (this.CAM_FOLLOW_LOCK) {
         // Restore full mouse sensitivity
         this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
@@ -622,34 +650,6 @@ class CharCtrl {
           this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-14 * dt));
         }
         this._lastCameraAlpha = this.camera.alpha;
-
-        // Apply mouse/touch pitch delta to CAM_FOLLOW_PITCH and sync HUD
-        // Only when pointer is actively dragging — ignore drift from camera target lerp
-        const betaDelta = this.camera.beta - this._lastCameraBeta;
-        if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
-          // Block manual camera pitch in the air if air control is disabled
-          if (!this.grounded && !this.AIR_CONTROL) {
-            this.camera.beta = this._lastCameraBeta;
-          } else {
-            const lo = this.camera.lowerBetaLimit || 0.05;
-            const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
-            this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.CAM_FOLLOW_PITCH + betaDelta));
-            localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
-            // Sync HUD slider and label
-            const slider = document.getElementById('slider-cam-pitch');
-            const label = document.getElementById('cam-pitch-val');
-            if (slider && label) {
-              const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
-              slider.value = deg;
-              label.textContent = deg + '°';
-            }
-          }
-        }
-
-        // Force radius to configured distance
-        this.camera.radius = this.CAM_FOLLOW_DIST;
-        // Apply configured pitch
-        this.camera.beta = this.CAM_FOLLOW_PITCH;
         this._lastCameraBeta = this.camera.beta;
       } else {
         // Under standard camera mode, if air control is false and they are in mid-air, lock camera alpha/beta!

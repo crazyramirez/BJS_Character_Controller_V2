@@ -84,8 +84,11 @@ async function loadCharacter(scene, shadow, camera) {
   const cameraYOffset = isMobileDev ? -0.25 : 0.4;
 
   scene.registerBeforeRender(() => {
+    const dt = scene.getEngine().getDeltaTime() / 1000;
+    const clampedDt = Math.max(0.001, Math.min(0.1, dt));
     const tgt = playerCapsule.position.add(V3(0, cameraYOffset, 0));
-    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.12);
+    // Frame-rate independent exponential interpolation (tracking rate of 15 for highly responsive follow)
+    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
   });
 
   return { playerCapsule, animCtrl, charCtrl };
