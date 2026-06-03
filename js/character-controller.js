@@ -531,7 +531,11 @@ class CharCtrl {
     this._setupDustParticles();
 
     // Touch device setup
-    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
+    // maxTouchPoints > 0 alone is unreliable on Windows — Chrome reports 10 even on non-touch desktops.
+    // Require a mobile/tablet UA string as a second signal to avoid false positives.
+    const hasTouchAPI = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
+    const isMobileUA = /Mobi|Android|iPhone|iPad|iPod|Tablet|Touch/i.test(navigator.userAgent);
+    const hasTouch = hasTouchAPI && isMobileUA;
     this.isTouch = hasTouch;
     if (this.isTouch) {
       document.body.classList.add('touch-device');
