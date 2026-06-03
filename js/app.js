@@ -318,6 +318,24 @@ async function createDemoScene() {
     });
   }
 
+  const toggleCamLockPitch = $('toggle-cam-lock-pitch');
+  if (toggleCamLockPitch) {
+    toggleCamLockPitch.checked = charCtrl.CAM_LOCK_PITCH;
+    toggleCamLockPitch.addEventListener('change', (e) => {
+      charCtrl.CAM_LOCK_PITCH = e.target.checked;
+      localStorage.setItem('cam-lock-pitch', e.target.checked);
+    });
+  }
+
+  const toggleJoystickLockX = $('toggle-joystick-lock-x');
+  if (toggleJoystickLockX) {
+    toggleJoystickLockX.checked = charCtrl.JOYSTICK_LOCK_X;
+    toggleJoystickLockX.addEventListener('change', (e) => {
+      charCtrl.JOYSTICK_LOCK_X = e.target.checked;
+      localStorage.setItem('joystick-lock-x', e.target.checked);
+    });
+  }
+
   if (sliderFovMax && fovMaxVal) {
     sliderFovMax.value = charCtrl.DYNAMIC_FOV_MAX;
     fovMaxVal.textContent = charCtrl.DYNAMIC_FOV_MAX.toFixed(2);

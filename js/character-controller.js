@@ -37,6 +37,8 @@ const DEFAULT_CHAR_CONFIG = {
     CAM_FOLLOW_LOCK: false, // If true, the camera is locked behind the character's facing direction
     CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
+    CAM_LOCK_PITCH: false,   // If true, drag input only rotates camera horizontally (locks vertical/pitch axis)
+    JOYSTICK_LOCK_X: false,  // If true, joystick input is locked to vertical axis only (no strafing/turning)
     DOUBLE_JUMP_ENABLED: true // If true, the character can perform a double jump in mid-air
   },
 
@@ -487,6 +489,12 @@ class CharCtrl {
     const savedCamFollowDist = localStorage.getItem('cam-follow-dist');
     this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
 
+    const savedCamLockPitch = localStorage.getItem('cam-lock-pitch');
+    this.CAM_LOCK_PITCH = savedCamLockPitch !== null ? (savedCamLockPitch === 'true') : (config.CAM_LOCK_PITCH !== undefined ? config.CAM_LOCK_PITCH : false);
+
+    const savedJoystickLockX = localStorage.getItem('joystick-lock-x');
+    this.JOYSTICK_LOCK_X = savedJoystickLockX !== null ? (savedJoystickLockX === 'true') : (config.JOYSTICK_LOCK_X !== undefined ? config.JOYSTICK_LOCK_X : false);
+
     const savedDoubleJump = localStorage.getItem('double-jump-enabled');
     this.DOUBLE_JUMP_ENABLED = savedDoubleJump !== null ? (savedDoubleJump === 'true') : (config.DOUBLE_JUMP_ENABLED !== undefined ? config.DOUBLE_JUMP_ENABLED : true);
 
@@ -532,12 +540,14 @@ class CharCtrl {
 
     // Touch device setup
     // Windows Chrome reports maxTouchPoints=10 on non-touch desktops — can't use API alone.
-    // iPad OS 13+ spoofs a Mac UA — can't use UA alone.
-    // Strategy: has touch API + not a desktop OS UA = real touch device.
+    // iPad OS 13+ spoofs a Mac UA — can't rely on UA alone.
+    // Strategy: combine UA check + coarse-pointer media query.
+    // Real touch devices (phones/tablets) have coarse pointer; desktop mice are fine.
     const hasTouchAPI = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
-    const isDesktopUA = /Win(dows NT|32|64)|Macintosh|Linux x86_64/i.test(navigator.userAgent) &&
-                        !/Android|iPhone|iPod/i.test(navigator.userAgent);
-    const hasTouch = hasTouchAPI && !isDesktopUA;
+    const hasCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+    const isMobileUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    // iPad OS 13+ spoofs Mac UA but still has coarse pointer
+    const hasTouch = hasTouchAPI && (hasCoarsePointer || isMobileUA);
     this.isTouch = hasTouch;
     if (this.isTouch) {
       document.body.classList.add('touch-device');
@@ -607,8 +617,11 @@ class CharCtrl {
       // Sync manual camera pitch drag back to CAM_FOLLOW_PITCH and sync HUD in both modes!
       const betaDelta = this.camera.beta - this._lastCameraBeta;
       if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
-        // Block manual camera pitch in the air if air control is disabled
-        if (!this.grounded && !this.AIR_CONTROL) {
+        // Block pitch if CAM_LOCK_PITCH is enabled (horizontal-only drag)
+        if (this.CAM_LOCK_PITCH) {
+          this.camera.beta = this._lastCameraBeta;
+        } else if (!this.grounded && !this.AIR_CONTROL) {
+          // Block manual camera pitch in the air if air control is disabled
           this.camera.beta = this._lastCameraBeta;
         } else {
           const lo = this.camera.lowerBetaLimit || 0.05;
@@ -846,11 +859,14 @@ class CharCtrl {
         dy = (dy / dist) * maxDist;
       }
 
+      // When JOYSTICK_LOCK_X is enabled, constrain knob and input to vertical axis only
+      if (this.JOYSTICK_LOCK_X) dx = 0;
+
       knob.style.transform = `translate(${dx}px, ${dy}px)`;
 
       // Normalize vector to [-1, 1] range
       // Swap Y because screen down is positive, but we want forward (W) to be positive, backward (S) negative
-      this.touchVector.x = dx / maxDist;
+      this.touchVector.x = this.JOYSTICK_LOCK_X ? 0 : dx / maxDist;
       this.touchVector.y = -dy / maxDist;
     };
 
