@@ -72,8 +72,8 @@ An advanced third-person character locomotion and physics framework built with *
 
 The core architecture consists of modular script components:
 1.  **`AnimCtrl` & `CharCtrl`** ([js/character-controller.js](js/character-controller.js)): Handles skeletal animations cross-fades, virtual groups, inputs, collision physics, and procedural locomotion visuals.
-2.  **`Custom HUD`** ([js/custom-hud.js](js/custom-hud.js)): Dynamically inserts and manages the glassmorphism HUD, setting sliders/toggles, and the FPS monitor overlay.
-3.  **`Custom Pointer`** ([js/custom-pointer.js](js/custom-pointer.js)): Implements a synchronized custom canvas cursor (dot + expanding ring) that adapts dynamically to interactive elements.
+2.  **`Custom HUD (Optional)`** ([js/custom-hud.js](js/custom-hud.js)): Dynamically inserts and manages the glassmorphism HUD, setting sliders/toggles, and the FPS monitor overlay.
+3.  **`Custom Pointer (Optional)`** ([js/custom-pointer.js](js/custom-pointer.js)): Implements a synchronized custom canvas cursor (dot + expanding ring) that adapts dynamically to interactive elements.
 
 ### Canonical Setup Reference:
 For a fully detailed, fully-commented production implementation, refer to the `loadCharacter` function inside [js/app.js](js/app.js). 
