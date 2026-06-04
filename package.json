@@ -7,8 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "crazyramirez (https://github.com/crazyramirez)",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@gltf-transform/core": "^3.10.1",
