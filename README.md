@@ -8,7 +8,7 @@ An advanced third-person character locomotion and physics framework built with *
 
 > If this tool saves you time, consider supporting its development! Every coffee keeps the rays casting. ☕
 >
-> <a href="https://www.buymeacoffee.com/crazyramirez" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a>
+> <a href="https://www.buymeacoffee.com/drlerian" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a>
 
 ---
 
