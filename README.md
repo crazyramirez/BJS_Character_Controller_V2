@@ -123,7 +123,7 @@ This utility allows you to easily convert FBX folders, apply Draco mesh compress
 This project is licensed under the **MIT License** - see the [LICENSE](file:///d:/DEV/BJS%20Character%20Controller%20V2/LICENSE) file for details.
 
 > [!IMPORTANT]
-> You are free to use, modify, and distribute this software for personal and commercial projects, provided that you keep the original copyright notice and attribute the authorship of the Character Controller to **crazyramirez (https://github.com/crazyramirez)** in all copies or substantial portions of the software.
+> You are free to use, modify, and distribute this software for personal and commercial projects, provided that you keep the original copyright notice and attribute the authorship of the Character Controller to **Diego Ramirez (https://github.com/crazyramirez)** in all copies or substantial portions of the software.
 
 
 
