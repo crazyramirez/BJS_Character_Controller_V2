@@ -27,7 +27,7 @@ const DEFAULT_CHAR_CONFIG = {
     SPD_JOG: 3,           // Maximum physical jogging speed (blend speed threshold)
     SPD_SPRINT: 5,        // Maximum physical sprinting speed
     SPD_CROUCH: 2,        // Maximum physical crouching walk speed
-    SPD_CROUCH_RUN: 3.6,  // Maximum physical crouching run speed
+    SPD_CROUCH_RUN: 3.2,  // Maximum physical crouching run speed
     ACCEL: 14,            // Movement acceleration rate (speed-up responsiveness)
     DECEL: 16,            // Movement deceleration rate (braking/stopping responsiveness)
     ROT_SPD: 40,          // Character yaw rotation speed responsiveness
@@ -559,7 +559,7 @@ class CharCtrl {
     this._standEllipsoidY = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
     this._standEllipsoidWidth = this.root.ellipsoid ? this.root.ellipsoid.x : 0.35;
     this._standMeshY = this.visualMesh.position.y;
-    this._crouchEllipsoidY = 0.65;
+    this._crouchEllipsoidY = 0.75;
     this._lastY = this.root.position.y;
     this._highestAirborneY = this.root.position.y;
 
@@ -1518,10 +1518,53 @@ class CharCtrl {
       this.targetLocalY = this._standMeshY;
     }
 
+    // Calculate forward/backward locomotion offset direction based on follow lock state
+    const isMovingBackward = this.CAM_FOLLOW_LOCK && (this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2));
+    const localMoveSign = isMovingBackward ? -1 : 1;
+
+    // Raycast to detect obstacles in the offset direction (forward or backward) to prevent pushing the ellipsoid into walls/stairs
+    let safeMaxOffsetZ = 0.22;
+    const facingDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY));
+    const rayDir = facingDir.scale(localMoveSign);
+
+    // Calculate heights dynamically based on the current ellipsoid geometry to ensure accurate checks while crouching or rolling
+    const currentCenterY = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
+    const currentHalfHeight = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
+
+    // Check at top (head), center (waist), and bottom (feet) of the active ellipsoid volume
+    const heights = [
+      currentCenterY + currentHalfHeight * 0.7,
+      currentCenterY,
+      currentCenterY - currentHalfHeight * 0.7
+    ];
+    const margin = 0.05;
+
+    for (const h of heights) {
+      const rayStart = this.root.position.add(new BABYLON.Vector3(0, h, 0));
+      const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), (mesh) => {
+        return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+      });
+      if (pick && pick.hit) {
+        const availableSpace = Math.max(0, pick.distance - this._standEllipsoidWidth - margin);
+        safeMaxOffsetZ = Math.min(safeMaxOffsetZ, availableSpace);
+      }
+    }
+
+    // Scale offset based on speed ratio and the safe maximum offset
+    const targetOffsetZ = (this.speed / this.SPD_SPRINT) * safeMaxOffsetZ * localMoveSign;
+    this.localOffsetZ = lerp(this.localOffsetZ || 0, targetOffsetZ, 1 - Math.exp(-4 * dt));
+
+    // Instant safety clamp: ensure the active offset never exceeds the physical space detected in this frame
+    this.localOffsetZ = Math.max(-safeMaxOffsetZ, Math.min(safeMaxOffsetZ, this.localOffsetZ));
+
     // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches (slowed down to 4 for premium fluid feel)
     if (this.root.ellipsoid) {
       this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-4 * dt));
       this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
+
+      // Transform local Z offset to world space based on character rotation (Y-axis)
+      this.root.ellipsoidOffset.x = this.localOffsetZ * Math.sin(this.rotY);
+      this.root.ellipsoidOffset.z = this.localOffsetZ * Math.cos(this.rotY);
 
       const newWidth = lerp(this.root.ellipsoid.x, targetEllipsoidWidth, 1 - Math.exp(-4 * dt));
       this.root.ellipsoid.x = newWidth;

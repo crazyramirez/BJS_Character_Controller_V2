@@ -251,8 +251,9 @@ async function createDemoScene() {
   stairM.roughness = rough;
   const numSteps = 8;
   for (let i = 0; i < numSteps; i++) {
-    const step = BABYLON.MeshBuilder.CreateBox(`step_${i}`, { width: 4, height: 0.2, depth: 0.45 }, scene);
-    step.position.set(-10, 0.1 + 0.2 * i, 5 + 0.4 * i);
+    // Made steps wider (5.5m), thicker/higher (0.4m), and deeper (0.8m)
+    const step = BABYLON.MeshBuilder.CreateBox(`step_${i}`, { width: 5.5, height: 0.4, depth: 0.8 }, scene);
+    step.position.set(-10, 0.2 + 0.2 * i, 5 + 0.6 * i);
     step.checkCollisions = true;
     step.isPickable = true;
     step.receiveShadows = true;
