@@ -272,7 +272,7 @@ async function createDemoScene() {
   pp.imageProcessing.vignetteEnabled = true;
   pp.imageProcessing.vignetteWeight = 2.5;
   pp.sharpenEnabled = true;
-  pp.sharpenAmount = 0.1;
+  pp.sharpenAmount = 0.02;
   pp.imageProcessing.vignetteColor = new BABYLON.Color4(0, 0, 0, 0);
 
   // ── LOAD CHARACTER ─────────────────────────────────────

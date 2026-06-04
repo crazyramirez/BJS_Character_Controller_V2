@@ -1451,6 +1451,7 @@ class CharCtrl {
       this._airborneTime += dt;
       this._highestAirborneY = Math.max(this._highestAirborneY, this.root.position.y);
     } else {
+      this._lastAirborneTime = this._airborneTime;
       this._airborneTime = 0;
       this._highestAirborneY = this.root.position.y;
     }
@@ -1510,8 +1511,8 @@ class CharCtrl {
 
     const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
     const targetOffset = useCrouchHeight ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
-    // Make the ellipsoid slightly wider when sprinting (from 0.35 to 0.65) so the head doesn't clip into low ceilings/walls when leaning forward at high speeds
-    const targetEllipsoidWidth = (this.state === S.SPRINT) ? 0.65 : this._standEllipsoidWidth;
+    // Keep the ellipsoid width constant to avoid clipping/penetration bugs
+    const targetEllipsoidWidth = this._standEllipsoidWidth;
 
     if (isTempStandingAction) {
       this.targetLocalY = this._standMeshY;
@@ -1646,6 +1647,36 @@ class CharCtrl {
         const k = this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08);
         this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
         this.root.rotation.y = this.rotY;
+      }
+
+      // Wall detection: check if there is an obstacle directly in front at an unclimbable height
+      let wallNormal = null;
+      if (hasMove && dir.length() > 0.01) {
+        // Ray starts 0.45m above feet (feet is at -0.96 relative to capsule center, so -0.51 relative to center)
+        const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.51, 0));
+        const rayDist = this._standEllipsoidWidth + 0.15; // slightly ahead of capsule edge
+        const ray = new BABYLON.Ray(rayStart, dir, rayDist);
+        const pick = this.scene.pickWithRay(ray, (mesh) => {
+          return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+        });
+        if (pick && pick.hit) {
+          wallNormal = pick.getNormal(true);
+        }
+      }
+
+      // Project movement direction onto the wall plane if a wall is encountered
+      if (wallNormal) {
+        wallNormal.y = 0;
+        wallNormal.normalize();
+        const dot = BABYLON.Vector3.Dot(dir, wallNormal);
+        if (dot < 0) { // Moving towards/into the wall
+          dir.subtractInPlace(wallNormal.scale(dot));
+          if (dir.length() > 0.01) {
+            dir.normalize();
+          } else {
+            dir.set(0, 0, 0);
+          }
+        }
       }
 
       // Move the Capsule using collisions!
@@ -1800,13 +1831,13 @@ class CharCtrl {
       if (this.jumpVel > 1.0) {
         // Stretching upwards on rise
         this.targetScale.set(0.92, 1.12, 0.92);
-      } else if (this.jumpVel < -2.0) {
+      } else if (this.jumpVel < -2.0 && this._airborneTime > 0.15) {
         // Stretching downwards on fall
         this.targetScale.set(0.90, 1.15, 0.90);
       }
     } else {
       // Check if we just landed this frame and squash
-      if (wasGrounded === false) {
+      if (wasGrounded === false && this._lastAirborneTime > 0.15) {
         if (this.jumpVel < -4.0) {
           // Heavy landing squash & trigger heavy camera shake
           this.targetScale.set(1.22, 0.72, 1.22);
