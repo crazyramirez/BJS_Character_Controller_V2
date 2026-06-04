@@ -818,23 +818,10 @@ body.touch-device .keys-grid {
   pointer-events: none;
 }
 
-/* ── PREMIUM HARDWARE CUSTOM POINTER ── */
 body.custom-cursor-active,
 body.custom-cursor-active * {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='7' fill='none' stroke='%230099ff' stroke-width='1.5'/%3E%3Ccircle cx='12' cy='12' r='2.5' fill='%230099ff' stroke='%23080810' stroke-width='1.5'/%3E%3C/svg%3E") 12 12, auto;
+  cursor: none !important;
 }
-
-body.custom-cursor-active a,
-body.custom-cursor-active button,
-body.custom-cursor-active input,
-body.custom-cursor-active label,
-body.custom-cursor-active select,
-body.custom-cursor-active [role="button"],
-body.custom-cursor-active .slider-toggle {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='2.5' fill='%2300aaff' stroke='%23080810' stroke-width='1.5'/%3E%3C/svg%3E") 12 12, pointer !important;
-}
-
-
 
 
 #custom-pointer-canvas {
@@ -843,4 +830,16 @@ body.custom-cursor-active .slider-toggle {
   top: 0;
   left: 0;
   z-index: 999999;
+}
+
+input[type="range"] {
+  cursor: none !important;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  cursor: none !important;
+}
+
+input[type="range"]::-moz-range-thumb {
+  cursor: none !important;
 }
