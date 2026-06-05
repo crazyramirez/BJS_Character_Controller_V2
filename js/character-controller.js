@@ -2110,12 +2110,67 @@ class CharCtrl {
       }
     } else if (this.state === S.ROLL) {
       if (this.usePhysics) {
-        let targetY = this.grounded ? -4.0 : currentVelocity.y;
-        if (this.jumpVel > 0.1) {
-          targetY = this.jumpVel;
-          this.jumpVel = 0;
-        } else if (_snapVelY !== 0) {
-          targetY = _snapVelY;
+        // Step climbing detection during roll
+        let stepClimbVelY = 0;
+        if (this._rollMoving && (this.grounded || this._wasClimbingStep)) {
+          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85, 0));
+          const rayDist = 0.7; // slightly ahead of capsule edge (radius 0.35 + margin 0.35)
+          const lowRay = new BABYLON.Ray(lowRayStart, this._rollDir, rayDist);
+          const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
+            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+          });
+
+          if (lowPick && lowPick.hit) {
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40, 0));
+            const highRay = new BABYLON.Ray(highRayStart, this._rollDir, rayDist);
+            const highPick = this.scene.pickWithRay(highRay, (mesh) => {
+              return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+            });
+
+            if (!highPick || !highPick.hit) {
+              stepClimbVelY = 2.0; // Apply upward step velocity to slide onto the step
+            }
+          }
+        }
+        this._wasClimbingStep = (stepClimbVelY !== 0);
+
+        // Project roll direction onto the ground slope normal for smooth slope traversal
+        let rollVelocity = new BABYLON.Vector3(this._rollDir.x * this.speed, 0, this._rollDir.z * this.speed);
+        let dot = 0;
+        if (this.grounded && this._groundNormal) {
+          dot = BABYLON.Vector3.Dot(this._rollDir, this._groundNormal);
+          const slopeDir = this._rollDir.subtract(this._groundNormal.scale(dot));
+          if (slopeDir.length() > 0.01) {
+            slopeDir.normalize();
+            rollVelocity.set(slopeDir.x * this.speed, slopeDir.y * this.speed, slopeDir.z * this.speed);
+          }
+        }
+
+        let targetY = rollVelocity.y;
+        if (!this.grounded) {
+          targetY = currentVelocity.y;
+        } else {
+          if (this.jumpVel > 0.1) {
+            targetY = this.jumpVel;
+            this.jumpVel = 0;
+          } else if (stepClimbVelY !== 0) {
+            targetY = stepClimbVelY;
+          } else if (_snapVelY !== 0) {
+            targetY = _snapVelY;
+          } else if (this.onScalable) {
+            if (dot < -0.01) {
+              // Rolling up: rely on the slope projected Y velocity
+              targetY = rollVelocity.y;
+            } else if (dot > 0.01) {
+              // Rolling down: add gentle downward snap pressure
+              targetY = rollVelocity.y - 1.5;
+            } else {
+              targetY = -1.5;
+            }
+          } else {
+            // Flat ground snap
+            targetY = -4.0;
+          }
         }
 
         if (this._rollMoving) {
@@ -2127,14 +2182,54 @@ class CharCtrl {
               airDir.normalize();
               BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
             }
+            // Update rollVelocity since _rollDir changed
+            if (this.grounded && this._groundNormal) {
+              const airDot = BABYLON.Vector3.Dot(this._rollDir, this._groundNormal);
+              const slopeDir = this._rollDir.subtract(this._groundNormal.scale(airDot));
+              if (slopeDir.length() > 0.01) {
+                slopeDir.normalize();
+                rollVelocity.set(slopeDir.x * this.speed, slopeDir.y * this.speed, slopeDir.z * this.speed);
+              }
+            } else {
+              rollVelocity.set(this._rollDir.x * this.speed, 0, this._rollDir.z * this.speed);
+            }
           }
-          this.physicsBody.setLinearVelocity(new BABYLON.Vector3(this._rollDir.x * this.speed, targetY, this._rollDir.z * this.speed));
+          this.physicsBody.setLinearVelocity(new BABYLON.Vector3(rollVelocity.x, targetY, rollVelocity.z));
         } else {
           this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, targetY, 0));
         }
-        this._wasClimbingStep = false;
       } else {
-        const snapDown = this.grounded ? -4.0 : this.jumpVel;
+        // Project roll direction onto slope in kinematic mode
+        let rollVelocity = this._rollDir.scale(this.speed);
+        let dot = 0;
+        if (this.grounded && this._groundNormal) {
+          dot = BABYLON.Vector3.Dot(this._rollDir, this._groundNormal);
+          const slopeDir = this._rollDir.subtract(this._groundNormal.scale(dot));
+          if (slopeDir.length() > 0.01) {
+            slopeDir.normalize();
+            rollVelocity = slopeDir.scale(this.speed);
+          }
+        }
+
+        let snapDown = 0;
+        if (this.grounded) {
+          if (this.onScalable) {
+            if (dot < -0.01) {
+              // Rolling up: no downward snap (let it climb naturally)
+              snapDown = 0;
+            } else if (dot > 0.01) {
+              // Rolling down: snap down to keep glued
+              snapDown = -3.5;
+            } else {
+              snapDown = -1.5;
+            }
+          } else {
+            snapDown = -3.0; // Flat ground snap
+          }
+        } else {
+          snapDown = this.jumpVel;
+        }
+
         const vert = new BABYLON.Vector3(0, snapDown * dt, 0);
         if (this._rollMoving) {
           // Steer roll direction mid-air when AIR_CONTROL is enabled
@@ -2145,8 +2240,19 @@ class CharCtrl {
               airDir.normalize();
               BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
             }
+            // Update rollVelocity since _rollDir changed
+            if (this.grounded && this._groundNormal) {
+              const airDot = BABYLON.Vector3.Dot(this._rollDir, this._groundNormal);
+              const slopeDir = this._rollDir.subtract(this._groundNormal.scale(airDot));
+              if (slopeDir.length() > 0.01) {
+                slopeDir.normalize();
+                rollVelocity = slopeDir.scale(this.speed);
+              }
+            } else {
+              rollVelocity = this._rollDir.scale(this.speed);
+            }
           }
-          this.root.moveWithCollisions(this._rollDir.scale(this.speed * dt).add(vert));
+          this.root.moveWithCollisions(rollVelocity.scale(dt).add(vert));
         } else {
           this.root.moveWithCollisions(vert);
         }
