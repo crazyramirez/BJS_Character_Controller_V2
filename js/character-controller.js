@@ -1501,7 +1501,7 @@ class CharCtrl {
     // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
     // Add a small extra buffer (0.12m) while crouching is active to absorb the transition frames where
     // the ellipsoid hasn't fully settled yet and the ray might otherwise just miss the ground.
-    const baseRayLen = this.usePhysics ? 0.30 : 0.20;
+    const baseRayLen = this.usePhysics ? 0.36 : 0.28;
     const crouchBuffer = this.crouching ? 0.12 : 0;
     const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : (baseRayLen + crouchBuffer);
     const downDir = new BABYLON.Vector3(0, -1, 0);
@@ -1532,9 +1532,10 @@ class CharCtrl {
         this._groundNormal = pick.getNormal(true);
         const name = pick.pickedMesh.name || "";
         this.onStairs = /step|stair/i.test(name);
-        // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
+        // Check if mesh is marked, matches step/stair naming patterns, is not default ground, or has sloped surface normals
         if (pick.pickedMesh.meshType === "scalable" ||
-          (name && /step|stair|ramp|platform|floor/i.test(name))) {
+          (name && /step|stair|ramp|platform|floor/i.test(name)) ||
+          (name && name !== "gnd")) {
           onScalable = true;
         } else {
           const normal = this._groundNormal;
@@ -1648,7 +1649,8 @@ class CharCtrl {
         } else {
           this._lastGroundedFrame = (this._lastGroundedFrame || 0) + 1;
           // Buffer only for ramp/stair micro-bounce — never during jump states.
-          this.grounded = !isJumpingState && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 1.5;
+          // Increased velocity threshold from 1.5 to 3.5 to prevent losing grounding while sprinting down slopes.
+          this.grounded = !isJumpingState && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 3.5;
         }
       }
     } else {

@@ -135,9 +135,10 @@ The core architecture consists of three components in the `js/` directory:
 2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Double Jump, Air Control, and sliders).
 3.  **`custom-pointer.js`**: Responsive custom cursor.
 
-We have provided two setup examples to guide your implementation:
+We have provided three setup examples to guide your implementation:
 *   **[js/app-minimal.js](js/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.
-*   **[js/app.js](js/app.js)**: A fully featured production loading example including advanced lighting, shadows, skyboxes, environment props, post-processing, and HUD settings synchronization.
+*   **[js/app-complex.js](js/app-complex.js)**: A full-featured setup that loads a complete custom 3D environment model ([assets/backyard_demo.glb](assets/backyard_demo.glb)) and generates static Havok physics mesh aggregates for all geometry, while keeping all HUD setting controls.
+*   **[js/app.js](js/app.js)**: A fully featured production loading example including advanced lighting, shadows, skyboxes, procedural environment shapes (boxes, ramp, stairs), post-processing, and HUD settings synchronization.
 
 ---
 
