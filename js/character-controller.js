@@ -1803,6 +1803,14 @@ class CharCtrl {
           mass: 1,
           inertia: new BABYLON.Vector3(0, 0, 0)
         });
+        // When switching to the crouchShape the capsule bottom rises and Havok can
+        // momentarily lift the body away from the ground, causing _checkGrounded() to miss
+        // for 1-2 frames and triggering a spurious JUMP_LOOP fall state.
+        // Snap it back down with a small downward impulse so the body stays grounded.
+        if (useCrouchHeight && this.grounded) {
+          const cv = this.physicsBody.getLinearVelocity();
+          this.physicsBody.setLinearVelocity(new BABYLON.Vector3(cv.x, -2.5, cv.z));
+        }
       }
     } else {
       const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
