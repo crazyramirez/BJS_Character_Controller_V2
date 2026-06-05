@@ -30,7 +30,7 @@ const engine = new BABYLON.Engine(canvas, true, {
 // ═══════════════════════════════════════════════════════════
 // CHARACTER INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
-async function loadCharacter(scene, shadow, camera) {
+async function loadCharacter(scene, shadow, camera, usePhysics) {
   setLoad(10, 'Loading character...');
   charRes = await BABYLON.SceneLoader.ImportMeshAsync('', 'assets/', 'character_animated.glb', scene);
   setLoad(75, 'Retargeting bones...');
@@ -55,7 +55,6 @@ async function loadCharacter(scene, shadow, camera) {
   playerCapsule.visibility = 0.5;
   playerCapsule.isPickable = false;
 
-  const usePhysics = localStorage.getItem('use-physics') !== 'false';
   playerCapsule.checkCollisions = !usePhysics;
   playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);
   playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
@@ -108,13 +107,36 @@ async function createDemoScene() {
   scene.fogDensity = 0.008;
   scene.fogColor = C3(0.04, 0.04, 0.09);
 
-  const usePhysics = localStorage.getItem('use-physics') !== 'false';
+  // Physics mode: HUD/localStorage override takes priority.
+  // If no override, auto-detect: try Havok, fall back to kinematic silently.
+  const physicsOverride = localStorage.getItem('use-physics');
+  let usePhysics = false;
 
-  // Enable Havok Physics
-  if (usePhysics) {
-    const havokInstance = await HavokPhysics();
-    const hk = new BABYLON.HavokPlugin(true, havokInstance);
-    scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
+  if (physicsOverride === 'false') {
+    usePhysics = false;
+  } else if (physicsOverride === 'true') {
+    // Forced ON via HUD — still try/catch so a broken WASM doesn't crash the app.
+    try {
+      const havokInstance = await HavokPhysics();
+      const hk = new BABYLON.HavokPlugin(true, havokInstance);
+      scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
+      usePhysics = true;
+    } catch (e) {
+      console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
+      localStorage.removeItem('use-physics');
+      usePhysics = false;
+    }
+  } else {
+    // Auto-detect: try Havok, fall back to kinematic if unavailable.
+    try {
+      const havokInstance = await HavokPhysics();
+      const hk = new BABYLON.HavokPlugin(true, havokInstance);
+      scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
+      usePhysics = true;
+    } catch (e) {
+      console.info('[Physics] Havok unavailable — using kinematic mode.', e);
+      usePhysics = false;
+    }
   }
 
   // Enable Collisions
@@ -310,7 +332,7 @@ async function createDemoScene() {
   pp.imageProcessing.vignetteColor = new BABYLON.Color4(0, 0, 0, 0);
 
   // ── LOAD CHARACTER ─────────────────────────────────────
-  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera);
+  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
 
   // Hook up HUD setting toggles dynamically
   const togglePhysics = $('toggle-physics');
