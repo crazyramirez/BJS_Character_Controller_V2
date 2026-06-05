@@ -1108,6 +1108,27 @@ class CharCtrl {
       };
       addListener(canvasEl, 'pointerdown', onCanvasTap);
     }
+
+    // Prevent browser double-tap zoom and pinch gestures on game interface
+    let lastTouchEnd = 0;
+    const onTouchEnd = (e) => {
+      const target = e.target;
+      if (target.closest('#mobile-ctrls') || target.closest('#joystick-zone') || target.id === 'c') {
+        const now = performance.now();
+        if (now - lastTouchEnd <= 300) {
+          e.preventDefault();
+        }
+        lastTouchEnd = now;
+      }
+    };
+    const onGestureStart = (e) => {
+      e.preventDefault();
+    };
+
+    document.addEventListener('touchend', onTouchEnd, { passive: false });
+    document.addEventListener('gesturestart', onGestureStart, { passive: false });
+    this._touchListeners.push({ element: document, type: 'touchend', listener: onTouchEnd });
+    this._touchListeners.push({ element: document, type: 'gesturestart', listener: onGestureStart });
   }
 
   destroy() {

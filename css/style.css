@@ -4,6 +4,7 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   overflow: hidden;
   background: #0b0b14;
@@ -15,6 +16,7 @@ body {
   -webkit-user-drag: none;
   -moz-user-drag: none;
   -ms-user-drag: none;
+  touch-action: none;
 }
 
 #c {
@@ -250,6 +252,7 @@ body {
   pointer-events: none;
   z-index: 100;
   display: none;
+  touch-action: none;
   /* Show only when touch device detected */
 }
 
@@ -282,6 +285,7 @@ body.touch-device #mobile-ctrls {
   display: flex;
   align-items: center;
   justify-content: center;
+  touch-action: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -300,6 +304,7 @@ body.touch-device #mobile-ctrls {
   backdrop-filter: blur(4px);
   position: absolute;
   cursor: pointer;
+  touch-action: none;
   transition: background 0.15s, border-color 0.15s, transform 0.15s;
 }
 
@@ -321,6 +326,7 @@ body.touch-device #mobile-ctrls {
   pointer-events: auto;
   align-items: center;
   justify-items: center;
+  touch-action: none;
 }
 
 .touch-btn {
@@ -341,7 +347,7 @@ body.touch-device #mobile-ctrls {
   justify-content: center;
   cursor: pointer;
   user-select: none;
-  touch-action: manipulation;
+  touch-action: none;
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
@@ -441,6 +447,7 @@ body.touch-device .main-panel {
   max-height: calc(100dvh - 32px);
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 body.touch-device .main-panel::-webkit-scrollbar {
