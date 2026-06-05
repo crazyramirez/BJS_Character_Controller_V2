@@ -1478,19 +1478,32 @@ class CharCtrl {
 
   // ── RAYCAST GROUND DETECT ──────────────────────────────
   _checkGrounded() {
-    // Ray origin: slightly ABOVE the capsule bottom so the ray never starts inside the ground mesh.
-    // crouchShape bottom = center - 0.70, standShape bottom = center - 0.90.
-    // Using a fixed -0.9 offset puts the origin 0.20m inside the ground when crouching/rolling → miss.
-    const usingCrouchShape = this.usePhysics
-      ? (this._crouchShape && this.physicsBody && this.physicsBody.shape === this._crouchShape)
-      : (this.crouching || this.state === S.ROLL);
-    const originYOffset = usingCrouchShape ? -0.62 : -0.82;
+    // Ray origin: derived from the ACTUAL current capsule/ellipsoid bottom so that the ray
+    // stays consistent during the smooth crouch transition (ellipsoid lerps slowly at rate 4).
+    // Using a hardcoded offset that flips instantly while the shape is still transitioning
+    // causes a 1-frame miss → grounded=false → unwanted fall state.
+    let originYOffset;
+    if (this.usePhysics) {
+      // For Havok the shape switches instantly; use the assigned shape bottom.
+      const usingCrouchShape = this._crouchShape && this.physicsBody && this.physicsBody.shape === this._crouchShape;
+      originYOffset = usingCrouchShape ? -0.62 : -0.82;
+    } else {
+      // For kinematic, read the LIVE ellipsoid.y so the offset tracks the smooth lerp transition.
+      // ellipsoid.y is the half-height; capsule bottom = -ellipsoid.y + ellipsoidOffset.y
+      const liveHalfH = this.root.ellipsoid ? this.root.ellipsoid.y : this._standEllipsoidY;
+      const liveOffY  = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
+      // Place ray origin 0.08m above the actual capsule bottom to avoid starting inside the ground
+      originYOffset = -(liveHalfH) + liveOffY + 0.08;
+    }
 
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
     // On flat ground, we use a tight ray (0.20m in kinematic, 0.26m in physics) so that the character snaps instantly and never floats.
     // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
+    // Add a small extra buffer (0.12m) while crouching is active to absorb the transition frames where
+    // the ellipsoid hasn't fully settled yet and the ray might otherwise just miss the ground.
     const baseRayLen = this.usePhysics ? 0.30 : 0.20;
-    const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : baseRayLen;
+    const crouchBuffer = this.crouching ? 0.12 : 0;
+    const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : (baseRayLen + crouchBuffer);
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
     const radius = 0.22; // Slightly inset from capsule width of 0.35

@@ -61,7 +61,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
 
   // Parent the visual mesh to the capsule, offset Y so feet touch bottom (adjusted for collision padding)
   charRoot.setParent(playerCapsule);
-  charRoot.position.set(0, usePhysics ? -0.90 : -0.98, 0);
+  charRoot.position.set(0, usePhysics ? -0.90 : -0.97, 0);
   charRoot.rotation.set(0, 0, 0);
 
   setLoad(90, 'Building controllers...');
