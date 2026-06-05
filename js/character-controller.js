@@ -1,6 +1,26 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════════
+// HOW TO REASSIGN ANIMATIONS AT RUNTIME:
+// ═══════════════════════════════════════════════════════════
+// You can dynamically change any animation on the character controller
+// using the AnimCtrl instance (usually accessed via `charCtrl.anim`):
+//
+// 1. Reassigning walk/run/idle/etc. animations:
+//    charCtrl.anim.setWalkAnim(newWalkAnimGroup);
+//    charCtrl.anim.setRunAnim(newRunAnimGroup);
+//    charCtrl.anim.setIdleAnim(newIdleAnimGroup);
+//
+// 2. Reassigning actions or combat animations:
+//    charCtrl.anim.setJumpStartAnim(newJumpStart);
+//    charCtrl.anim.setRollAnim(newRoll);
+//    charCtrl.anim.setPunchJabAnim(newPunchJab);
+//
+// 3. Setting play ranges (keyframes) on any animation:
+//    charCtrl.anim.setAnimationRanges('Walk_Loop', startFrame, endFrame);
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
 // CONFIGURABLE CHARACTER VARIABLES & SETTINGS
 // ═══════════════════════════════════════════════════════════
 const DEFAULT_CHAR_CONFIG = {
@@ -430,6 +450,88 @@ class AnimCtrl {
   }
 
   has(name) { return this.g.has(name); }
+
+  setAnimation(name, animationGroup) {
+    const oldAg = this.g.get(name);
+    if (oldAg && oldAg.isPlaying) {
+      oldAg.stop();
+    }
+    this.g.set(name, animationGroup);
+    return true;
+  }
+
+  setWalkAnim(animationGroup) {
+    return this.setAnimation('Walk_Loop', animationGroup);
+  }
+
+  setRunAnim(animationGroup) {
+    return this.setAnimation('Sprint_Loop', animationGroup);
+  }
+
+  setIdleAnim(animationGroup) {
+    return this.setAnimation('Idle_Loop', animationGroup);
+  }
+
+  setCrouchIdleAnim(animationGroup) {
+    return this.setAnimation('Crouch_Idle_Loop', animationGroup);
+  }
+
+  setCrouchFwdAnim(animationGroup) {
+    return this.setAnimation('Crouch_Fwd_Loop', animationGroup);
+  }
+
+  setJumpStartAnim(animationGroup) {
+    return this.setAnimation('Jump_Start', animationGroup);
+  }
+
+  setJumpLoopAnim(animationGroup) {
+    return this.setAnimation('Jump_Loop', animationGroup);
+  }
+
+  setJumpLandAnim(animationGroup) {
+    return this.setAnimation('Jump_Land', animationGroup);
+  }
+
+  setRollAnim(animationGroup) {
+    return this.setAnimation('Roll', animationGroup);
+  }
+
+  setPunchJabAnim(animationGroup) {
+    return this.setAnimation('Punch_Jab', animationGroup);
+  }
+
+  setPunchCrossAnim(animationGroup) {
+    return this.setAnimation('Punch_Cross', animationGroup);
+  }
+
+  setSpellEnterAnim(animationGroup) {
+    return this.setAnimation('Spell_Simple_Enter', animationGroup);
+  }
+
+  setSpellShootAnim(animationGroup) {
+    return this.setAnimation('Spell_Simple_Shoot', animationGroup);
+  }
+
+  setSpellExitAnim(animationGroup) {
+    return this.setAnimation('Spell_Simple_Exit', animationGroup);
+  }
+
+  setInteractAnim(animationGroup) {
+    return this.setAnimation('Interact', animationGroup);
+  }
+
+  setAnimationRanges(name, fromFrame, toFrame) {
+    const ag = this.g.get(name);
+    if (ag) {
+      ag.from = fromFrame;
+      ag.to = toFrame;
+      if (ag.isPlaying) {
+        ag.start(ag.loop, ag.speedRatio, fromFrame, toFrame, false);
+      }
+      return true;
+    }
+    return false;
+  }
 
   destroy() {
     this.forceStop();
