@@ -137,7 +137,7 @@ The core architecture consists of three components in the `js/` directory:
 
 We have provided three setup examples to guide your implementation:
 *   **[js/app-minimal.js](js/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.
-*   **[js/app-complex.js](js/app-complex.js)**: A full-featured setup that loads a complete custom 3D environment model ([assets/backyard_demo.glb](assets/backyard_demo.glb)) and generates static Havok physics mesh aggregates for all geometry, while keeping all HUD setting controls.
+*   **[js/app-complex.js](js/app-complex.js)**: A full-featured setup designed to demonstrate how the character controller functions with a highly complex 3D scenery model ([assets/backyard_demo.glb](assets/backyard_demo.glb)) containing many intricate, complex collisions and polygon-heavy geometry.
 *   **[js/app.js](js/app.js)**: A fully featured production loading example including advanced lighting, shadows, skyboxes, procedural environment shapes (boxes, ramp, stairs), post-processing, and HUD settings synchronization.
 
 ---
