@@ -446,9 +446,11 @@ body.touch-device .main-panel {
 body.touch-device .main-panel::-webkit-scrollbar {
   width: 4px;
 }
+
 body.touch-device .main-panel::-webkit-scrollbar-track {
   background: transparent;
 }
+
 body.touch-device .main-panel::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 2px;
@@ -469,7 +471,8 @@ body.touch-device .bmac-panel {
 body.touch-device .bmac-mobile-only {
   display: block !important;
   position: sticky;
-  bottom: -12px; /* Aligns with bottom padding of the panel */
+  bottom: -12px;
+  /* Aligns with bottom padding of the panel */
   background: rgba(8, 8, 16, 0.92);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);

@@ -31,7 +31,7 @@ const DEFAULT_CHAR_CONFIG = {
     MOVE_LEFT: ['KeyA', 'ArrowLeft'],       // Move left
     MOVE_RIGHT: ['KeyD', 'ArrowRight'],     // Move right
     SPRINT: ['ShiftLeft', 'ShiftRight'],    // Run / Sprint
-    CROUCH: ['ControlLeft', 'ControlRight'],// Crouch
+    CROUCH: ['ControlLeft', 'ControlRight', 'KeyC'],// Crouch
     JUMP: ['Space'],                        // Jump / Double jump (in mid-air)
     ROLL: ['KeyR'],                         // Roll / Dodge
     PUNCH: ['KeyQ'],                        // Punch combo (Jab & Cross)
