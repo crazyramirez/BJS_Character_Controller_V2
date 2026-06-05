@@ -182,6 +182,20 @@
             style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">Space</span>
           in air to queue a <span style="color:#ffcc00; font-weight: 600;">Double Jump (Landing Roll)</span>
         </div>
+        
+        <!-- Inline Mobile Support -->
+        <div class="bmac-mobile-only" style="display: none; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+          <div class="bmac-content">
+            <span class="bmac-tag">Support</span>
+            <p class="bmac-text" style="font-size: 11px; color: #8c8c9c; margin-bottom: 8px; line-height: 1.4;">If you like this controller, consider supporting my work!</p>
+            <a href="https://buymeacoffee.com/drlerian" target="_blank" rel="noopener noreferrer" class="bmac-btn">
+              <svg class="bmac-icon" viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
+                <path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z" />
+              </svg>
+              <span>Buy me a coffee</span>
+            </a>
+          </div>
+        </div>
       </div>
     </div>
     <div class="panel keys-grid">
@@ -262,7 +276,15 @@
   const modalHTML = `
     <div class="info-modal-content">
       <div class="info-modal-header">
-        <h2>BJS Character Controller V2 - Info & Integration</h2>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <h2 style="margin: 0;">BJS Character Controller V2 - Info & Integration</h2>
+          <a href="https://github.com/crazyramirez/BJS_Character_Controller_V2" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #a2a7db; font-size: 11px; text-decoration: none; font-weight: 600; letter-spacing: 0.5px; transition: all 0.25s; height: 24px;" onmouseover="this.style.background='rgba(0, 255, 153, 0.1)'; this.style.borderColor='rgba(0, 255, 153, 0.3)'; this.style.color='#00ff99';" onmouseout="this.style.background='rgba(255, 255, 255, 0.04)'; this.style.borderColor='rgba(255, 255, 255, 0.1)'; this.style.color='#a2a7db';">
+            <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.137 20.162 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
+            </svg>
+            <span>GitHub</span>
+          </a>
+        </div>
         <button class="info-modal-close" id="info-modal-close" aria-label="Close panel">✕</button>
       </div>
       <div class="info-modal-body">
