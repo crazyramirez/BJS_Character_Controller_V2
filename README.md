@@ -34,36 +34,35 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Havok Physics (Default)**: Leverages the WASM-powered **Havok Physics** engine. The character capsule is created as a dynamic `PhysicsBody` with defined mass and inertia properties, interacting naturally with other dynamic aggregates (like boxes, cylinders, and triggers).
 *   **Kinematic Collisions**: Runs entirely within Babylon's native collision engine using kinematic ellipsoids (`moveWithCollisions`). Havok initialization is skipped entirely, providing maximum performance and deterministic locomotion.
 
-### Selecting the mode
+### Automatic detection (default behaviour)
 
-**Option A — pass it at instantiation:**
+The engine **auto-detects** on every load. No configuration required:
+
+| `localStorage('use-physics')` | Result |
+|---|---|
+| not set | Try Havok → success: physics mode. Fail: kinematic silently. |
+| `'true'` (HUD forced ON) | Try Havok → success: physics mode. Fail: kinematic + clears override. |
+| `'false'` (HUD forced OFF) | Kinematic always, skips Havok init entirely. |
+
+### Overriding the mode
+
+**HUD toggle** — easiest. Saves to `localStorage` and reloads. Clears itself automatically if Havok fails to load.
+
+**Programmatic override via `localStorage`:**
 ```javascript
-// Havok physics ON
-const charCtrl = new CharacterController(scene, camera, root, anims, {
-  usePhysics: true
-});
-
-// Kinematic (no physics)
-const charCtrl = new CharacterController(scene, camera, root, anims, {
-  usePhysics: false
-});
+localStorage.setItem('use-physics', 'false'); // force kinematic
+localStorage.setItem('use-physics', 'true');  // force Havok (falls back if unavailable)
+localStorage.removeItem('use-physics');        // back to auto-detect
+// reload required for change to take effect
+window.location.reload();
 ```
 
-**Option B — `localStorage` (persists across reloads):**
+**Direct constructor option** (bypasses localStorage, for embedded use):
 ```javascript
-// Force kinematic mode
-localStorage.setItem('use-physics', 'false');
-
-// Force Havok physics mode
-localStorage.setItem('use-physics', 'true');
-
-// Remove key → falls back to usePhysics option, default is true
-localStorage.removeItem('use-physics');
+const charCtrl = new CharacterController(scene, camera, root, anims, {
+  usePhysics: true  // or false
+});
 ```
-
-**Option C — HUD toggle**: The built-in HUD includes a live toggle. It saves the preference to `localStorage` and reloads the page so Havok's WebAssembly memory is fully garbage-collected before switching.
-
-> **Priority order**: `options.usePhysics` → `localStorage('use-physics')` → default (`true` / Havok).
 
 ---
 
