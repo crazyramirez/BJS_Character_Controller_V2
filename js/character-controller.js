@@ -4,17 +4,17 @@
 // HOW TO REASSIGN ANIMATIONS AT RUNTIME:
 // ═══════════════════════════════════════════════════════════
 // You can dynamically change any animation on the character controller
-// using the AnimCtrl instance (usually accessed via `charCtrl.anim`):
+// using the AnnimCtrel instance (usually accessed via `animCtrl.anim`):
 //
 // 1. Reassigning walk/run/idle/etc. animations:
-//    charCtrl.anim.setWalkAnim(newWalkAnimGroup);
-//    charCtrl.anim.setRunAnim(newRunAnimGroup);
-//    charCtrl.anim.setIdleAnim(newIdleAnimGroup);
+//    animCtrl.setWalkAnim(newWalkAnimGroup);
+//    animCtrl.setRunAnim(newRunAnimGroup);
+//    animCtrl.setIdleAnim(newIdleAnimGroup);
 //
 // 2. Reassigning actions or combat animations:
-//    charCtrl.anim.setJumpStartAnim(newJumpStart);
-//    charCtrl.anim.setRollAnim(newRoll);
-//    charCtrl.anim.setPunchJabAnim(newPunchJab);
+//    animCtrl.setJumpStartAnim(newJumpStart);
+//    animCtrl.setRollAnim(newRoll);
+//    animCtrl.setPunchJabAnim(newPunchJab);
 //
 // 3. Setting play ranges (keyframes) on any animation:
 //    charCtrl.anim.setAnimationRanges('Walk_Loop', startFrame, endFrame);
@@ -1491,7 +1491,7 @@ class CharCtrl {
       // For kinematic, read the LIVE ellipsoid.y so the offset tracks the smooth lerp transition.
       // ellipsoid.y is the half-height; capsule bottom = -ellipsoid.y + ellipsoidOffset.y
       const liveHalfH = this.root.ellipsoid ? this.root.ellipsoid.y : this._standEllipsoidY;
-      const liveOffY  = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
+      const liveOffY = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
       // Place ray origin 0.08m above the actual capsule bottom to avoid starting inside the ground
       originYOffset = -(liveHalfH) + liveOffY + 0.08;
     }
