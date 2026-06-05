@@ -867,7 +867,7 @@ input[type="range"]::-moz-range-thumb {
 
 .info-modal-content {
   width: 95%;
-  max-width: 1024px;
+  max-width: 1200px;
   height: 85vh;
   background: rgba(12, 12, 24, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.08);
