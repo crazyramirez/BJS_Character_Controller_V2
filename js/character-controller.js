@@ -647,7 +647,7 @@ class CharCtrl {
       const startPoint = new BABYLON.Vector3(0, -0.55, 0);
       const endPoint = new BABYLON.Vector3(0, 0.55, 0);
       this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.35, scene);
-      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.35, 0), new BABYLON.Vector3(0, 0.35, 0), 0.35, scene);
+      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.55, 0), new BABYLON.Vector3(0, 0.35, 0), 0.35, scene);
 
       this._standShape.material = { friction: 0, restitution: 0 };
       this._crouchShape.material = { friction: 0, restitution: 0 };
