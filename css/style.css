@@ -91,8 +91,8 @@ body {
 .panel {
   background: rgba(8, 8, 16, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border-radius: 12px;
   padding: 12px 16px;
   margin-bottom: 10px;
@@ -707,12 +707,14 @@ body.touch-device .keys-grid {
 
 /* ── INDEPENDENT HUD FPS OVERLAY ── */
 #hud-fps {
-  display: none; /* Hidden by default when HUD is expanded */
+  display: none;
+  /* Hidden by default when HUD is expanded */
 }
 
 /* Slide FPS to the top right corner with a premium glass border when the main HUD collapses */
 #hud.collapsed+#hud-fps {
-  display: block; /* Show floating FPS only when collapsed */
+  display: block;
+  /* Show floating FPS only when collapsed */
   position: fixed;
   top: 16px;
   left: auto;
@@ -891,6 +893,7 @@ body.cursor-hidden.cursor-over-hud #custom-pointer-canvas {
 
 input[type="range"] {
   cursor: none !important;
+  margin-top: 8px;
 }
 
 input[type="range"]::-webkit-slider-thumb {
