@@ -17,7 +17,7 @@
 //    animCtrl.setPunchJabAnim(newPunchJab);
 //
 // 3. Setting play ranges (keyframes) on any animation:
-//    animCtrl.anim.setAnimationRanges('Walk_Loop', startFrame, endFrame);
+//    animCtrl.setAnimationRanges('Walk_Loop', startFrame, endFrame);
 // ═══════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════
