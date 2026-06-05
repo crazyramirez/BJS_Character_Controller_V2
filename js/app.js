@@ -77,7 +77,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   const animCtrl = new AnimCtrl(filteredGroups, scene);
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene);
 
-  // Testing -- You can setup different animation here
+  // REMAP Animations -- You can setup different animation here
   // animCtrl.setWalkAnim(filteredGroups[15])
   // animCtrl.setAnimationRanges('Walk_Loop', 0, 15);
   // animCtrl.setRunAnim(newRunAnimGroup);

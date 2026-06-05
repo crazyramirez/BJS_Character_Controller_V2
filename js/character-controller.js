@@ -2149,6 +2149,22 @@ class CharCtrl {
           this.root.moveWithCollisions(vert);
         }
       }
+    } else {
+      // For other action states (e.g. casting spells, punching, interacting) where horizontal movement is disabled:
+      // We must explicitly stop horizontal movement in Havok physics mode to prevent sliding,
+      // while still preserving vertical gravity/physics.
+      if (this.usePhysics) {
+        let targetY = this.grounded ? -4.0 : currentVelocity.y;
+        if (this.jumpVel > 0.1) {
+          targetY = this.jumpVel;
+          this.jumpVel = 0;
+        } else if (_snapVelY !== 0) {
+          targetY = _snapVelY;
+        }
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, targetY, 0));
+        this._wasClimbingStep = false;
+      }
+      this.speed = 0; // Ensure speed is reset to 0 during non-movement actions
     }
 
     // Teleport back if character falls out of bounds
