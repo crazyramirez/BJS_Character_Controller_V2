@@ -52,7 +52,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   // ── CAPSULE COLLIDER STRUCTURE ─────────────────────────
   const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4, height: 1.8 }, scene);
   playerCapsule.position.set(0, 2, 0); // Spawn slightly elevated
-  playerCapsule.visibility = 0.5;
+  playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
 
   playerCapsule.checkCollisions = !usePhysics;
