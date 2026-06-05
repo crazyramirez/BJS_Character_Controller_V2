@@ -13,14 +13,55 @@
         <div id="hud-engine-badge" style="position: absolute; top: 10px; right: 68px; font-size: 8px; font-weight: 800; padding: 0 8px; height: 22px; display: flex; align-items: center; border-radius: 6px; letter-spacing: 1px; text-transform: uppercase; border: 1px solid transparent; box-sizing: border-box;">—</div>
         <div class="state-label">State</div>
         <div class="state-val" id="hud-state">IDLE</div>
-        <div class="state-label" style="margin-top:4px">Animation</div>
-        <div class="anim-val" id="hud-anim">—</div>
-        <div class="weapon-val" id="hud-weapon"></div>
-        <div class="speed-val" id="hud-speed"></div>
+        <div class="weapon-val" id="hud-weapon" style="display:none"></div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px; color: #8c8c9c;">
+          <span class="anim-val" id="hud-anim" style="display: none;">—</span>
+          <span class="speed-val" id="hud-speed" style="font-family: monospace; color: #aeb4ff; font-weight: 600; font-size: 17px;">spd: 0.0</span>
+          <span style="font-size: 17px; color: rgba(255,255,255,0.15)">|</span>
+          <span id="hud-fps-inline" style="color: #00aaff; font-family: monospace; font-weight: 600; font-size: 17px;">fps: 0</span>
+        </div>
         <!-- HUD Settings Toggles -->
-        <div style="margin-top: 26px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08);">
-          <!-- Slider for CAM_FOLLOW_DIST -->
-          <div class="weight-container" id="cam-dist-container" style="margin-bottom: 8px;">
+        <div style="margin-top: 8px;">
+          <!-- Group 1: Physics / Speed -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">PHYSICS & SPEEDS</div>
+          
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Havok Physics</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-physics">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="weight-container" id="speed-mult-container"
+            style="margin-top: 12px; margin-bottom: 20px;">
+            <div class="weight-header"
+              style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="weight-label"
+                style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Speed Multiplier</span>
+              <span class="weight-val" id="speed-mult-val"
+                style="font-size: 11px; font-weight: bold; color: #00ff99;">1.0x</span>
+            </div>
+            <div class="slider-wrapper" style="display: flex; align-items: center;">
+              <input type="range" id="slider-speed-mult" min="0.5" max="2.0" step="0.1" value="1.0" class="weight-slider"
+                style="width: 100%; pointer-events: auto;">
+            </div>
+          </div>
+
+          <!-- Group 2: Camera Follow -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">CAMERA FOLLOW</div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Lock Camera (Follow)</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-cam-lock">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="weight-container" id="cam-dist-container" style="margin-top: 10px; margin-bottom: 16px;">
             <div class="weight-header"
               style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span class="weight-label"
@@ -34,25 +75,9 @@
                 style="width: 100%; pointer-events: auto;">
             </div>
           </div>
-          <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
-            <span>Lock Camera (Follow)</span>
-            <label class="switch-toggle">
-              <input type="checkbox" id="toggle-cam-lock">
-              <span class="slider-toggle"></span>
-            </label>
-          </div>
-          <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
-            <span>Havok Physics</span>
-            <label class="switch-toggle">
-              <input type="checkbox" id="toggle-physics">
-              <span class="slider-toggle"></span>
-            </label>
-          </div>
-          <!-- Slider for CAM_FOLLOW_PITCH -->
+
           <div class="weight-container" id="cam-pitch-container"
-            style="margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; margin-bottom: 8px;">
+            style="margin-top: 12px; margin-bottom: 20px;">
             <div class="weight-header"
               style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span class="weight-label"
@@ -66,49 +91,42 @@
                 style="width: 100%; pointer-events: auto;">
             </div>
           </div>
+
+          <!-- Group 3: Camera Steering & Input -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">STEERING & INPUT</div>
+
           <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff;">
-            <span>Dynamic FOV</span>
-            <label class="switch-toggle">
-              <input type="checkbox" id="toggle-dynamic-fov" checked>
-              <span class="slider-toggle"></span>
-            </label>
-          </div>
-          <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; color: #aeb4ff;">
-            <span>Double Jump</span>
-            <label class="switch-toggle">
-              <input type="checkbox" id="toggle-double-jump" checked>
-              <span class="slider-toggle"></span>
-            </label>
-          </div>
-          <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; color: #aeb4ff;">
-            <span>Air Control</span>
-            <label class="switch-toggle">
-              <input type="checkbox" id="toggle-air-control">
-              <span class="slider-toggle"></span>
-            </label>
-          </div>
-          <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; color: #aeb4ff;">
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
             <span>Lock Pitch (Horizontal Cam)</span>
             <label class="switch-toggle">
               <input type="checkbox" id="toggle-cam-lock-pitch">
               <span class="slider-toggle"></span>
             </label>
           </div>
+
           <div class="hud-toggle-container"
-            style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; color: #aeb4ff;">
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; font-size: 11px; color: #aeb4ff;">
             <span>Joystick Vertical Only</span>
             <label class="switch-toggle">
               <input type="checkbox" id="toggle-joystick-lock-x">
               <span class="slider-toggle"></span>
             </label>
           </div>
-          <!-- Slider for DYNAMIC_FOV_MAX -->
+
+          <!-- Group 4: Dynamic FOV -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">DYNAMIC FOV</div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff; margin-bottom: 6px;">
+            <span>Dynamic FOV</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-dynamic-fov" checked>
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
           <div class="weight-container" id="fov-max-container"
-            style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+            style="margin-top: 12px; margin-bottom: 20px;">
             <div class="weight-header"
               style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span class="weight-label"
@@ -122,9 +140,42 @@
                 style="width: 100%; pointer-events: auto;">
             </div>
           </div>
+
+          <!-- Group 5: Air Locomotion -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">AIR LOCOMOTION</div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Double Jump</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-double-jump" checked>
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; font-size: 11px; color: #aeb4ff;">
+            <span>Air Control</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-air-control">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <!-- Group 6: UI / System -->
+          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">SYSTEM & UI</div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Hide Cursor</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-hide-cursor">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
         </div>
         <div
-          style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: #aeb4ff; font-weight: 500;">
+          style="margin-top: 10px; font-size: 11px; color: #aeb4ff; font-weight: 500;">
           <span
             style="color: #00ff99; font-weight: bold; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;">Tip:</span>
           Press <span
@@ -186,6 +237,25 @@
       badge.style.color = '#eb5e55';
       badge.style.textShadow = '0 0 8px rgba(235, 94, 85, 0.3)';
     }
+  }
+
+  // Set up Hide Cursor state
+  const hideCursorValue = localStorage.getItem('hide-cursor') === 'true';
+  if (hideCursorValue) {
+    document.body.classList.add('cursor-hidden');
+  }
+  const hideCursorCheckbox = document.getElementById('toggle-hide-cursor');
+  if (hideCursorCheckbox) {
+    hideCursorCheckbox.checked = hideCursorValue;
+    hideCursorCheckbox.addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      localStorage.setItem('hide-cursor', checked);
+      if (checked) {
+        document.body.classList.add('cursor-hidden');
+      } else {
+        document.body.classList.remove('cursor-hidden');
+      }
+    });
   }
 
   // Create and inject the Fullscreen Info Panel Modal
@@ -314,6 +384,7 @@
               <li><strong>custom-hud.js (Optional):</strong> The tactile settings overlay and quick configurations drawer.</li>
               <li><strong>custom-pointer.js (Optional):</strong> Custom reactive mouse cursor.</li>
             </ul>
+            <p><strong>Note on cursor styling:</strong> You can hide all cursors (both hardware dot and custom canvas ring) by toggling the <strong>Hide Cursor</strong> switch in the HUD, which persists your preference in local storage and adds the <code>.cursor-hidden</code> class to the <code>body</code> element.</p>
 
             <h3>Recommended HTML Structure</h3>
             <div class="info-code">&lt;!-- Import BabylonJS & Havok Physics WebAssembly --&gt;
@@ -337,7 +408,8 @@ const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, 
   config: {
     SPD_WALK: 2.5,
     SPD_SPRINT: 5.0,
-    GRAV: 22.0
+    GRAV: 22.0,
+    SPEED_MULTIPLIER: 1.0
   }
 });</div>
 
@@ -391,7 +463,8 @@ localStorage.removeItem('use-physics');</div>
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
     CAM_LOCK_PITCH: false,   // If true, drag input only rotates camera horizontally (locks vertical/pitch axis)
     JOYSTICK_LOCK_X: false,  // If true, joystick input is locked to vertical axis only (no strafing/turning)
-    DOUBLE_JUMP_ENABLED: true // If true, the character can perform a double jump in mid-air
+    DOUBLE_JUMP_ENABLED: true, // If true, the character can perform a double jump in mid-air
+    SPEED_MULTIPLIER: 1.0     // Speed multiplier for walking and running
   }
 });</div>
 
@@ -440,6 +513,21 @@ node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_a
       btn.blur();
       const canvasEl = document.getElementById('c');
       if (canvasEl) canvasEl.focus();
+    });
+  });
+
+  // Click to copy code blocks
+  const codeBlocks = infoModal.querySelectorAll('.info-code');
+  codeBlocks.forEach(block => {
+    block.addEventListener('click', () => {
+      navigator.clipboard.writeText(block.textContent).then(() => {
+        block.classList.add('copied');
+        setTimeout(() => {
+          block.classList.remove('copied');
+        }, 1500);
+      }).catch(err => {
+        console.error('Could not copy text: ', err);
+      });
     });
   });
 
@@ -493,4 +581,32 @@ node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_a
       closeInfoPanel();
     }
   });
+
+  // Handle cursor-over-hud class toggling to show cursor when hovering interactive panels/controls
+  const enterHUD = () => document.body.classList.add('cursor-over-hud');
+  const leaveHUD = () => document.body.classList.remove('cursor-over-hud');
+
+  // Bind to settings panels
+  const panels = document.querySelectorAll('.panel');
+  panels.forEach(p => {
+    p.addEventListener('pointerenter', enterHUD);
+    p.addEventListener('pointerleave', leaveHUD);
+  });
+
+  // Bind to mobile touch elements
+  const joystickZone = document.getElementById('joystick-zone');
+  if (joystickZone) {
+    joystickZone.addEventListener('pointerenter', enterHUD);
+    joystickZone.addEventListener('pointerleave', leaveHUD);
+  }
+
+  const touchButtons = document.querySelectorAll('.touch-btn');
+  touchButtons.forEach(btn => {
+    btn.addEventListener('pointerenter', enterHUD);
+    btn.addEventListener('pointerleave', leaveHUD);
+  });
+
+  // Bind to fullscreen modal
+  infoModal.addEventListener('pointerenter', enterHUD);
+  infoModal.addEventListener('pointerleave', leaveHUD);
 })();

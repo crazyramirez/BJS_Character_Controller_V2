@@ -60,7 +60,10 @@ window.location.reload();
 **Direct constructor option** (bypasses localStorage, for embedded use):
 ```javascript
 const charCtrl = new CharacterController(scene, camera, root, anims, {
-  usePhysics: true  // or false
+  usePhysics: true,  // or false
+  config: {
+    SPEED_MULTIPLIER: 1.5 // Multiplies walking, running and jogging speeds
+  }
 });
 ```
 
@@ -132,8 +135,8 @@ charCtrl.anim.setAnimationRanges('Walk_Loop', 10, 45);
 
 The core architecture consists of three components in the `js/` directory:
 1.  **`character-controller.js`**: Unified character controller — handles both Havok Physics and Kinematic modes. Select the mode via the `usePhysics` constructor option or `localStorage`.
-2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Double Jump, Air Control, and sliders).
-3.  **`custom-pointer.js`**: Responsive custom cursor.
+2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Hide Cursor, Double Jump, Air Control, and sliders).
+3.  **`custom-pointer.js`**: Responsive custom cursor. Tracks a zero-latency hardware cursor and renders a spring-damper trailing ring (hidden completely when the `Hide Cursor` toggle is enabled).
 
 We have provided three setup examples to guide your implementation:
 *   **[js/app-minimal.js](js/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.

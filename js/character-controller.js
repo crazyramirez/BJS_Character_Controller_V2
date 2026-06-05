@@ -59,7 +59,8 @@ const DEFAULT_CHAR_CONFIG = {
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
     CAM_LOCK_PITCH: false,   // If true, drag input only rotates camera horizontally (locks vertical/pitch axis)
     JOYSTICK_LOCK_X: false,  // If true, joystick input is locked to vertical axis only (no strafing/turning)
-    DOUBLE_JUMP_ENABLED: true // If true, the character can perform a double jump in mid-air
+    DOUBLE_JUMP_ENABLED: true, // If true, the character can perform a double jump in mid-air
+    SPEED_MULTIPLIER: 1.0     // Speed multiplier for walking and running
   },
 
   // Mobile / Touch controls configuration
@@ -151,9 +152,10 @@ class LocoBlendGroup {
     const char = this.anim.charCtrl;
     const spdWalk = char ? char.SPD_WALK : 2.4;
     const spdSprint = char ? char.SPD_SPRINT : 6.0;
+    const multiplier = char ? char.SPEED_MULTIPLIER : 1.0;
 
-    const walkRatio = spdWalk * (1.5 / 2.4);
-    const sprintRatio = spdSprint * (1.1 / 6.0);
+    const walkRatio = spdWalk * (1.5 / 2.4) * multiplier;
+    const sprintRatio = spdSprint * (1.1 / 6.0) * multiplier;
 
     if (idle && !idle.isPlaying) idle.start(true, 1.0, idle.from, idle.to, false);
     if (walk && !walk.isPlaying) walk.start(true, walkRatio, walk.from, walk.to, false);
@@ -201,16 +203,16 @@ class LocoBlendGroup {
           // Turning in place shuffle speed
           walk.speedRatio = 2.2;
         } else {
-          // Normal walking speed ratio (with sign for backwards movement)
+          // Normal walking speed ratio (scaled by speed multiplier)
           const spdWalk = char.SPD_WALK;
-          walk.speedRatio = sign * spdWalk * (1.5 / 2.4);
+          walk.speedRatio = sign * spdWalk * (1.5 / 2.4) * char.SPEED_MULTIPLIER;
         }
       }
 
       if (sprint) {
-        // Normal sprinting speed ratio (with sign for backwards movement)
+        // Normal sprinting speed ratio (scaled by speed multiplier)
         const spdSprint = char.SPD_SPRINT;
-        sprint.speedRatio = sign * spdSprint * (1.1 / 6.0);
+        sprint.speedRatio = sign * spdSprint * (1.1 / 6.0) * char.SPEED_MULTIPLIER;
       }
     }
 
@@ -228,8 +230,8 @@ class LocoBlendGroup {
     const v = this.speed;
 
     const char = this.anim.charCtrl;
-    const spdWalk = char ? char.SPD_WALK : 2.4;
-    const spdSprint = char ? char.SPD_SPRINT : 6.0;
+    const spdWalk = char ? char.SPD_WALK * char.SPEED_MULTIPLIER : 2.4;
+    const spdSprint = char ? char.SPD_SPRINT * char.SPEED_MULTIPLIER : 6.0;
 
     if (v <= 0) {
       wIdle = 1.0;
@@ -342,6 +344,12 @@ class AnimCtrl {
     const ag = this.g.get(name);
     if (!ag) { console.warn('[AnimCtrl] missing:', name); return false; }
 
+    // Apply speed multiplier to all animations except Locomotion and Jump states (which require fixed timing)
+    let finalSpeedRatio = speedRatio;
+    if (name !== 'Locomotion' && !name.startsWith('Jump_') && this.charCtrl) {
+      finalSpeedRatio *= this.charCtrl.SPEED_MULTIPLIER;
+    }
+
     // Resolve target weight:
     // 1. Explicit argument in play()
     // 2. Pre-configured custom weight for this animation
@@ -355,7 +363,7 @@ class AnimCtrl {
 
     if (this.cur === ag) {
       this.cur.setWeightForAllAnimatables(targetWeight);
-      this.cur.speedRatio = speedRatio;
+      this.cur.speedRatio = finalSpeedRatio;
       return true;
     }
 
@@ -374,7 +382,7 @@ class AnimCtrl {
     }
 
     // Start incoming animation group
-    incoming.start(loop, speedRatio, incoming.from, incoming.to, false);
+    incoming.start(loop, finalSpeedRatio, incoming.from, incoming.to, false);
     incoming.setWeightForAllAnimatables(outgoing ? 0 : targetWeight);
 
     if (outgoing) {
@@ -635,9 +643,17 @@ class CharCtrl {
     const savedDoubleJump = localStorage.getItem('double-jump-enabled');
     this.DOUBLE_JUMP_ENABLED = savedDoubleJump !== null ? (savedDoubleJump === 'true') : (config.DOUBLE_JUMP_ENABLED !== undefined ? config.DOUBLE_JUMP_ENABLED : true);
 
+    const savedSpeedMultiplier = localStorage.getItem('speed-multiplier');
+    this.SPEED_MULTIPLIER = savedSpeedMultiplier !== null ? parseFloat(savedSpeedMultiplier) : (config.SPEED_MULTIPLIER !== undefined ? config.SPEED_MULTIPLIER : 1.0);
+
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
     console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
+
+    // Apply Hide Cursor state if persisted in localStorage
+    if (localStorage.getItem('hide-cursor') === 'true') {
+      document.body.classList.add('cursor-hidden');
+    }
 
     // Mobile / Touch controls configuration
     this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});
@@ -817,7 +833,7 @@ class CharCtrl {
           if (!this.grounded && !this.AIR_CONTROL) {
             this.camera.alpha = this._lastCameraAlpha;
           } else {
-            this.rotY -= alphaDelta;
+            this.rotY -= alphaDelta * this.SPEED_MULTIPLIER;
             if (this.usePhysics) {
               this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
             } else {
@@ -1316,7 +1332,7 @@ class CharCtrl {
       let dir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
       if (dir.length() > 0.01) dir.normalize(); else dir = camFwd;
       this._rollDir = dir;
-      this.speed = Math.max(this.speed, 3.5);
+      this.speed = Math.max(this.speed, 3.5 * this.SPEED_MULTIPLIER);
     } else {
       this.speed = 0;
     }
@@ -1343,13 +1359,13 @@ class CharCtrl {
       this._setState(S.IDLE);
       this.grounded = this._checkGrounded();
       // Play loco animation directly — bypass _updateLocoAnim grounded guard.
-      this.anim.play('Locomotion', true, 0.2);
-    }, 700);
+      this.anim.play('Locomotion', true, 0.2 / this.SPEED_MULTIPLIER);
+    }, 700 / this.SPEED_MULTIPLIER);
   }
 
   _punch() {
     const now = performance.now();
-    if (this.comboIdx === 1 && now - this.comboT < 900) {
+    if (this.comboIdx === 1 && now - this.comboT < 900 / this.SPEED_MULTIPLIER) {
       this.comboIdx = 2;
       this._setState(S.PUNCH_CROSS);
       this.anim.play('Punch_Cross', false, 0.08, () => {
@@ -1430,6 +1446,7 @@ class CharCtrl {
 
   // ── RETURN TO LOCOMOTION (INTELLIGENT DECISION) ──────────
   _returnToLoco(blend = 0.35) {
+    const finalBlend = blend / this.SPEED_MULTIPLIER;
     // Check if there is movement input
     let inputX = 0;
     let inputZ = 0;
@@ -1448,9 +1465,9 @@ class CharCtrl {
     const hasMove = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
 
     if (hasMove) {
-      this._updateLocoAnim(true, isSprinting, inputZ < -0.2, blend);
+      this._updateLocoAnim(true, isSprinting, inputZ < -0.2, finalBlend);
     } else {
-      this._idle(blend);
+      this._idle(finalBlend);
     }
   }
 
@@ -1895,7 +1912,7 @@ class CharCtrl {
           // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
           // 1. A/D rotates the character; observer pushes camera.alpha to match rotY
           if (inputX !== 0) {
-            const steerSpeed = 2.8; // Radians per second
+            const steerSpeed = 2.8 * this.SPEED_MULTIPLIER; // Radians per second
             this.rotY += inputX * steerSpeed * dt;
             if (this.usePhysics) {
               this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
@@ -1920,7 +1937,7 @@ class CharCtrl {
             } else {
               tgt = this.SPD_WALK;
             }
-            tgt *= Math.abs(inputZ);
+            tgt *= Math.abs(inputZ) * this.SPEED_MULTIPLIER;
           }
 
           const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
@@ -1945,7 +1962,7 @@ class CharCtrl {
 
             let tgtSpeed = this.speed;
             if (hasMove) {
-              let idealTgt = isSprinting ? this.SPD_SPRINT : this.SPD_WALK;
+              let idealTgt = (isSprinting ? this.SPD_SPRINT : this.SPD_WALK) * this.SPEED_MULTIPLIER;
               idealTgt *= inputMag;
               tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
             } else {
@@ -1975,7 +1992,7 @@ class CharCtrl {
             }
 
             // Analog speed modifier
-            tgt *= inputMag;
+            tgt *= inputMag * this.SPEED_MULTIPLIER;
 
             // Slope / Stairs speed modifier (Dynamic effort scaling)
             const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
@@ -2003,7 +2020,7 @@ class CharCtrl {
         const tgtAngle = Math.atan2(dir.x, dir.z);
         if (this._smoothTgt === undefined) this._smoothTgt = tgtAngle;
         this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-30 * dt));
-        const k = this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08);
+        const k = (this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08)) * this.SPEED_MULTIPLIER;
         this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
         if (this.usePhysics) {
           this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
@@ -2480,9 +2497,14 @@ class CharCtrl {
     }
 
     // Update FPS inside the HUD
+    const fpsText = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
     const hudFps = document.getElementById('hud-fps');
     if (hudFps) {
-      hudFps.textContent = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
+      hudFps.textContent = fpsText;
+    }
+    const hudFpsInline = document.getElementById('hud-fps-inline');
+    if (hudFpsInline) {
+      hudFpsInline.textContent = fpsText;
     }
 
     // Update active visual state for mobile toggle buttons

@@ -97,6 +97,7 @@ body {
   padding: 12px 16px;
   margin-bottom: 10px;
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  pointer-events: auto;
 }
 
 .state-label {
@@ -441,18 +442,15 @@ body.touch-device .keys-grid {
   /* Hide keyboard shortcut help on touch */
 }
 
-/* ── WEIGHT SLIDER ── */
 .weight-container {
-  margin-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  padding-top: 10px;
+  margin-top: 14px;
 }
 
 .weight-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .weight-label {
@@ -554,7 +552,7 @@ body.touch-device .keys-grid {
 }
 
 .hud-content {
-  max-height: 600px;
+  max-height: 800px;
   opacity: 1;
   overflow: hidden;
   transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease, margin-top 0.45s ease;
@@ -709,20 +707,13 @@ body.touch-device .keys-grid {
 
 /* ── INDEPENDENT HUD FPS OVERLAY ── */
 #hud-fps {
-  position: fixed;
-  top: 122px;
-  /* Perfectly aligned inside the HUD panel vertically below spd: X with balanced spacing */
-  left: 32px;
-  font-size: 11px;
-  color: #00aaff;
-  font-family: monospace;
-  transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
-  z-index: 120;
-  pointer-events: none;
+  display: none; /* Hidden by default when HUD is expanded */
 }
 
 /* Slide FPS to the top right corner with a premium glass border when the main HUD collapses */
 #hud.collapsed+#hud-fps {
+  display: block; /* Show floating FPS only when collapsed */
+  position: fixed;
   top: 16px;
   left: auto;
   right: 16px;
@@ -736,6 +727,9 @@ body.touch-device .keys-grid {
   border-radius: 6px;
   padding: 4px 8px;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+  transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 120;
+  pointer-events: none;
 }
 
 /* ── BUY ME A COFFEE PANEL ── */
@@ -820,7 +814,70 @@ body.touch-device .keys-grid {
 
 body.custom-cursor-active,
 body.custom-cursor-active * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='2.5' fill='%230099ff'/%3E%3C/svg%3E") 8 8, auto !important;
+}
+
+body.custom-cursor-active.custom-pointer-hovering,
+body.custom-cursor-active.custom-pointer-hovering * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='2.5' fill='%2300ff99'/%3E%3C/svg%3E") 8 8, auto !important;
+}
+
+body.cursor-hidden,
+body.cursor-hidden * {
   cursor: none !important;
+}
+
+/* Override cursor hidden state when hovering over HUD, FPS, mobile controls, info modal panels, or any generic UI elements */
+body.cursor-hidden #hud,
+body.cursor-hidden #hud *,
+body.cursor-hidden #hud-fps,
+body.cursor-hidden #hud-fps *,
+body.cursor-hidden #mobile-ctrls,
+body.cursor-hidden #mobile-ctrls *,
+body.cursor-hidden #info-panel-modal,
+body.cursor-hidden #info-panel-modal *,
+body.cursor-hidden .panel,
+body.cursor-hidden .panel *,
+body.cursor-hidden button,
+body.cursor-hidden button *,
+body.cursor-hidden a,
+body.cursor-hidden a *,
+body.cursor-hidden input,
+body.cursor-hidden select,
+body.cursor-hidden textarea,
+body.cursor-hidden label {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='2.5' fill='%230099ff'/%3E%3C/svg%3E") 8 8, auto !important;
+}
+
+body.cursor-hidden.custom-pointer-hovering #hud,
+body.cursor-hidden.custom-pointer-hovering #hud *,
+body.cursor-hidden.custom-pointer-hovering #hud-fps,
+body.cursor-hidden.custom-pointer-hovering #hud-fps *,
+body.cursor-hidden.custom-pointer-hovering #mobile-ctrls,
+body.cursor-hidden.custom-pointer-hovering #mobile-ctrls *,
+body.cursor-hidden.custom-pointer-hovering #info-panel-modal,
+body.cursor-hidden.custom-pointer-hovering #info-panel-modal *,
+body.cursor-hidden.custom-pointer-hovering .panel,
+body.cursor-hidden.custom-pointer-hovering .panel *,
+body.cursor-hidden.custom-pointer-hovering button,
+body.cursor-hidden.custom-pointer-hovering button *,
+body.cursor-hidden.custom-pointer-hovering a,
+body.cursor-hidden.custom-pointer-hovering a *,
+body.cursor-hidden.custom-pointer-hovering input,
+body.cursor-hidden.custom-pointer-hovering select,
+body.cursor-hidden.custom-pointer-hovering textarea,
+body.cursor-hidden.custom-pointer-hovering label {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='2.5' fill='%2300ff99'/%3E%3C/svg%3E") 8 8, auto !important;
+}
+
+body.cursor-hidden #custom-pointer-canvas {
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+body.cursor-hidden.cursor-over-hud #custom-pointer-canvas {
+  opacity: 1;
 }
 
 
@@ -1110,6 +1167,38 @@ input[type="range"]::-moz-range-thumb {
   overflow-x: auto;
   margin: 10px 0 16px 0;
   white-space: pre;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.info-code:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(0, 255, 153, 0.35);
+}
+
+.info-code::after {
+  content: 'Click to copy';
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.25);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  transition: opacity 0.2s, color 0.2s;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600;
+}
+
+.info-code:hover::after {
+  color: rgba(0, 255, 153, 0.85);
+}
+
+.info-code.copied::after {
+  content: 'Copied!';
+  color: #00ff99;
 }
 
 /* Adjust scrollbar */

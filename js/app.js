@@ -416,6 +416,19 @@ async function createDemoScene() {
     });
   }
 
+  const sliderSpeedMult = $('slider-speed-mult');
+  const speedMultVal = $('speed-mult-val');
+  if (sliderSpeedMult && speedMultVal) {
+    sliderSpeedMult.value = charCtrl.SPEED_MULTIPLIER;
+    speedMultVal.textContent = charCtrl.SPEED_MULTIPLIER.toFixed(1) + 'x';
+    sliderSpeedMult.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      charCtrl.SPEED_MULTIPLIER = val;
+      speedMultVal.textContent = val.toFixed(1) + 'x';
+      localStorage.setItem('speed-multiplier', val);
+    });
+  }
+
   const sliderCamPitch = $('slider-cam-pitch');
   const camPitchVal = $('cam-pitch-val');
   if (sliderCamPitch && camPitchVal) {

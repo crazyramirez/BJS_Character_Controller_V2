@@ -102,7 +102,7 @@ class PremiumPointer {
 
   setupInteractions() {
     const targets = document.querySelectorAll(
-      'button, a, input[type="range"], input[type="checkbox"], label.switch-toggle, .slider-toggle, #hud-toggle'
+      'button, a, input[type="range"], input[type="checkbox"], label.switch-toggle, .slider-toggle, #hud-toggle, .info-code'
     );
 
     targets.forEach(target => {
@@ -112,11 +112,13 @@ class PremiumPointer {
       target.addEventListener('mouseenter', (e) => {
         this.isHovering = true;
         this.hoverTarget = e.currentTarget;
+        document.body.classList.add('custom-pointer-hovering');
       });
 
       target.addEventListener('mouseleave', () => {
         this.isHovering = false;
         this.hoverTarget = null;
+        document.body.classList.remove('custom-pointer-hovering');
       });
     });
   }
@@ -158,15 +160,7 @@ class PremiumPointer {
     const color = this.isHovering ? this.colors.magnetic : this.colors.default;
     const glowColor = this.isHovering ? this.colors.magneticGlow : this.colors.defaultGlow;
 
-    // Draw central dot (zero latency/direct tracking of mouse)
-    this.ctx.beginPath();
-    this.ctx.arc(this.mouse.x, this.mouse.y, 2.5, 0, Math.PI * 2);
-    this.ctx.fillStyle = color;
-    this.ctx.shadowBlur = 6;
-    this.ctx.shadowColor = glowColor;
-    this.ctx.fill();
-
-    // Draw outer ring follower (also locked/synced to follower coordinate)
+    // Draw outer ring follower (locked/synced to follower coordinate)
     const radius = 8 * this.hoverScale;
     this.ctx.beginPath();
     this.ctx.arc(this.follower.x, this.follower.y, radius, 0, Math.PI * 2);
