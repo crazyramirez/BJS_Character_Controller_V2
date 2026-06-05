@@ -916,6 +916,10 @@ class CharCtrl {
   // ── INPUT ──────────────────────────────────────────────
   _setupInput() {
     this._boundKeyDown = e => {
+      const modal = document.getElementById('info-panel-modal');
+      if (modal && modal.classList.contains('open')) {
+        return;
+      }
       this.keys[e.code] = true;
       if (!e.repeat) this._keyDown(e.code);
     };

@@ -19,8 +19,8 @@ class PremiumPointer {
 
     // Spring physics configuration
     this.spring = {
-      tension: 0.25,
-      friction: 0.6,
+      tension: 0.35,
+      friction: 0.55,
       mass: 1.0
     };
 
@@ -158,9 +158,9 @@ class PremiumPointer {
     const color = this.isHovering ? this.colors.magnetic : this.colors.default;
     const glowColor = this.isHovering ? this.colors.magneticGlow : this.colors.defaultGlow;
 
-    // Draw central dot (locked/synced to follower coordinate)
+    // Draw central dot (zero latency/direct tracking of mouse)
     this.ctx.beginPath();
-    this.ctx.arc(this.follower.x, this.follower.y, 2.5, 0, Math.PI * 2);
+    this.ctx.arc(this.mouse.x, this.mouse.y, 2.5, 0, Math.PI * 2);
     this.ctx.fillStyle = color;
     this.ctx.shadowBlur = 6;
     this.ctx.shadowColor = glowColor;
