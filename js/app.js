@@ -76,6 +76,8 @@ async function loadCharacter(scene, shadow, camera) {
   const animCtrl = new AnimCtrl(filteredGroups, scene);
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene);
 
+  // Testing Set Animation for walk
+  // animCtrl.setWalkAnim(filteredGroups[22]);
 
   // ── CAMERA FOLLOW ─────────────────────────────────────
   const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);

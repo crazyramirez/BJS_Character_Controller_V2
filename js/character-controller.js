@@ -287,30 +287,40 @@ class AnimCtrl {
   }
 
   resetInactiveWeights() {
-    const active = new Set();
+    const activeNames = new Set();
     if (this.cur) {
-      active.add(this.curName);
+      activeNames.add(this.curName);
       if (this.curName === 'Locomotion') {
-        active.add('Idle_Loop');
-        active.add('Walk_Loop');
-        active.add('Sprint_Loop');
+        activeNames.add('Idle_Loop');
+        activeNames.add('Walk_Loop');
+        activeNames.add('Sprint_Loop');
       }
     }
     this.activeTransitions.forEach(t => {
       for (const [name, group] of this.g.entries()) {
         if (group === t.incoming || group === t.outgoing) {
-          active.add(name);
+          activeNames.add(name);
           if (name === 'Locomotion') {
-            active.add('Idle_Loop');
-            active.add('Walk_Loop');
-            active.add('Sprint_Loop');
+            activeNames.add('Idle_Loop');
+            activeNames.add('Walk_Loop');
+            activeNames.add('Sprint_Loop');
           }
         }
       }
     });
 
+    // Resolve active Names into actual AnimationGroup objects
+    const activeGroups = new Set();
+    activeNames.forEach(name => {
+      const group = this.g.get(name);
+      if (group) {
+        activeGroups.add(group);
+      }
+    });
+
+    // Stop and zero weight only for groups that are NOT active in any mapped name
     for (const [name, group] of this.g.entries()) {
-      if (!active.has(name)) {
+      if (!activeGroups.has(group)) {
         group.setWeightForAllAnimatables(0);
         group.stop();
       }
@@ -453,10 +463,32 @@ class AnimCtrl {
 
   setAnimation(name, animationGroup) {
     const oldAg = this.g.get(name);
-    if (oldAg && oldAg.isPlaying) {
+    let wasPlaying = false;
+    let speedRatio = 1.0;
+    let loop = false;
+
+    if (oldAg) {
+      wasPlaying = oldAg.isPlaying;
+      speedRatio = oldAg.speedRatio;
+      loop = oldAg.loop;
       oldAg.stop();
+      oldAg.setWeightForAllAnimatables(0);
     }
+
     this.g.set(name, animationGroup);
+
+    // If the locomotion blend tree is active and we replaced one of its components
+    if (this.locoGroup && this.locoGroup.isPlaying && ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop'].includes(name)) {
+      this.locoGroup.start();
+    } else if (wasPlaying || this.curName === name) {
+      // Start the new animation group with previous settings if it was active
+      animationGroup.start(loop, speedRatio, animationGroup.from, animationGroup.to, false);
+      if (this.cur === oldAg) {
+        this.cur = animationGroup;
+      }
+    }
+
+    this.resetInactiveWeights();
     return true;
   }
 
