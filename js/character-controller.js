@@ -1354,12 +1354,14 @@ class CharCtrl {
         this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
       }
 
-      // Force state out of ROLL immediately — _updateLocoAnim early-returns when
-      // !grounded, leaving state=ROLL and blocking all input.
-      this._setState(S.IDLE);
+      // Force state out of ROLL immediately
       this.grounded = this._checkGrounded();
-      // Play loco animation directly — bypass _updateLocoAnim grounded guard.
-      this.anim.play('Locomotion', true, 0.2 / this.SPEED_MULTIPLIER);
+      if (!this.grounded) {
+        this._setState(S.JUMP_LOOP);
+        this.anim.play('Jump_Loop', true, 0.2);
+      } else {
+        this._returnToLoco(0.2);
+      }
     }, 700 / this.SPEED_MULTIPLIER);
   }
 
@@ -1420,17 +1422,32 @@ class CharCtrl {
     // Increased blend duration from 0.1 to 0.35 for an incredibly smooth and premium stand-up transition when casting spells from a crouch
     this.anim.play('Spell_Simple_Enter', false, 0.35, () => {
       this._setState(S.SPELL_SHOOT);
-      this.anim.play('Spell_Simple_Shoot', false, 0.15, () => {
-        this._setState(S.SPELL_EXIT);
-        this.anim.play('Spell_Simple_Exit', false, 0.2, () => this._returnToLoco(0.35));
-      });
+      this.anim.play('Spell_Simple_Shoot', false, 0.15);
+
+      // Let the player move almost immediately (50ms into the shoot animation)
+      setTimeout(() => {
+        if (this.state === S.SPELL_SHOOT) {
+          this._returnToLoco(0.35);
+        }
+      }, 50 / this.SPEED_MULTIPLIER);
     });
   }
 
   _interact() {
     this._setState(S.INTERACT);
-    // Increased blend duration from 0.1 to 0.35 for a gorgeous smooth stand-up transition when interacting from a crouch
-    this.anim.play('Interact', false, 0.35, () => this._returnToLoco(0.35));
+    // Calculate 35% of the interact animation duration to restore movement control even earlier
+    const ag = this.anim.g.get('Interact');
+    const fps = (ag && ag.targetedAnimations[0] && ag.targetedAnimations[0].animation) ? ag.targetedAnimations[0].animation.framePerSecond : 30;
+    const durationMs = ag ? ((ag.to - ag.from) / fps) * 1000 : 1000;
+    const recoveryDelay = (durationMs * 0.35) / this.SPEED_MULTIPLIER;
+
+    this.anim.play('Interact', false, 0.35);
+
+    setTimeout(() => {
+      if (this.state === S.INTERACT) {
+        this._returnToLoco(0.35);
+      }
+    }, recoveryDelay);
   }
 
   // ── IDLE ───────────────────────────────────────────────
@@ -2328,9 +2345,9 @@ class CharCtrl {
       const feetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
       this.dustPS.emitter = feetPos;
 
-      // Play dust trails while walking, sprinting or rolling on ground
+      // Play dust trails while walking, sprinting or rolling on ground with actual speed
       const activeMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
-      if (this.grounded && activeMove && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
+      if (this.grounded && activeMove && this.speed > 0.65 && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
         this.dustPS.manualEmitCount = -1; // Reset to continuous emission mode
         this.dustPS.emitRate = this.state === S.SPRINT ? 180 : (this.state === S.WALK ? 25 : 80);
         if (!this.dustPS.isStarted()) {
@@ -2542,6 +2559,12 @@ class CharCtrl {
       this.targetLocalY = this._standMeshY - 0.08;
 
       let speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
+
+      // Adapt speed to touch control input magnitude on mobile
+      if (this.isTouch && hasMove) {
+        const inputMag = Math.min(1.0, Math.sqrt(this.touchVector.x * this.touchVector.x + this.touchVector.y * this.touchVector.y));
+        speedRatio *= inputMag;
+      }
 
       // Invert crouch animation direction when moving backward under follow lock
       if (this.CAM_FOLLOW_LOCK && backward) {
