@@ -50,11 +50,11 @@ async function loadCharacter(scene, shadow, camera) {
   scene.animationGroups.forEach(ag => ag.stop());
 
   // ── CAPSULE COLLIDER STRUCTURE ─────────────────────────
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.35, height: 1.8 }, scene);
-  playerCapsule.position.set(0, 4, 0); // Spawn slightly elevated
-  playerCapsule.visibility = 0;
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4, height: 1.8 }, scene);
+  playerCapsule.position.set(0, 2, 0); // Spawn slightly elevated
+  playerCapsule.visibility = 0.5;
   playerCapsule.isPickable = false;
-  
+
   const usePhysics = localStorage.getItem('use-physics') !== 'false';
   playerCapsule.checkCollisions = !usePhysics;
   playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);

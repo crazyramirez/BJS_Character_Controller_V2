@@ -667,6 +667,7 @@ class CharCtrl {
     this.jumpVel = 0;
     this.grounded = false;
     this.onScalable = false;
+    this._wasOnScalable = false;
     this.onStairs = false;
     this._airborneTime = 0;
     this._rollOnLand = false;
@@ -1482,8 +1483,9 @@ class CharCtrl {
     const originYOffset = -0.9;
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
     // On flat ground, we use a tight ray (0.20m in kinematic, 0.26m in physics) so that the character snaps instantly and never floats.
+    // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
     const baseRayLen = this.usePhysics ? 0.26 : 0.20;
-    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : baseRayLen;
+    const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : baseRayLen;
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
     const radius = 0.22; // Slightly inset from capsule width of 0.35
@@ -1530,6 +1532,7 @@ class CharCtrl {
       this._groundNormal = null;
     }
 
+    this._wasOnScalable = this.onScalable;
     this.onScalable = onScalable;
     return hitAny;
   }
@@ -1683,7 +1686,7 @@ class CharCtrl {
             return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
           });
           if (snapPick && snapPick.hit) {
-            _snapVelY = -2.5; // Gentler snap downwards to avoid hard landing feeling
+            _snapVelY = -2.5;
           }
         }
       } else {
@@ -2045,6 +2048,10 @@ class CharCtrl {
         } else if (_snapVelY !== 0) {
           targetY = _snapVelY;
         } else if (!this.grounded) {
+          targetY = currentVelocity.y;
+        } else if (currentVelocity.y < -1.0) {
+          // Havok still falling despite grounded ray hit — capsule bouncing above surface.
+          // Don't zero Y — let Havok pull it down to true contact.
           targetY = currentVelocity.y;
         }
 
