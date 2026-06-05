@@ -7,6 +7,7 @@
         </svg>
       </button>
       <div class="hud-content">
+        <div id="hud-engine-badge" style="position: absolute; top: 10px; right: 38px; font-size: 8px; font-weight: 800; padding: 0 8px; height: 22px; display: flex; align-items: center; border-radius: 6px; letter-spacing: 1px; text-transform: uppercase; border: 1px solid transparent; box-sizing: border-box;">—</div>
         <div class="state-label">State</div>
         <div class="state-val" id="hud-state">IDLE</div>
         <div class="state-label" style="margin-top:4px">Animation</div>
@@ -35,6 +36,14 @@
             <span>Lock Camera (Follow)</span>
             <label class="switch-toggle">
               <input type="checkbox" id="toggle-cam-lock">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Havok Physics</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-physics">
               <span class="slider-toggle"></span>
             </label>
           </div>
@@ -156,4 +165,23 @@
   const hudFps = document.createElement('div');
   hudFps.id = 'hud-fps';
   document.body.appendChild(hudFps);
+
+  // Set engine badge based on current selection
+  const usePhysics = localStorage.getItem('use-physics') !== 'false';
+  const badge = document.getElementById('hud-engine-badge');
+  if (badge) {
+    if (usePhysics) {
+      badge.textContent = 'HAVOK PHYSICS';
+      badge.style.background = 'rgba(0, 255, 153, 0.12)';
+      badge.style.border = '1px solid rgba(0, 255, 153, 0.3)';
+      badge.style.color = '#00ff99';
+      badge.style.textShadow = '0 0 8px rgba(0, 255, 153, 0.3)';
+    } else {
+      badge.textContent = 'SIN FÍSICAS';
+      badge.style.background = 'rgba(235, 94, 85, 0.12)';
+      badge.style.border = '1px solid rgba(235, 94, 85, 0.3)';
+      badge.style.color = '#eb5e55';
+      badge.style.textShadow = '0 0 8px rgba(235, 94, 85, 0.3)';
+    }
+  }
 })();

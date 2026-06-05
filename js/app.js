@@ -54,13 +54,15 @@ async function loadCharacter(scene, shadow, camera) {
   playerCapsule.position.set(0, 4, 0); // Spawn slightly elevated
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
-  playerCapsule.checkCollisions = true;
+  
+  const usePhysics = localStorage.getItem('use-physics') !== 'false';
+  playerCapsule.checkCollisions = !usePhysics;
   playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);
   playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
 
   // Parent the visual mesh to the capsule, offset Y so feet touch bottom (adjusted for collision padding)
   charRoot.setParent(playerCapsule);
-  charRoot.position.set(0, -0.98, 0);
+  charRoot.position.set(0, usePhysics ? -0.90 : -0.98, 0);
   charRoot.rotation.set(0, 0, 0);
 
   setLoad(90, 'Building controllers...');
@@ -76,8 +78,7 @@ async function loadCharacter(scene, shadow, camera) {
   const animCtrl = new AnimCtrl(filteredGroups, scene);
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene);
 
-  // Testing Set Animation for walk
-  // animCtrl.setWalkAnim(filteredGroups[22]);
+  // animCtrl.setWalkAnim(filteredGroups[22])
 
   // ── CAMERA FOLLOW ─────────────────────────────────────
   const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -106,6 +107,15 @@ async function createDemoScene() {
   scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
   scene.fogDensity = 0.008;
   scene.fogColor = C3(0.04, 0.04, 0.09);
+
+  const usePhysics = localStorage.getItem('use-physics') !== 'false';
+
+  // Enable Havok Physics
+  if (usePhysics) {
+    const havokInstance = await HavokPhysics();
+    const hk = new BABYLON.HavokPlugin(true, havokInstance);
+    scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
+  }
 
   // Enable Collisions
   scene.collisionsEnabled = true;
@@ -183,7 +193,8 @@ async function createDemoScene() {
 
   const colorBase = C3(0.57, 0.59, 0.52);
   // ── GROUND ─────────────────────────────────────────────
-  const ground = BABYLON.MeshBuilder.CreateGround('gnd', { width: 80, height: 80, subdivisions: 4 }, scene);
+  const ground = BABYLON.MeshBuilder.CreateBox('gnd', { width: 80, height: 1.0, depth: 80 }, scene);
+  ground.position.y = -0.5;
   ground.receiveShadows = true;
   ground.checkCollisions = true;
 
@@ -195,6 +206,10 @@ async function createDemoScene() {
   gndMat.metallic = 0;
   ground.material = gndMat;
   ground.receiveShadows = true;
+
+  if (usePhysics) {
+    new BABYLON.PhysicsAggregate(ground, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.8, restitution: 0.1 }, scene);
+  }
 
   const rough = 0.7;
 
@@ -217,13 +232,17 @@ async function createDemoScene() {
     m.albedoColor = colorBase; // Use colorful custom values from propData
     m.roughness = rough;
     box.material = m;
+
+    if (usePhysics) {
+      new BABYLON.PhysicsAggregate(box, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.6, restitution: 0.1 }, scene);
+    }
   });
 
   // Platform (stage)
   const platform = BABYLON.MeshBuilder.CreateCylinder('platform', {
     diameter: 10, height: 0.12, tessellation: 32
   }, scene);
-  platform.position.y = 0.01;
+  platform.position.y = 0.06; // Adjusted so top surface matches ground height or is slightly above
   platform.receiveShadows = true;
   platform.checkCollisions = true;
   platform.isPickable = true;
@@ -231,6 +250,10 @@ async function createDemoScene() {
   platM.albedoColor = colorBase;
   platM.roughness = rough;
   platform.material = platM;
+
+  if (usePhysics) {
+    new BABYLON.PhysicsAggregate(platform, BABYLON.PhysicsShapeType.CYLINDER, { mass: 0, friction: 0.8, restitution: 0.1 }, scene);
+  }
 
   // ── EXTRA ENVIRONMENT PROPS (RAMP & STAIRS) ───────────
   // 1. Curved Slope / Ramp
@@ -247,6 +270,10 @@ async function createDemoScene() {
   rampM.roughness = rough;
   ramp.material = rampM;
 
+  if (usePhysics) {
+    new BABYLON.PhysicsAggregate(ramp, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.6, restitution: 0.1 }, scene);
+  }
+
   // 2. Flight of stairs — individual boxes with collision so visual matches physics exactly
   const stairM = new BABYLON.PBRMaterial("stairM", scene);
   stairM.albedoColor = colorBase;
@@ -262,6 +289,10 @@ async function createDemoScene() {
     step.meshType = 'scalable';
     step.material = stairM;
     shadow.addShadowCaster(step);
+
+    if (usePhysics) {
+      new BABYLON.PhysicsAggregate(step, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.7, restitution: 0.1 }, scene);
+    }
   }
 
   // ── POST PROCESSING ────────────────────────────────────
@@ -282,6 +313,15 @@ async function createDemoScene() {
   const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera);
 
   // Hook up HUD setting toggles dynamically
+  const togglePhysics = $('toggle-physics');
+  if (togglePhysics) {
+    togglePhysics.checked = usePhysics;
+    togglePhysics.addEventListener('change', (e) => {
+      localStorage.setItem('use-physics', e.target.checked);
+      window.location.reload();
+    });
+  }
+
   const toggleCamLock = $('toggle-cam-lock');
   if (toggleCamLock) {
     toggleCamLock.checked = charCtrl.CAM_FOLLOW_LOCK;

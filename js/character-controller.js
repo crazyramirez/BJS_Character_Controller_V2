@@ -595,6 +595,9 @@ class CharCtrl {
     // Physics & Speeds Config
     const config = Object.assign({}, DEFAULT_CHAR_CONFIG.PHYSICS, options.config || {});
 
+    // Use physics parameter
+    this.usePhysics = options.usePhysics !== undefined ? options.usePhysics : (localStorage.getItem('use-physics') !== 'false');
+
     this.GRAV = config.GRAV;
     this.JUMP_PWR = config.JUMP_PWR;
     this.SPD_WALK = config.SPD_WALK;
@@ -639,15 +642,36 @@ class CharCtrl {
     // Mobile / Touch controls configuration
     this.touchConfig = Object.assign({}, DEFAULT_CHAR_CONFIG.TOUCH, options.touch || {});
 
+    // Initialize Havok Physics Body if enabled
+    if (this.usePhysics) {
+      const startPoint = new BABYLON.Vector3(0, -0.55, 0);
+      const endPoint = new BABYLON.Vector3(0, 0.55, 0);
+      this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.35, scene);
+      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.35, 0), new BABYLON.Vector3(0, 0.35, 0), 0.35, scene);
+
+      this._standShape.material = { friction: 0, restitution: 0 };
+      this._crouchShape.material = { friction: 0, restitution: 0 };
+
+      this.physicsBody = new BABYLON.PhysicsBody(this.root, BABYLON.PhysicsMotionType.DYNAMIC, false, scene);
+      this.physicsBody.shape = this._standShape;
+      this.physicsBody.disablePreStep = false;
+      this.physicsBody.setMassProperties({
+        mass: 1,
+        inertia: new BABYLON.Vector3(0, 0, 0)
+      });
+    }
+
     // Physics running state
     this.speed = 0;
     this.rotY = 0;
     this.jumpVel = 0;
     this.grounded = false;
     this.onScalable = false;
+    this.onStairs = false;
     this._airborneTime = 0;
     this._rollOnLand = false;
     this._rollActive = false;
+    this._wasClimbingStep = false;
 
     // State
     this.state = S.IDLE;
@@ -791,7 +815,11 @@ class CharCtrl {
             this.camera.alpha = this._lastCameraAlpha;
           } else {
             this.rotY -= alphaDelta;
-            this.root.rotation.y = this.rotY;
+            if (this.usePhysics) {
+              this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+            } else {
+              this.root.rotation.y = this.rotY;
+            }
             this._lastYawTurnTime = performance.now();
           }
         }
@@ -1099,6 +1127,19 @@ class CharCtrl {
       if (this._boundPointerUp) {
         canvasEl.removeEventListener('pointerup', this._boundPointerUp);
         canvasEl.removeEventListener('pointercancel', this._boundPointerUp);
+      }
+    }
+
+    // 6. Dispose physics components
+    if (this.usePhysics) {
+      if (this.physicsBody) {
+        this.physicsBody.dispose();
+      }
+      if (this._standShape) {
+        this._standShape.dispose();
+      }
+      if (this._crouchShape) {
+        this._crouchShape.dispose();
       }
     }
   }
@@ -1440,8 +1481,9 @@ class CharCtrl {
     // Origin at slightly above the bottom of the capsule (sits at Y = -0.95 relative to center)
     const originYOffset = -0.9;
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
-    // On flat ground, we use a tight ray (0.20m) so that the character snaps instantly and never floats.
-    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : 0.20;
+    // On flat ground, we use a tight ray (0.20m in kinematic, 0.26m in physics) so that the character snaps instantly and never floats.
+    const baseRayLen = this.usePhysics ? 0.26 : 0.20;
+    const rayLen = (this.onScalable || this.state === S.ROLL) ? 0.32 : baseRayLen;
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
     const radius = 0.22; // Slightly inset from capsule width of 0.35
@@ -1455,6 +1497,7 @@ class CharCtrl {
 
     let hitAny = false;
     let onScalable = false;
+    this.onStairs = false;
 
     for (const offset of offsets) {
       const rayStart = this.root.position.add(offset);
@@ -1467,9 +1510,11 @@ class CharCtrl {
       if (pick && pick.hit) {
         hitAny = true;
         this._groundNormal = pick.getNormal(true);
+        const name = pick.pickedMesh.name || "";
+        this.onStairs = /step|stair/i.test(name);
         // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
         if (pick.pickedMesh.meshType === "scalable" ||
-          (pick.pickedMesh.name && /step|stair|ramp|platform|floor/i.test(pick.pickedMesh.name))) {
+          (name && /step|stair|ramp|platform|floor/i.test(name))) {
           onScalable = true;
         } else {
           const normal = this._groundNormal;
@@ -1490,13 +1535,21 @@ class CharCtrl {
   }
 
   _isCeilingBlocked() {
-    // Start raycast at the bottom of the feet (ground level) instead of the capsule center
-    // to avoid starting the ray inside/above a low ceiling, which would fail to detect it.
-    const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.9, 0));
-    const upDir = new BABYLON.Vector3(0, 1, 0);
-    // Ray length needs to reach the full standing height (2 * ellipsoidY = 1.92m) plus clearance margin
-    const rayLen = (this._standEllipsoidY * 2.0) + 0.1;
+    let rayStart, rayLen;
+    if (this.usePhysics) {
+      // Start raycast just below the top of the crouched head (0.60m above capsule center)
+      rayStart = this.root.position.add(new BABYLON.Vector3(0, 0.60, 0));
+      // Ray length needs to reach the standing height (1.80m) plus clearance margin
+      rayLen = 0.65;
+    } else {
+      // Start raycast at the bottom of the feet (ground level) instead of the capsule center
+      // to avoid starting the ray inside/above a low ceiling, which would fail to detect it.
+      rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.9, 0));
+      // Ray length needs to reach the full standing height (2 * ellipsoidY = 1.92m) plus clearance margin
+      rayLen = (this._standEllipsoidY * 2.0) + 0.1;
+    }
 
+    const upDir = new BABYLON.Vector3(0, 1, 0);
     const ray = new BABYLON.Ray(rayStart, upDir, rayLen);
     const pick = this.scene.pickWithRay(ray, (mesh) => {
       return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
@@ -1515,6 +1568,20 @@ class CharCtrl {
     const dt = this.scene.getEngine().getDeltaTime() / 1000;
     if (dt <= 0 || dt > 0.1) return;
     this.stateT += dt;
+
+    // Freeze camera vectors during mouse orbit dragging under standard camera mode
+    // to allow the character to keep their world direction and let the user look at their face.
+    if (this._pointerDragging && !this.CAM_FOLLOW_LOCK) {
+      if (!this._frozenCamFwd) {
+        this._frozenCamFwd = this._camForward();
+        this._frozenCamRgt = this._camRight(this._frozenCamFwd);
+      }
+    } else {
+      this._frozenCamFwd = null;
+      this._frozenCamRgt = null;
+    }
+
+    const currentVelocity = this.usePhysics ? this.physicsBody.getLinearVelocity() : null;
 
     // Automatic uncrouch if we were forced to crouch after a roll and are now clear of obstacles
     if (this._forcedCrouchFromRoll && this.crouching) {
@@ -1545,18 +1612,29 @@ class CharCtrl {
 
     // Probing Ground via Raycasting (bypass when rising from a jump)
     const wasGrounded = this.grounded;
-    if (this.jumpVel > 0.1) {
-      this.grounded = false;
+    const isJumpingState = this.state === S.JUMP_START || this.state === S.JUMP_LOOP;
+    if (this.usePhysics) {
+      if (this.jumpVel > 0.1 || (isJumpingState && currentVelocity.y > 0.1)) {
+        this.grounded = false;
+      } else {
+        this.grounded = this._checkGrounded();
+      }
     } else {
-      this.grounded = this._checkGrounded();
+      if (this.jumpVel > 0.1) {
+        this.grounded = false;
+      } else {
+        this.grounded = this._checkGrounded();
+      }
     }
 
     // Landing / roll recovery
     let landingTriggered = false;
+    let _snapVelY = 0;
     if (this.grounded && !wasGrounded) {
       landingTriggered = true;
       this._hasDoubleJumped = false; // Reset double jump!
       const fallHeight = this._highestAirborneY - this.root.position.y;
+      const fallingVel = this.usePhysics ? currentVelocity.y : this.jumpVel;
       if (this.state === S.ROLL) {
         this._emitLandingDust();
         if (!this._rollActive) {
@@ -1566,7 +1644,7 @@ class CharCtrl {
         this._rollOnLand = false;
         this._emitLandingDust();
         this._roll();
-      } else if (this.jumpVel < -3.0 && fallHeight > 0.4) {
+      } else if (fallingVel < -3.0 && fallHeight > 0.4) {
         this._rollOnLand = false;
         this._setState(S.JUMP_LAND);
         this.anim.play('Jump_Land', false, 0.15, () => this._returnToLoco(), 1.35);
@@ -1590,49 +1668,85 @@ class CharCtrl {
       this._highestAirborneY = this.root.position.y;
     }
 
+    let inAction = ACTION_STATES.has(this.state);
+
     // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
     if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
-      this.jumpVel = -4.0;
+      if (this.usePhysics) {
+        if (!this._wasClimbingStep) {
+          const isTempStandingAction = inAction && (this.state === S.SPELL_ENTER || this.state === S.SPELL_SHOOT || this.state === S.SPELL_EXIT || this.state === S.INTERACT);
+          const useCrouchHeight = (this.crouching && !isTempStandingAction) || this.state === S.ROLL;
+          const originYOffset = useCrouchHeight ? -0.65 : -0.85;
+          const snapRayStart = this.root.position.add(new BABYLON.Vector3(0, originYOffset, 0));
+          const snapRay = new BABYLON.Ray(snapRayStart, new BABYLON.Vector3(0, -1, 0), 0.5);
+          const snapPick = this.scene.pickWithRay(snapRay, (mesh) => {
+            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+          });
+          if (snapPick && snapPick.hit) {
+            _snapVelY = -2.5; // Gentler snap downwards to avoid hard landing feeling
+          }
+        }
+      } else {
+        this.jumpVel = -4.0;
+      }
     }
-
-    let inAction = ACTION_STATES.has(this.state);
 
     // Let the roll animation play to completion naturally via its callback
 
     // ── PROCESS VERTICAL PHYSICS (GRAVITY & JUMPING) ───────
-    if (!this.grounded) {
-      this.jumpVel -= this.GRAV * dt;
-      if (this.jumpVel < -25) this.jumpVel = -25; // Clamp terminal velocity
-
-      // Fall detection: transition to JUMP_LOOP when falling off platforms.
-      // Requires 0.35s airborne so stair-step ledge snaps (resolve in <0.1s) don't trigger fall animation.
-      if (this.jumpVel < -3.5 && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && !inAction && this._airborneTime > 0.35) {
-        this._setState(S.JUMP_LOOP);
-        this.anim.play('Jump_Loop', true, 0.3);
+    if (this.usePhysics) {
+      if (this.grounded) {
+        if (currentVelocity.y <= 0.1) {
+          const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+          if (deltaY > 0.005) {
+            const inAction = ACTION_STATES.has(this.state);
+            if (this.grounded && hasMove && !this.onScalable && !inAction) {
+              this._setState(S.JUMP_LAND);
+              this.anim.play('Jump_Land', false, 0.1, () => this._returnToLoco(), 1.65, 0.25);
+              this._emitLandingDust();
+            }
+          } else {
+            if (hasMove && this.onScalable) {
+              _snapVelY = -1.5;
+            }
+          }
+        }
       }
     } else {
-      // Resolve vertical velocity when grounded to eliminate collision jitter
-      if (this.jumpVel <= 0) {
-        // Track capsule Y delta to detect if we are currently climbing up steps/slopes
-        const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+      if (!this.grounded) {
+        this.jumpVel -= this.GRAV * dt;
+        if (this.jumpVel < -25) this.jumpVel = -25; // Clamp terminal velocity
 
-        if (deltaY > 0.005) {
-          // If collision response is pushing us UP the steps, do not apply downward snap pressure!
-          this.jumpVel = 0;
+        // Fall detection: transition to JUMP_LOOP when falling off platforms.
+        // Requires 0.35s airborne so stair-step ledge snaps (resolve in <0.1s) don't trigger fall animation.
+        if (this.jumpVel < -3.5 && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && !inAction && this._airborneTime > 0.35) {
+          this._setState(S.JUMP_LOOP);
+          this.anim.play('Jump_Loop', true, 0.3);
+        }
+      } else {
+        // Resolve vertical velocity when grounded to eliminate collision jitter
+        if (this.jumpVel <= 0) {
+          // Track capsule Y delta to detect if we are currently climbing up steps/slopes
+          const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
 
-          // Detect single step climbing:
-          // Must be grounded, moving forward/input active, NOT on stairs/ramps (onScalable is false),
-          // and not already performing another action.
-          const inAction = ACTION_STATES.has(this.state);
-          if (this.grounded && hasMove && !this.onScalable && !inAction) {
-            this._setState(S.JUMP_LAND);
-            // Play JUMP_LAND animation with a lower weight (0.35) for a subtler, more natural step-up blend
-            this.anim.play('Jump_Land', false, 0.1, () => this._returnToLoco(), 1.65, 0.25);
-            this._emitLandingDust();
+          if (deltaY > 0.005) {
+            // If collision response is pushing us UP the steps, do not apply downward snap pressure!
+            this.jumpVel = 0;
+
+            // Detect single step climbing:
+            // Must be grounded, moving forward/input active, NOT on stairs/ramps (onScalable is false),
+            // and not already performing another action.
+            const inAction = ACTION_STATES.has(this.state);
+            if (this.grounded && hasMove && !this.onScalable && !inAction) {
+              this._setState(S.JUMP_LAND);
+              // Play JUMP_LAND animation with a lower weight (0.35) for a subtler, more natural step-up blend
+              this.anim.play('Jump_Land', false, 0.1, () => this._returnToLoco(), 1.65, 0.25);
+              this._emitLandingDust();
+            }
+          } else {
+            // Apply a gentle downward snap pressure only when moving on stairs/ramps to prevent flying off step edges
+            this.jumpVel = hasMove && this.onScalable ? -3.5 : 0;
           }
-        } else {
-          // Apply a gentle downward snap pressure only when moving on stairs/ramps to prevent flying off step edges
-          this.jumpVel = hasMove && this.onScalable ? -3.5 : 0;
         }
       }
     }
@@ -1643,66 +1757,83 @@ class CharCtrl {
     const isTempStandingAction = inAction && (this.state === S.SPELL_ENTER || this.state === S.SPELL_SHOOT || this.state === S.SPELL_EXIT || this.state === S.INTERACT);
     const useCrouchHeight = (this.crouching && !isTempStandingAction) || this.state === S.ROLL;
 
-    const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
-    const targetOffset = useCrouchHeight ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
-    // Keep the ellipsoid width constant to avoid clipping/penetration bugs
-    const targetEllipsoidWidth = this._standEllipsoidWidth;
-
-    if (isTempStandingAction) {
-      this.targetLocalY = this._standMeshY;
-    }
-
-    // Calculate forward/backward locomotion offset direction based on follow lock state
-    const isMovingBackward = this.CAM_FOLLOW_LOCK && (this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2));
-    const localMoveSign = isMovingBackward ? -1 : 1;
-
-    // Raycast to detect obstacles in the offset direction (forward or backward) to prevent pushing the ellipsoid into walls/stairs
-    let safeMaxOffsetZ = 0.22;
-    const facingDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY));
-    const rayDir = facingDir.scale(localMoveSign);
-
-    // Calculate heights dynamically based on the current ellipsoid geometry to ensure accurate checks while crouching or rolling
-    const currentCenterY = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
-    const currentHalfHeight = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
-
-    // Check at top (head), center (waist), and bottom (feet) of the active ellipsoid volume
-    const heights = [
-      currentCenterY + currentHalfHeight * 0.7,
-      currentCenterY,
-      currentCenterY - currentHalfHeight * 0.7
-    ];
-    const margin = 0.05;
-
-    for (const h of heights) {
-      const rayStart = this.root.position.add(new BABYLON.Vector3(0, h, 0));
-      const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), (mesh) => {
-        return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
-      });
-      if (pick && pick.hit) {
-        const availableSpace = Math.max(0, pick.distance - this._standEllipsoidWidth - margin);
-        safeMaxOffsetZ = Math.min(safeMaxOffsetZ, availableSpace);
+    if (this.usePhysics) {
+      const activeShape = useCrouchHeight ? this._crouchShape : this._standShape;
+      if (useCrouchHeight) {
+        this.targetLocalY = -0.70 - (this.crouching ? 0.08 : 0); // Crouch shape bottom is at -0.70
+      } else {
+        this.targetLocalY = -0.90; // Stand shape bottom is at -0.90
       }
-    }
 
-    // Scale offset based on speed ratio and the safe maximum offset
-    const targetOffsetZ = (this.speed / this.SPD_SPRINT) * safeMaxOffsetZ * localMoveSign;
-    this.localOffsetZ = lerp(this.localOffsetZ || 0, targetOffsetZ, 1 - Math.exp(-4 * dt));
+      if (this.physicsBody.shape !== activeShape) {
+        this.physicsBody.shape = activeShape;
+        this.physicsBody.setMassProperties({
+          mass: 1,
+          inertia: new BABYLON.Vector3(0, 0, 0)
+        });
+      }
+    } else {
+      const targetEllipsoidY = useCrouchHeight ? this._crouchEllipsoidY : this._standEllipsoidY;
+      const targetOffset = useCrouchHeight ? -(this._standEllipsoidY - this._crouchEllipsoidY) : 0;
+      // Keep the ellipsoid width constant to avoid clipping/penetration bugs
+      const targetEllipsoidWidth = this._standEllipsoidWidth;
 
-    // Instant safety clamp: ensure the active offset never exceeds the physical space detected in this frame
-    this.localOffsetZ = Math.max(-safeMaxOffsetZ, Math.min(safeMaxOffsetZ, this.localOffsetZ));
+      if (isTempStandingAction) {
+        this.targetLocalY = this._standMeshY;
+      }
 
-    // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches (slowed down to 4 for premium fluid feel)
-    if (this.root.ellipsoid) {
-      this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-4 * dt));
-      this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
+      // Calculate forward/backward locomotion offset direction based on follow lock state
+      const isMovingBackward = this.CAM_FOLLOW_LOCK && (this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2));
+      const localMoveSign = isMovingBackward ? -1 : 1;
 
-      // Transform local Z offset to world space based on character rotation (Y-axis)
-      this.root.ellipsoidOffset.x = this.localOffsetZ * Math.sin(this.rotY);
-      this.root.ellipsoidOffset.z = this.localOffsetZ * Math.cos(this.rotY);
+      // Raycast to detect obstacles in the offset direction (forward or backward) to prevent pushing the ellipsoid into walls/stairs
+      let safeMaxOffsetZ = 0.22;
+      const facingDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY));
+      const rayDir = facingDir.scale(localMoveSign);
 
-      const newWidth = lerp(this.root.ellipsoid.x, targetEllipsoidWidth, 1 - Math.exp(-4 * dt));
-      this.root.ellipsoid.x = newWidth;
-      this.root.ellipsoid.z = newWidth;
+      // Calculate heights dynamically based on the current ellipsoid geometry to ensure accurate checks while crouching or rolling
+      const currentCenterY = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
+      const currentHalfHeight = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
+
+      // Check at top (head), center (waist), and bottom (feet) of the active ellipsoid volume
+      const heights = [
+        currentCenterY + currentHalfHeight * 0.7,
+        currentCenterY,
+        currentCenterY - currentHalfHeight * 0.7
+      ];
+      const margin = 0.05;
+
+      for (const h of heights) {
+        const rayStart = this.root.position.add(new BABYLON.Vector3(0, h, 0));
+        const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), (mesh) => {
+          return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+        });
+        if (pick && pick.hit) {
+          const availableSpace = Math.max(0, pick.distance - this._standEllipsoidWidth - margin);
+          safeMaxOffsetZ = Math.min(safeMaxOffsetZ, availableSpace);
+        }
+      }
+
+      // Scale offset based on speed ratio and the safe maximum offset
+      const targetOffsetZ = (this.speed / this.SPD_SPRINT) * safeMaxOffsetZ * localMoveSign;
+      this.localOffsetZ = lerp(this.localOffsetZ || 0, targetOffsetZ, 1 - Math.exp(-4 * dt));
+
+      // Instant safety clamp: ensure the active offset never exceeds the physical space detected in this frame
+      this.localOffsetZ = Math.max(-safeMaxOffsetZ, Math.min(safeMaxOffsetZ, this.localOffsetZ));
+
+      // Smoothly interpolate collision ellipsoid size & offset to prevent sudden camera/physics glitches (slowed down to 4 for premium fluid feel)
+      if (this.root.ellipsoid) {
+        this.root.ellipsoid.y = lerp(this.root.ellipsoid.y, targetEllipsoidY, 1 - Math.exp(-4 * dt));
+        this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
+
+        // Transform local Z offset to world space based on character rotation (Y-axis)
+        this.root.ellipsoidOffset.x = this.localOffsetZ * Math.sin(this.rotY);
+        this.root.ellipsoidOffset.z = this.localOffsetZ * Math.cos(this.rotY);
+
+        const newWidth = lerp(this.root.ellipsoid.x, targetEllipsoidWidth, 1 - Math.exp(-4 * dt));
+        this.root.ellipsoid.x = newWidth;
+        this.root.ellipsoid.z = newWidth;
+      }
     }
 
     // ── PROCESS HORIZONTAL PHYSICS (LOCOMOTION) ────────────
@@ -1720,7 +1851,11 @@ class CharCtrl {
           if (inputX !== 0) {
             const steerSpeed = 2.8; // Radians per second
             this.rotY += inputX * steerSpeed * dt;
-            this.root.rotation.y = this.rotY;
+            if (this.usePhysics) {
+              this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+            } else {
+              this.root.rotation.y = this.rotY;
+            }
           }
 
           // 2. W/S moves forward/backward relative to character heading
@@ -1748,16 +1883,17 @@ class CharCtrl {
         }
       } else {
         // ── STANDARD CAMERA-RELATIVE LOCOMOTION ────────────
-        // Compute camera-relative direction
         const camFwd = this._camForward();
         const camRgt = this._camRight(camFwd);
+        const fwd = (this._frozenCamFwd && !this.CAM_FOLLOW_LOCK) ? this._frozenCamFwd : camFwd;
+        const rgt = (this._frozenCamRgt && !this.CAM_FOLLOW_LOCK) ? this._frozenCamRgt : camRgt;
 
         if (!this.grounded) {
           // Air control logic:
           if (this.AIR_CONTROL) {
             // Full steering in mid-air:
             if (hasMove) {
-              dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+              dir = rgt.scale(inputX).add(fwd.scale(inputZ));
               if (dir.length() > 0.01) dir.normalize();
             }
 
@@ -1777,7 +1913,7 @@ class CharCtrl {
         } else {
           // Standard grounded logic:
           if (hasMove) {
-            dir = camRgt.scale(inputX).add(camFwd.scale(inputZ));
+            dir = rgt.scale(inputX).add(fwd.scale(inputZ));
             if (dir.length() > 0.01) dir.normalize();
           }
 
@@ -1823,7 +1959,11 @@ class CharCtrl {
         this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-30 * dt));
         const k = this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08);
         this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
-        this.root.rotation.y = this.rotY;
+        if (this.usePhysics) {
+          this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+        } else {
+          this.root.rotation.y = this.rotY;
+        }
       }
 
       // Wall detection: check if there is an obstacle directly in front at an unclimbable height
@@ -1856,42 +1996,135 @@ class CharCtrl {
         }
       }
 
-      // Move the Capsule using collisions!
-      const horizontalDisplacement = dir.scale(this.speed * dt);
-      const verticalDisplacement = new BABYLON.Vector3(0, this.jumpVel * dt, 0);
-      const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
+      if (this.usePhysics) {
+        // Step climbing detection
+        let stepClimbVelY = 0;
+        if ((this.grounded || this._wasClimbingStep) && hasMove && dir.length() > 0.01) {
+          // Ray starting 0.05m above feet (bottom of capsule is -0.9, so -0.85 relative to center)
+          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85, 0));
+          const rayDist = 0.7; // slightly ahead of capsule edge (radius 0.35 + margin 0.35)
+          const lowRay = new BABYLON.Ray(lowRayStart, dir, rayDist);
+          const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
+            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+          });
 
-      this.root.moveWithCollisions(totalDisplacement);
+          if (lowPick && lowPick.hit) {
+            // Check high ray at step limit height (0.50m above bottom, so -0.40 relative to center)
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40, 0));
+            const highRay = new BABYLON.Ray(highRayStart, dir, rayDist);
+            const highPick = this.scene.pickWithRay(highRay, (mesh) => {
+              return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+            });
+
+            // If the low obstacle is hit, but not the high one, we can climb it!
+            if (!highPick || !highPick.hit) {
+              stepClimbVelY = 2.0; // Apply upward step velocity to slide onto the step
+            }
+          }
+        }
+
+        // Apply linear velocity to the Havok PhysicsBody!
+        let velocity = new BABYLON.Vector3(dir.x * this.speed, 0, dir.z * this.speed);
+
+        if (this.grounded && this._groundNormal) {
+          // Project movement direction onto the ground slope plane for smooth movement
+          const dot = BABYLON.Vector3.Dot(dir, this._groundNormal);
+          const slopeDir = dir.subtract(this._groundNormal.scale(dot));
+          if (slopeDir.length() > 0.01) {
+            slopeDir.normalize();
+            velocity.set(slopeDir.x * this.speed, slopeDir.y * this.speed, slopeDir.z * this.speed);
+          }
+        }
+
+        let targetY = velocity.y;
+        if (this.jumpVel > 0.1) {
+          targetY = this.jumpVel;
+          this.jumpVel = 0;
+        } else if (stepClimbVelY !== 0) {
+          targetY = stepClimbVelY;
+        } else if (_snapVelY !== 0) {
+          targetY = _snapVelY;
+        } else if (!this.grounded) {
+          targetY = currentVelocity.y;
+        }
+
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(velocity.x, targetY, velocity.z));
+        this._wasClimbingStep = (stepClimbVelY !== 0);
+      } else {
+        // Move the Capsule using collisions!
+        const horizontalDisplacement = dir.scale(this.speed * dt);
+        const verticalDisplacement = new BABYLON.Vector3(0, this.jumpVel * dt, 0);
+        const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
+
+        this.root.moveWithCollisions(totalDisplacement);
+      }
 
       if (this.speed > 0) {
         this.moveDir.copyFrom(dir);
       }
     } else if (this.state === S.ROLL) {
-      const snapDown = this.grounded ? -4.0 : this.jumpVel;
-      const vert = new BABYLON.Vector3(0, snapDown * dt, 0);
-      if (this._rollMoving) {
-        // Steer roll direction mid-air when AIR_CONTROL is enabled
-        if (!this.grounded && this.AIR_CONTROL && (inputX !== 0 || inputZ !== 0)) {
-          const camFwd = this._camForward();
-          const airDir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
-          if (airDir.length() > 0.01) {
-            airDir.normalize();
-            BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
-          }
+      if (this.usePhysics) {
+        let targetY = this.grounded ? -4.0 : currentVelocity.y;
+        if (this.jumpVel > 0.1) {
+          targetY = this.jumpVel;
+          this.jumpVel = 0;
+        } else if (_snapVelY !== 0) {
+          targetY = _snapVelY;
         }
-        this.root.moveWithCollisions(this._rollDir.scale(this.speed * dt).add(vert));
+
+        if (this._rollMoving) {
+          // Steer roll direction mid-air when AIR_CONTROL is enabled
+          if (!this.grounded && this.AIR_CONTROL && (inputX !== 0 || inputZ !== 0)) {
+            const camFwd = this._camForward();
+            const airDir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
+            if (airDir.length() > 0.01) {
+              airDir.normalize();
+              BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
+            }
+          }
+          this.physicsBody.setLinearVelocity(new BABYLON.Vector3(this._rollDir.x * this.speed, targetY, this._rollDir.z * this.speed));
+        } else {
+          this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, targetY, 0));
+        }
+        this._wasClimbingStep = false;
       } else {
-        this.root.moveWithCollisions(vert);
+        const snapDown = this.grounded ? -4.0 : this.jumpVel;
+        const vert = new BABYLON.Vector3(0, snapDown * dt, 0);
+        if (this._rollMoving) {
+          // Steer roll direction mid-air when AIR_CONTROL is enabled
+          if (!this.grounded && this.AIR_CONTROL && (inputX !== 0 || inputZ !== 0)) {
+            const camFwd = this._camForward();
+            const airDir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
+            if (airDir.length() > 0.01) {
+              airDir.normalize();
+              BABYLON.Vector3.LerpToRef(this._rollDir, airDir, 1 - Math.exp(-4 * dt), this._rollDir);
+            }
+          }
+          this.root.moveWithCollisions(this._rollDir.scale(this.speed * dt).add(vert));
+        } else {
+          this.root.moveWithCollisions(vert);
+        }
       }
     }
 
     // Teleport back if character falls out of bounds
     if (this.root.position.y < -15) {
-      this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
-      this.root.rotation.y = 0;
-      this.rotY = 0;
-      this.jumpVel = 0;
-      this.speed = 0;
+      if (this.usePhysics) {
+        this.physicsBody.disablePreStep = false;
+        this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
+        this.root.rotationQuaternion = BABYLON.Quaternion.Identity();
+        this.rotY = 0;
+        this.jumpVel = 0;
+        this.speed = 0;
+        this.physicsBody.setLinearVelocity(BABYLON.Vector3.Zero());
+        this.physicsBody.setAngularVelocity(BABYLON.Vector3.Zero());
+      } else {
+        this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
+        this.root.rotation.y = 0;
+        this.rotY = 0;
+        this.jumpVel = 0;
+        this.speed = 0;
+      }
     }
 
     // ── UPDATE LOCOMOTION ANIMATIONS ──────────────────────
@@ -1923,8 +2156,15 @@ class CharCtrl {
     // 1. Visual Y-Suspension
     const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
     if (this.grounded && wasGrounded) {
-      // Compensate visual mesh local Y for capsule height shifts
-      this.visualLocalY -= deltaY;
+      if (this.usePhysics) {
+        if (this.onStairs) {
+          // Compensate visual mesh local Y for capsule height shifts to smooth out stair pops
+          this.visualLocalY -= deltaY;
+        }
+      } else {
+        // Compensate visual mesh local Y for capsule height shifts
+        this.visualLocalY -= deltaY;
+      }
     }
     // Smoothly return visual mesh local Y to its target crouch/stand state Y (slowed to 4 for svelte transitions during spells/interactions)
     // On stairs and ramps (onScalable), we use a middle-ground rate of 12 for high responsiveness with pleasant spring compliance.
@@ -1959,7 +2199,8 @@ class CharCtrl {
 
     // 2. Procedural Leaning (Pitch & Roll)
     // Leaning forward when moving forward, backward when decelerating/braking
-    const currentSpeedRatio = this.speed / this.SPD_SPRINT;
+    const physicalSpeed = this.usePhysics ? Math.sqrt(currentVelocity.x * currentVelocity.x + currentVelocity.z * currentVelocity.z) : this.speed;
+    const currentSpeedRatio = this.usePhysics ? Math.min(1.0, physicalSpeed / this.SPD_SPRINT) : (this.speed / this.SPD_SPRINT);
     const acceleration = (this.speed - this._lastSpeed) / dt;
     let targetPitch = 0;
 

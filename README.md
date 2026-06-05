@@ -14,6 +14,7 @@ An advanced third-person character locomotion and physics framework built with *
 
 ## 🚀 Key Features
 
+*   **Dual-Movement Modes (Physics vs Kinematic)**: Toggle dynamically between Havok Physics (dynamic simulation with body bodies) and standard Kinematic Collisions (ellipsoid-based movement) directly from the HUD.
 *   **Locomotion Blend Tree**: Smoothly blends weight and speed between Idle, Walk, and Sprint.
 *   **Dual-State Toggle Coexistence**: Crouch and Sprint operate as persistent toggles and can co-exist (allowing crouch-running).
 *   **Dynamic Zoom & Camera Follow**: Smooth camera tracking with automated user-zoom sync (mouse wheel, trackpad, pinch) and double-tap recentering.
@@ -23,6 +24,46 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Collision height adjustments & Ceiling protection**: Shrinks the capsule automatically when crouching/rolling, prevents standing up or rolling under low ceilings, and expands width when sprinting to prevent wall clipping.
 *   **Ledge & Stairs Snapping**: Keeps the character grounded on sloped surfaces and stairs to prevent airborne jitter.
 *   **Mobile Touch Support**: Responsive virtual joystick and customizable glassmorphism action buttons.
+
+---
+
+## ⚖️ Physics vs. Kinematic Modes
+
+`character-controller.js` is a **unified single-file engine** that runs in two distinct physics regimes. Both modes live in the same class — a single `usePhysics` flag switches the internal code paths at initialization time.
+
+*   **Havok Physics (Default)**: Leverages the WASM-powered **Havok Physics** engine. The character capsule is created as a dynamic `PhysicsBody` with defined mass and inertia properties, interacting naturally with other dynamic aggregates (like boxes, cylinders, and triggers).
+*   **Kinematic Collisions**: Runs entirely within Babylon's native collision engine using kinematic ellipsoids (`moveWithCollisions`). Havok initialization is skipped entirely, providing maximum performance and deterministic locomotion.
+
+### Selecting the mode
+
+**Option A — pass it at instantiation:**
+```javascript
+// Havok physics ON
+const charCtrl = new CharacterController(scene, camera, root, anims, {
+  usePhysics: true
+});
+
+// Kinematic (no physics)
+const charCtrl = new CharacterController(scene, camera, root, anims, {
+  usePhysics: false
+});
+```
+
+**Option B — `localStorage` (persists across reloads):**
+```javascript
+// Force kinematic mode
+localStorage.setItem('use-physics', 'false');
+
+// Force Havok physics mode
+localStorage.setItem('use-physics', 'true');
+
+// Remove key → falls back to usePhysics option, default is true
+localStorage.removeItem('use-physics');
+```
+
+**Option C — HUD toggle**: The built-in HUD includes a live toggle. It saves the preference to `localStorage` and reloads the page so Havok's WebAssembly memory is fully garbage-collected before switching.
+
+> **Priority order**: `options.usePhysics` → `localStorage('use-physics')` → default (`true` / Havok).
 
 ---
 
@@ -91,8 +132,8 @@ charCtrl.anim.setAnimationRanges('Walk_Loop', 10, 45);
 ## 🛠️ Implementation Quickstart
 
 The core architecture consists of three components in the `js/` directory:
-1.  **`character-controller.js`**: Holds `AnimCtrl` (animation blending/state machine) and `CharCtrl` (inputs, movement physics, collisions).
-2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Dynamic FOV, Double Jump, Air Control, and sliders).
+1.  **`character-controller.js`**: Unified character controller — handles both Havok Physics and Kinematic modes. Select the mode via the `usePhysics` constructor option or `localStorage`.
+2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Double Jump, Air Control, and sliders).
 3.  **`custom-pointer.js`**: Responsive custom cursor.
 
 See the `loadCharacter` function inside [js/app.js](js/app.js) for a fully documented production loading example.
