@@ -670,8 +670,10 @@ class CharCtrl {
     this._wasOnScalable = false;
     this.onStairs = false;
     this._airborneTime = 0;
+    this._lastGroundedFrame = 0;
     this._rollOnLand = false;
     this._rollActive = false;
+    this._rollTimeoutId = null;
     this._wasClimbingStep = false;
 
     // State
@@ -1317,30 +1319,27 @@ class CharCtrl {
 
     this.anim.play('Roll', false, 0.2, null, 1.1);
 
-    // Reliable 1-second timer to exit the roll state and return to locomotion
-    setTimeout(() => {
+    clearTimeout(this._rollTimeoutId);
+    this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
       if (this.state !== S.ROLL) return;
 
-      // If we are under a low obstacle/ceiling when the roll ends, automatically force crouching
       if (this._isCeilingBlocked()) {
         this.crouching = true;
         this._forcedCrouchFromRoll = true;
       }
 
-      const rollAg = this.anim.g.get('Roll');
-      if (rollAg) {
-        this.anim.activeTransitions = this.anim.activeTransitions.filter(t => {
-          if (t.outgoing === rollAg) {
-            if (t.observer) this.scene.onBeforeRenderObservable.remove(t.observer);
-            return false;
-          }
-          return true;
-        });
-        rollAg.setWeightForAllAnimatables(0);
-        rollAg.stop();
+      if (this.usePhysics && this.physicsBody) {
+        const cv = this.physicsBody.getLinearVelocity();
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
       }
-      this._returnToLoco(0.2);
+
+      // Force state out of ROLL immediately — _updateLocoAnim early-returns when
+      // !grounded, leaving state=ROLL and blocking all input.
+      this._setState(S.IDLE);
+      this.grounded = this._checkGrounded();
+      // Play loco animation directly — bypass _updateLocoAnim grounded guard.
+      this.anim.play('Locomotion', true, 0.2);
     }, 700);
   }
 
@@ -1479,12 +1478,18 @@ class CharCtrl {
 
   // ── RAYCAST GROUND DETECT ──────────────────────────────
   _checkGrounded() {
-    // Origin at slightly above the bottom of the capsule (sits at Y = -0.95 relative to center)
-    const originYOffset = -0.9;
+    // Ray origin: slightly ABOVE the capsule bottom so the ray never starts inside the ground mesh.
+    // crouchShape bottom = center - 0.70, standShape bottom = center - 0.90.
+    // Using a fixed -0.9 offset puts the origin 0.20m inside the ground when crouching/rolling → miss.
+    const usingCrouchShape = this.usePhysics
+      ? (this._crouchShape && this.physicsBody && this.physicsBody.shape === this._crouchShape)
+      : (this.crouching || this.state === S.ROLL);
+    const originYOffset = usingCrouchShape ? -0.62 : -0.82;
+
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
     // On flat ground, we use a tight ray (0.20m in kinematic, 0.26m in physics) so that the character snaps instantly and never floats.
     // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
-    const baseRayLen = this.usePhysics ? 0.26 : 0.20;
+    const baseRayLen = this.usePhysics ? 0.30 : 0.20;
     const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : baseRayLen;
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
@@ -1620,7 +1625,18 @@ class CharCtrl {
       if (this.jumpVel > 0.1 || (isJumpingState && currentVelocity.y > 0.1)) {
         this.grounded = false;
       } else {
-        this.grounded = this._checkGrounded();
+        const rayGrounded = this._checkGrounded();
+        // Havok on ramps/stairs can briefly bounce the capsule above the ray reach.
+        // Treat as grounded if: ray hit, OR Havok Y velocity is near-zero and we
+        // were grounded very recently (within 3 frames) — prevents false airborne on bumpy surfaces.
+        if (rayGrounded) {
+          this.grounded = true;
+          this._lastGroundedFrame = 0;
+        } else {
+          this._lastGroundedFrame = (this._lastGroundedFrame || 0) + 1;
+          // Buffer only for ramp/stair micro-bounce — never during jump states.
+          this.grounded = !isJumpingState && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 1.5;
+        }
       }
     } else {
       if (this.jumpVel > 0.1) {
