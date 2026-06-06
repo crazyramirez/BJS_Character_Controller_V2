@@ -419,7 +419,23 @@
 &lt;script src="js/character-controller.js"&gt;&lt;/script&gt;
 &lt;script src="js/app.js"&gt;&lt;/script&gt;</div>
 
-            <h3>Minimal Instantiation</h3>
+            <h3>High-Level Setup Helper (Recommended)</h3>
+            <p>You can initialize physics and load the character in just a few lines of code using the shared helper functions: <code>initPhysics</code> and <code>setupCharacter</code>. This helper also supports direct remapping of controls and animations via its options:</p>
+            <div class="info-code">// 1. Initialize physics (Havok or Kinematic fallback)
+const usePhysics = await initPhysics(scene);
+
+// 2. Load character, parent capsule collider, and build controllers in one call
+const { playerCapsule, animCtrl, charCtrl } = await setupCharacter(scene, camera, usePhysics, {
+  shadow,                     // Optional: shadow generator to add character meshes to
+  keys: { JUMP: ['KeyK'] },   // Optional: remap keyboard controls directly
+  config: { JUMP_PWR: 12 },   // Optional: override physical and camera parameters
+  configure: ({ animCtrl, filteredGroups }) => {
+    // Optional: callback to remap animations or customize keyframe ranges
+    animCtrl.setWalkAnim(filteredGroups[15]);
+  }
+});</div>
+
+            <h3>Minimal Instantiation (Manual Setup)</h3>
             <div class="info-code">// 1. Initialize the Animation Controller (AnimCtrl)
 const animCtrl = new AnimCtrl(characterAsset.animationGroups, scene);
 
@@ -631,4 +647,158 @@ node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_a
   // Bind to fullscreen modal
   infoModal.addEventListener('pointerenter', enterHUD);
   infoModal.addEventListener('pointerleave', leaveHUD);
+
+  // ── HUD COLLAPSE CONTROLLER ──────────────────────────────
+  const hud = document.getElementById('hud');
+  const toggle = document.getElementById('hud-toggle');
+  if (toggle && hud) {
+    const isCollapsed = localStorage.getItem('hud-collapsed') === 'true';
+    if (isCollapsed) {
+      hud.classList.add('collapsed');
+    }
+
+    toggle.addEventListener('click', () => {
+      hud.classList.toggle('collapsed');
+      localStorage.setItem('hud-collapsed', hud.classList.contains('collapsed'));
+    });
+  }
+
+  // ── HUD FOCUS RELEASE (BLUR) CONTROLLER ──────────────────
+  const interactiveElements = document.querySelectorAll('#hud input, #hud button, #hud-toggle, #hud a');
+  interactiveElements.forEach(el => {
+    const releaseFocus = () => {
+      el.blur();
+      const canvasEl = document.getElementById('c');
+      if (canvasEl) canvasEl.focus();
+    };
+    el.addEventListener('click', releaseFocus);
+    el.addEventListener('change', releaseFocus);
+    el.addEventListener('input', releaseFocus);
+  });
+
+  // ── BIND HUD CONTROLS ─────────────────────────────────────
+  window.bindHUDControls = function(charCtrl, camera, usePhysics) {
+    const $ = id => document.getElementById(id);
+
+    const togglePhysics = $('toggle-physics');
+    if (togglePhysics) {
+      togglePhysics.checked = usePhysics;
+      togglePhysics.addEventListener('change', (e) => {
+        localStorage.setItem('use-physics', e.target.checked);
+        window.location.reload();
+      });
+    }
+
+    const toggleCamLock = $('toggle-cam-lock');
+    if (toggleCamLock) {
+      toggleCamLock.checked = charCtrl.CAM_FOLLOW_LOCK;
+      toggleCamLock.addEventListener('change', (e) => {
+        charCtrl.CAM_FOLLOW_LOCK = e.target.checked;
+        localStorage.setItem('cam-follow-lock', e.target.checked);
+      });
+    }
+
+    const toggleDynamicFov = $('toggle-dynamic-fov');
+    const sliderFovMax = $('slider-fov-max');
+    const fovMaxVal = $('fov-max-val');
+
+    if (toggleDynamicFov) {
+      toggleDynamicFov.checked = charCtrl.DYNAMIC_FOV;
+      toggleDynamicFov.addEventListener('change', (e) => {
+        charCtrl.DYNAMIC_FOV = e.target.checked;
+        localStorage.setItem('dynamic-fov', e.target.checked);
+      });
+    }
+
+    const toggleDoubleJump = $('toggle-double-jump');
+    if (toggleDoubleJump) {
+      toggleDoubleJump.checked = charCtrl.DOUBLE_JUMP_ENABLED;
+      toggleDoubleJump.addEventListener('change', (e) => {
+        charCtrl.DOUBLE_JUMP_ENABLED = e.target.checked;
+        localStorage.setItem('double-jump-enabled', e.target.checked);
+      });
+    }
+
+    const toggleAirControl = $('toggle-air-control');
+    if (toggleAirControl) {
+      toggleAirControl.checked = charCtrl.AIR_CONTROL;
+      toggleAirControl.addEventListener('change', (e) => {
+        charCtrl.AIR_CONTROL = e.target.checked;
+        localStorage.setItem('air-control-enabled', e.target.checked);
+      });
+    }
+
+    const toggleCamLockPitch = $('toggle-cam-lock-pitch');
+    if (toggleCamLockPitch) {
+      toggleCamLockPitch.checked = charCtrl.CAM_LOCK_PITCH;
+      toggleCamLockPitch.addEventListener('change', (e) => {
+        charCtrl.CAM_LOCK_PITCH = e.target.checked;
+        localStorage.setItem('cam-lock-pitch', e.target.checked);
+      });
+    }
+
+    const toggleJoystickLockX = $('toggle-joystick-lock-x');
+    if (toggleJoystickLockX) {
+      toggleJoystickLockX.checked = charCtrl.JOYSTICK_LOCK_X;
+      toggleJoystickLockX.addEventListener('change', (e) => {
+        charCtrl.JOYSTICK_LOCK_X = e.target.checked;
+        localStorage.setItem('joystick-lock-x', e.target.checked);
+      });
+    }
+
+    if (sliderFovMax && fovMaxVal) {
+      sliderFovMax.value = charCtrl.DYNAMIC_FOV_MAX;
+      fovMaxVal.textContent = charCtrl.DYNAMIC_FOV_MAX.toFixed(2);
+      sliderFovMax.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        charCtrl.DYNAMIC_FOV_MAX = val;
+        fovMaxVal.textContent = val.toFixed(2);
+        localStorage.setItem('dynamic-fov-max', val);
+      });
+    }
+
+    const sliderSpeedMult = $('slider-speed-mult');
+    const speedMultVal = $('speed-mult-val');
+    if (sliderSpeedMult && speedMultVal) {
+      sliderSpeedMult.value = charCtrl.SPEED_MULTIPLIER;
+      speedMultVal.textContent = charCtrl.SPEED_MULTIPLIER.toFixed(1) + 'x';
+      sliderSpeedMult.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        charCtrl.SPEED_MULTIPLIER = val;
+        speedMultVal.textContent = val.toFixed(1) + 'x';
+        localStorage.setItem('speed-multiplier', val);
+      });
+    }
+
+    const sliderCamPitch = $('slider-cam-pitch');
+    const camPitchVal = $('cam-pitch-val');
+    if (sliderCamPitch && camPitchVal) {
+      const initialDeg = Math.round(charCtrl.CAM_FOLLOW_PITCH * 180 / Math.PI);
+      sliderCamPitch.value = initialDeg;
+      camPitchVal.textContent = initialDeg + '°';
+      sliderCamPitch.addEventListener('input', (e) => {
+        const deg = parseInt(e.target.value);
+        const rad = deg * Math.PI / 180;
+        charCtrl.CAM_FOLLOW_PITCH = rad;
+        camPitchVal.textContent = deg + '°';
+        localStorage.setItem('cam-follow-pitch', rad);
+      });
+    }
+
+    const sliderCamDist = $('slider-cam-dist');
+    const camDistVal = $('cam-dist-val');
+    if (sliderCamDist && camDistVal) {
+      sliderCamDist.value = charCtrl.CAM_FOLLOW_DIST;
+      camDistVal.textContent = charCtrl.CAM_FOLLOW_DIST.toFixed(1) + 'm';
+      sliderCamDist.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        charCtrl.CAM_FOLLOW_DIST = val;
+        camDistVal.textContent = val.toFixed(1) + 'm';
+        localStorage.setItem('cam-follow-dist', val);
+        if (charCtrl.CAM_FOLLOW_LOCK) {
+          camera.radius = val;
+        }
+      });
+    }
+  };
 })();

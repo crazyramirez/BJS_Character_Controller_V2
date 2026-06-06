@@ -2691,6 +2691,111 @@ class CharCtrl {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// SHARED PHYSICS INITIALIZATION HELPER
+// ═══════════════════════════════════════════════════════════
+async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
+  const physicsOverride = localStorage.getItem('use-physics');
+  if (physicsOverride === 'false') return false;
+  try {
+    const havokInstance = await HavokPhysics();
+    const hk = new BABYLON.HavokPlugin(true, havokInstance);
+    scene.enablePhysics(gravity, hk);
+    console.log("[Physics] Havok Physics initialized successfully.");
+    return true;
+  } catch (e) {
+    if (physicsOverride === 'true') {
+      console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
+      localStorage.removeItem('use-physics');
+    } else {
+      console.info('[Physics] Havok unavailable — using kinematic mode.', e);
+    }
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// SHARED CHARACTER SETUP HELPER
+// ═══════════════════════════════════════════════════════════
+async function setupCharacter(scene, camera, usePhysics, options = {}) {
+  const setLoad = (pct, label) => {
+    if (typeof window.setLoad === 'function') {
+      window.setLoad(pct, label);
+    } else {
+      const bar = document.getElementById('bar');
+      const barLabel = document.getElementById('bar-label');
+      if (bar) bar.style.width = pct + '%';
+      if (barLabel && label) barLabel.textContent = label;
+    }
+  };
+
+  setLoad(10, 'Loading character...');
+  const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
+  
+  setLoad(75, 'Retargeting bones...');
+  const charRoot = charRes.meshes[0];
+  charRoot.name = 'Character_Visual';
+
+  charRes.meshes.forEach(m => {
+    if (options.shadow) options.shadow.addShadowCaster(m, true);
+    m.receiveShadows = true;
+    m.isPickable = false;
+  });
+
+  // Stop any auto-playing animations from character.glb
+  charRes.animationGroups.forEach(ag => ag.stop());
+  scene.animationGroups.forEach(ag => ag.stop());
+
+  // Capsule Collider Structure
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4, height: 1.8 }, scene);
+  playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
+  playerCapsule.visibility = 0;
+  playerCapsule.isPickable = false;
+
+  playerCapsule.checkCollisions = !usePhysics;
+  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35, 0.96, 0.35);
+  playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
+
+  // Parent visual mesh to capsule
+  charRoot.setParent(playerCapsule);
+  charRoot.position.set(0, usePhysics ? -0.90 : -0.97, 0);
+  charRoot.rotation.set(0, 0, 0);
+
+  setLoad(90, 'Building controllers...');
+
+  // Remove T-Pose animation group before building controller
+  charRes.animationGroups
+    .filter(ag => /t[\-_]?pose/i.test(ag.name))
+    .forEach(ag => ag.dispose());
+  const filteredGroups = charRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
+
+  const animCtrl = new AnimCtrl(filteredGroups, scene);
+  
+  // Allow passing keys, config and other options directly or inside charOptions
+  const charOptions = Object.assign({}, options.charOptions);
+  if (options.keys) charOptions.keys = options.keys;
+  if (options.config) charOptions.config = options.config;
+
+  const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, charOptions);
+
+  // Allow custom remapping of animations/controls or extra setup from app
+  if (typeof options.configure === 'function') {
+    options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
+  }
+
+  const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const cameraYOffset = isMobileDev ? -0.25 : 0.4;
+
+  scene.registerBeforeRender(() => {
+    const dt = scene.getEngine().getDeltaTime() / 1000;
+    const clampedDt = Math.max(0.001, Math.min(0.1, dt));
+    const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset, 0));
+    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
+  });
+
+  return { playerCapsule, animCtrl, charCtrl };
+}
+
 // Expose classes and definitions to the global window object for easy consumption in classical script-based setups
 window.S = S;
 window.ACTION_STATES = ACTION_STATES;
@@ -2700,3 +2805,6 @@ window.normBone = normBone;
 window.cleanAnimName = cleanAnimName;
 window.lerp = lerp;
 window.lerpAngle = lerpAngle;
+window.setupCharacter = setupCharacter;
+window.loadCharacter = setupCharacter;
+window.initPhysics = initPhysics;

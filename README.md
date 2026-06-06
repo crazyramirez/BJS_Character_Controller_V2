@@ -134,9 +134,28 @@ charCtrl.anim.setAnimationRanges('Walk_Loop', 10, 45);
 ## 🛠️ Implementation Quickstart
 
 The core architecture consists of three components in the `js/` directory:
-1.  **`character-controller.js`**: Unified character controller — handles both Havok Physics and Kinematic modes. Select the mode via the `usePhysics` constructor option or `localStorage`.
+1.  **`character-controller.js`**: Unified character controller — handles both Havok Physics and Kinematic modes. Select the mode via the `usePhysics` constructor option or `localStorage`. Also exports helper functions `initPhysics` and `setupCharacter` for a clean, few-lines-of-code setup.
 2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Hide Cursor, Double Jump, Air Control, and sliders).
 3.  **`custom-pointer.js`**: Responsive custom cursor. Tracks a zero-latency hardware cursor and renders a spring-damper trailing ring (hidden completely when the `Hide Cursor` toggle is enabled).
+
+### ⚡ High-Level Setup (Recommended)
+You can initialize physics and load the character in just a few lines of code:
+
+```javascript
+// 1. Initialize physics (Havok or Kinematic fallback)
+const usePhysics = await initPhysics(scene);
+
+// 2. Load character, parent capsule collider, and build controllers in one call
+const { playerCapsule, animCtrl, charCtrl } = await setupCharacter(scene, camera, usePhysics, {
+  shadow,                     // Optional: shadow generator to add character meshes to
+  keys: { JUMP: ['KeyK'] },   // Optional: remap keyboard controls directly
+  config: { JUMP_PWR: 12 },   // Optional: override physical and camera parameters
+  configure: ({ animCtrl, filteredGroups }) => {
+    // Optional: callback to remap animations or customize keyframe ranges
+    animCtrl.setWalkAnim(filteredGroups[15]);
+  }
+});
+```
 
 We have provided three setup examples to guide your implementation:
 *   **[js/app-minimal.js](js/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.

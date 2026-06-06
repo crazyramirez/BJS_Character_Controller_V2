@@ -32,65 +32,11 @@ const engine = new BABYLON.Engine(canvas, true, {
 // CHARACTER INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
 async function loadCharacter(scene, shadow, camera, usePhysics) {
-  setLoad(60, 'Loading character...');
-  charRes = await BABYLON.SceneLoader.ImportMeshAsync('', 'assets/', 'character_animated.glb', scene);
-  setLoad(85, 'Retargeting bones...');
-
-  // CHARACTER MESH SETUP
-  charRoot = charRes.meshes[0];
-  charRoot.name = 'Character_Visual';
-
-  charRes.meshes.forEach(m => {
-    shadow.addShadowCaster(m, true);
-    m.receiveShadows = true;
-    m.isPickable = false; // Disable pickability to avoid blocking raycasts
+  return setupCharacter(scene, camera, usePhysics, {
+    shadow,
+    spawnPosition: new BABYLON.Vector3(0, 3, 0),
+    ellipsoid: new BABYLON.Vector3(0.75, 0.96, 0.75)
   });
-
-  // Stop any auto-playing animations from character.glb
-  charRes.animationGroups.forEach(ag => ag.stop());
-  scene.animationGroups.forEach(ag => ag.stop());
-
-  // ── CAPSULE COLLIDER STRUCTURE ─────────────────────────
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4, height: 1.8 }, scene);
-  playerCapsule.position.set(0, 3, 0); // Spawn slightly elevated to fall onto backyard ground safely
-  playerCapsule.visibility = 0;
-  playerCapsule.isPickable = false;
-
-  playerCapsule.checkCollisions = !usePhysics;
-  playerCapsule.ellipsoid = new BABYLON.Vector3(0.75, 0.96, 0.75);
-  playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
-
-  // Parent the visual mesh to the capsule, offset Y so feet touch bottom (adjusted for collision padding)
-  charRoot.setParent(playerCapsule);
-  charRoot.position.set(0, usePhysics ? -0.90 : -0.97, 0);
-  charRoot.rotation.set(0, 0, 0);
-
-  setLoad(95, 'Building controllers...');
-
-  // ── CONTROLLERS ───────────────────────────────────────
-  // Remove T-Pose animation group before building controller
-  charRes.animationGroups
-    .filter(ag => /t[\-_]?pose/i.test(ag.name))
-    .forEach(ag => ag.dispose());
-  const filteredGroups = charRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
-
-  // Instantiate the controllers (using the clean Babylon AnimationGroup array directly!)
-  const animCtrl = new AnimCtrl(filteredGroups, scene);
-  const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene);
-
-  // ── CAMERA FOLLOW ─────────────────────────────────────
-  const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  const cameraYOffset = isMobileDev ? -0.25 : 0.4;
-
-  scene.registerBeforeRender(() => {
-    const dt = scene.getEngine().getDeltaTime() / 1000;
-    const clampedDt = Math.max(0.001, Math.min(0.1, dt));
-    const tgt = playerCapsule.position.add(V3(0, cameraYOffset, 0));
-    // Frame-rate independent exponential interpolation (tracking rate of 15 for highly responsive follow)
-    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
-  });
-
-  return { playerCapsule, animCtrl, charCtrl };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -105,33 +51,7 @@ async function createDemoScene() {
   scene.fogColor = C3(0.04, 0.04, 0.09);
 
   // Physics mode: HUD/localStorage override takes priority.
-  const physicsOverride = localStorage.getItem('use-physics');
-  let usePhysics = false;
-
-  if (physicsOverride === 'false') {
-    usePhysics = false;
-  } else if (physicsOverride === 'true') {
-    try {
-      const havokInstance = await HavokPhysics();
-      const hk = new BABYLON.HavokPlugin(true, havokInstance);
-      scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
-      usePhysics = true;
-    } catch (e) {
-      console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
-      localStorage.removeItem('use-physics');
-      usePhysics = false;
-    }
-  } else {
-    try {
-      const havokInstance = await HavokPhysics();
-      const hk = new BABYLON.HavokPlugin(true, havokInstance);
-      scene.enablePhysics(new BABYLON.Vector3(0, -22, 0), hk);
-      usePhysics = true;
-    } catch (e) {
-      console.info('[Physics] Havok unavailable — using kinematic mode.', e);
-      usePhysics = false;
-    }
-  }
+  const usePhysics = await initPhysics(scene);
 
   // Enable Collisions
   scene.collisionsEnabled = true;
@@ -247,113 +167,9 @@ async function createDemoScene() {
   // ── LOAD CHARACTER ─────────────────────────────────────
   const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
 
-  // Hook up HUD setting toggles dynamically
-  const togglePhysics = $('toggle-physics');
-  if (togglePhysics) {
-    togglePhysics.checked = usePhysics;
-    togglePhysics.addEventListener('change', (e) => {
-      localStorage.setItem('use-physics', e.target.checked);
-      window.location.reload();
-    });
-  }
-
-  const toggleCamLock = $('toggle-cam-lock');
-  if (toggleCamLock) {
-    toggleCamLock.checked = charCtrl.CAM_FOLLOW_LOCK;
-    toggleCamLock.addEventListener('change', (e) => {
-      charCtrl.CAM_FOLLOW_LOCK = e.target.checked;
-      localStorage.setItem('cam-follow-lock', e.target.checked);
-    });
-  }
-
-  const toggleDynamicFov = $('toggle-dynamic-fov');
-  const sliderFovMax = $('slider-fov-max');
-  const fovMaxVal = $('fov-max-val');
-
-  if (toggleDynamicFov) {
-    toggleDynamicFov.checked = charCtrl.DYNAMIC_FOV;
-    toggleDynamicFov.addEventListener('change', (e) => {
-      charCtrl.DYNAMIC_FOV = e.target.checked;
-      localStorage.setItem('dynamic-fov', e.target.checked);
-    });
-  }
-
-  const toggleDoubleJump = $('toggle-double-jump');
-  if (toggleDoubleJump) {
-    toggleDoubleJump.checked = charCtrl.DOUBLE_JUMP_ENABLED;
-    toggleDoubleJump.addEventListener('change', (e) => {
-      charCtrl.DOUBLE_JUMP_ENABLED = e.target.checked;
-      localStorage.setItem('double-jump-enabled', e.target.checked);
-    });
-  }
-
-  const toggleAirControl = $('toggle-air-control');
-  if (toggleAirControl) {
-    toggleAirControl.checked = charCtrl.AIR_CONTROL;
-    toggleAirControl.addEventListener('change', (e) => {
-      charCtrl.AIR_CONTROL = e.target.checked;
-      localStorage.setItem('air-control-enabled', e.target.checked);
-    });
-  }
-
-  const toggleCamLockPitch = $('toggle-cam-lock-pitch');
-  if (toggleCamLockPitch) {
-    toggleCamLockPitch.checked = charCtrl.CAM_LOCK_PITCH;
-    toggleCamLockPitch.addEventListener('change', (e) => {
-      charCtrl.CAM_LOCK_PITCH = e.target.checked;
-      localStorage.setItem('cam-lock-pitch', e.target.checked);
-    });
-  }
-
-  const toggleJoystickLockX = $('toggle-joystick-lock-x');
-  if (toggleJoystickLockX) {
-    toggleJoystickLockX.checked = charCtrl.JOYSTICK_LOCK_X;
-    toggleJoystickLockX.addEventListener('change', (e) => {
-      charCtrl.JOYSTICK_LOCK_X = e.target.checked;
-      localStorage.setItem('joystick-lock-x', e.target.checked);
-    });
-  }
-
-  if (sliderFovMax && fovMaxVal) {
-    sliderFovMax.value = charCtrl.DYNAMIC_FOV_MAX;
-    fovMaxVal.textContent = charCtrl.DYNAMIC_FOV_MAX.toFixed(2);
-    sliderFovMax.addEventListener('input', (e) => {
-      const val = parseFloat(e.target.value);
-      charCtrl.DYNAMIC_FOV_MAX = val;
-      fovMaxVal.textContent = val.toFixed(2);
-      localStorage.setItem('dynamic-fov-max', val);
-    });
-  }
-
-  const sliderCamPitch = $('slider-cam-pitch');
-  const camPitchVal = $('cam-pitch-val');
-  if (sliderCamPitch && camPitchVal) {
-    const initialDeg = Math.round(charCtrl.CAM_FOLLOW_PITCH * 180 / Math.PI);
-    sliderCamPitch.value = initialDeg;
-    camPitchVal.textContent = initialDeg + '°';
-    sliderCamPitch.addEventListener('input', (e) => {
-      const deg = parseInt(e.target.value);
-      const rad = deg * Math.PI / 180;
-      charCtrl.CAM_FOLLOW_PITCH = rad;
-      camPitchVal.textContent = deg + '°';
-      localStorage.setItem('cam-follow-pitch', rad);
-    });
-  }
-
-  const sliderCamDist = $('slider-cam-dist');
-  const camDistVal = $('cam-dist-val');
-  if (sliderCamDist && camDistVal) {
-    sliderCamDist.value = charCtrl.CAM_FOLLOW_DIST;
-    camDistVal.textContent = charCtrl.CAM_FOLLOW_DIST.toFixed(1) + 'm';
-    sliderCamDist.addEventListener('input', (e) => {
-      const val = parseFloat(e.target.value);
-      charCtrl.CAM_FOLLOW_DIST = val;
-      camDistVal.textContent = val.toFixed(1) + 'm';
-      localStorage.setItem('cam-follow-dist', val);
-      if (charCtrl.CAM_FOLLOW_LOCK) {
-        camera.radius = val;
-      }
-    });
+  // Hook up HUD setting toggles dynamically via custom-hud.js
+  if (typeof bindHUDControls === 'function') {
+    bindHUDControls(charCtrl, camera, usePhysics);
   }
 
   setLoad(100, 'Ready!');
@@ -375,32 +191,5 @@ createDemoScene()
     $('bar').style.background = '#f44';
   });
 
-// ── HUD COLLAPSE CONTROLLER ──────────────────────────────
-const hud = $('hud');
-const toggle = $('hud-toggle');
-if (toggle && hud) {
-  const isCollapsed = localStorage.getItem('hud-collapsed') === 'true';
-  if (isCollapsed) {
-    hud.classList.add('collapsed');
-  }
-
-  toggle.addEventListener('click', () => {
-    hud.classList.toggle('collapsed');
-    localStorage.setItem('hud-collapsed', hud.classList.contains('collapsed'));
-  });
-}
-
+// ── WINDOW RESIZE CONTROLLER ──────────────────────────────
 window.addEventListener('resize', () => engine.resize());
-
-// ── HUD FOCUS RELEASE (BLUR) CONTROLLER ──────────────────
-const interactiveElements = document.querySelectorAll('#hud input, #hud button, #hud-toggle, #hud a');
-interactiveElements.forEach(el => {
-  const releaseFocus = () => {
-    el.blur();
-    const canvasEl = $('c');
-    if (canvasEl) canvasEl.focus();
-  };
-  el.addEventListener('click', releaseFocus);
-  el.addEventListener('change', releaseFocus);
-  el.addEventListener('input', releaseFocus);
-});
