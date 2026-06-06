@@ -7,6 +7,17 @@
 const canvas = document.getElementById('c');
 const engine = new BABYLON.Engine(canvas, true);
 
+// ═══════════════════════════════════════════════════════════
+// CHARACTER INITIALIZATION HELPER
+// ═══════════════════════════════════════════════════════════
+async function loadCharacter(scene, shadow, camera, usePhysics) {
+  return setupCharacter(scene, camera, usePhysics, {
+    shadow,
+    assetsPath: 'assets/',
+    filename: 'character_animated.glb'
+  });
+}
+
 async function createMinimalScene() {
   const scene = new BABYLON.Scene(engine);
   scene.clearColor = new BABYLON.Color4(0.05, 0.05, 0.1, 1);
@@ -35,7 +46,12 @@ async function createMinimalScene() {
   }
 
   // 6. Load Character and Setup Controller
-  await setupCharacter(scene, camera, usePhysics);
+  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, null, camera, usePhysics);
+
+  // Hook up HUD setting toggles dynamically via custom-hud.js
+  if (typeof bindHUDControls === 'function') {
+    bindHUDControls(charCtrl, camera, usePhysics);
+  }
 
   return scene;
 }

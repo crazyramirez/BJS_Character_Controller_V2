@@ -31,7 +31,11 @@ const engine = new BABYLON.Engine(canvas, true, {
 // CHARACTER INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
 async function loadCharacter(scene, shadow, camera, usePhysics) {
-  return setupCharacter(scene, camera, usePhysics, { shadow });
+  return setupCharacter(scene, camera, usePhysics, {
+    shadow,
+    assetsPath: 'assets/',
+    filename: 'character_animated.glb'
+  });
 }
 
 // Setup Character with custom controls and animations

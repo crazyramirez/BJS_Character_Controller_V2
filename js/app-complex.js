@@ -34,6 +34,8 @@ const engine = new BABYLON.Engine(canvas, true, {
 async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
+    assetsPath: 'assets/',
+    filename: 'character_animated.glb',
     spawnPosition: new BABYLON.Vector3(0, 3, 0),
     ellipsoid: new BABYLON.Vector3(0.75, 0.96, 0.75)
   });
