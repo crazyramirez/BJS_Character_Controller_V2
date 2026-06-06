@@ -117,8 +117,11 @@ charCtrl.anim.setAnimationRanges('Walk_Loop', 10, 45);
 *   `W`, `A`, `S`, `D` / `Arrow Keys`: Movement.
 *   `Shift`: Sprint (Toggle).
 *   `Ctrl`: Crouch (Toggle).
-*   `Space`: Jump / Double Jump (or queue landing roll).
-*   `R`: Dodge roll.
+*   `Space`: Jump / Double Jump.
+*   `R`: Dodge roll / Air Dash:
+    *   **Action Interrupt:** Instantly cancels active attack combos or spell casts.
+    *   **Roll Cooldown:** 1.1s cooldown between rolls (triggers a "DODGE COOLDOWN" HUD alert).
+    *   **Air Dash:** If Double Jump is enabled in settings, performs a mid-air roll with a horizontal boost and a 55% jump-power vertical hop (usable even after double jumping).
 *   `Q`: Punch combo.
 *   `E`: Spell casting.
 *   `F`: Interaction.

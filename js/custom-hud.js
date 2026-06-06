@@ -23,7 +23,7 @@
         <!-- HUD Settings Toggles -->
         <div style="margin-top: 8px;">
           <!-- Group 1: Physics / Speed -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">PHYSICS & SPEEDS</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">PHYSICS & SPEEDS</div>
           
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
@@ -50,7 +50,7 @@
           </div>
 
           <!-- Group 2: Camera Follow -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">CAMERA FOLLOW</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">CAMERA FOLLOW</div>
 
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
@@ -93,7 +93,7 @@
           </div>
 
           <!-- Group 3: Camera Steering & Input -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">STEERING & INPUT</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">STEERING & INPUT</div>
 
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
@@ -114,7 +114,7 @@
           </div>
 
           <!-- Group 4: Dynamic FOV -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">DYNAMIC FOV</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">DYNAMIC FOV</div>
 
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff; margin-bottom: 6px;">
@@ -142,7 +142,7 @@
           </div>
 
           <!-- Group 5: Air Locomotion -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">AIR LOCOMOTION</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">AIR LOCOMOTION</div>
 
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
@@ -163,13 +163,22 @@
           </div>
 
           <!-- Group 6: UI / System -->
-          <div style="font-size: 8px; font-weight: 800; color: #7b83d9; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">SYSTEM & UI</div>
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">SYSTEM & UI</div>
 
           <div class="hud-toggle-container"
             style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
             <span>Hide Cursor</span>
             <label class="switch-toggle">
               <input type="checkbox" id="toggle-hide-cursor">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Show Action Text</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-show-combo">
               <span class="slider-toggle"></span>
             </label>
           </div>
@@ -180,7 +189,9 @@
             style="color: #00ff99; font-weight: bold; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;">Tip:</span>
           Press <span
             style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">Space</span>
-          in air to queue a <span style="color:#ffcc00; font-weight: 600;">Double Jump (Landing Roll)</span>
+          in air to <span style="color:#ffcc00; font-weight: 600;">Double Jump</span>, or press <span
+            style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; font-family: monospace; color:#fff; font-size: 10px;">R</span>
+          in air for an <span style="color:#00ff99; font-weight: 600;">Air Dash (Mid-Air Roll)</span>!
         </div>
         
         <!-- Inline Mobile Support -->
@@ -343,7 +354,12 @@
                   <td><strong>Dodge Roll</strong></td>
                   <td><span class="info-kbd">R</span></td>
                   <td><span class="info-kbd">ROLL</span> Button</td>
-                  <td>Quick defensive dash in the direction of current movement. Temporarily shrinks collision volume.</td>
+                  <td>
+                    Quick defensive dash in the direction of current movement.
+                    <br>• <strong>Action Interrupt:</strong> Instantly cancels active attack combos or spell casts.
+                    <br>• <strong>Roll Cooldown:</strong> 1.1s cooldown between rolls with a "DODGE COOLDOWN" HUD alert.
+                    <br>• <strong>Air Dash (Mid-Air Roll):</strong> If Double Jump is enabled, dash in the air with a horizontal speed boost and a 55% jump-power vertical hop (usable even after double jumping!).
+                  </td>
                 </tr>
                 <tr>
                   <td><strong>Attack Combos</strong></td>
@@ -677,7 +693,7 @@ node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_a
   });
 
   // ── BIND HUD CONTROLS ─────────────────────────────────────
-  window.bindHUDControls = function(charCtrl, camera, usePhysics) {
+  window.bindHUDControls = function (charCtrl, camera, usePhysics) {
     const $ = id => document.getElementById(id);
 
     const togglePhysics = $('toggle-physics');
@@ -798,6 +814,15 @@ node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_a
         if (charCtrl.CAM_FOLLOW_LOCK) {
           camera.radius = val;
         }
+      });
+    }
+
+    const toggleShowCombo = $('toggle-show-combo');
+    if (toggleShowCombo) {
+      toggleShowCombo.checked = charCtrl.SHOW_COMBO;
+      toggleShowCombo.addEventListener('change', (e) => {
+        charCtrl.SHOW_COMBO = e.target.checked;
+        localStorage.setItem('show-combo', e.target.checked);
       });
     }
   };

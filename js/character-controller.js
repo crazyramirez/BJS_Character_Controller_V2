@@ -364,6 +364,15 @@ class AnimCtrl {
     if (this.cur === ag) {
       this.cur.setWeightForAllAnimatables(targetWeight);
       this.cur.speedRatio = finalSpeedRatio;
+      if (!loop) {
+        if (this.cur.onAnimationGroupEndObservable) {
+          this.cur.onAnimationGroupEndObservable.clear();
+        }
+        this.cur.start(loop, finalSpeedRatio, this.cur.from, this.cur.to, false);
+        if (onEnd) {
+          this.cur.onAnimationGroupEndObservable.addOnce(() => onEnd());
+        }
+      }
       return true;
     }
 
@@ -649,6 +658,9 @@ class CharCtrl {
     const savedSpeedMultiplier = localStorage.getItem('speed-multiplier');
     this.SPEED_MULTIPLIER = savedSpeedMultiplier !== null ? parseFloat(savedSpeedMultiplier) : (config.SPEED_MULTIPLIER !== undefined ? config.SPEED_MULTIPLIER : 1.0);
 
+    const savedShowCombo = localStorage.getItem('show-combo');
+    this.SHOW_COMBO = savedShowCombo !== null ? (savedShowCombo === 'true') : true;
+
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
     console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
@@ -692,6 +704,7 @@ class CharCtrl {
     this._lastGroundedFrame = 0;
     this._rollOnLand = false;
     this._rollActive = false;
+    this._lastRollTime = 0;
     this._rollTimeoutId = null;
     this._wasClimbingStep = false;
 
@@ -1245,11 +1258,27 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'ROLL')) {
-      if (this.grounded && !this.sitting && !this._rollActive) {
-        if (this.crouching && this._isCeilingBlocked()) {
+      const now = performance.now();
+      if (this._rollActive) return;
+      if (now - this._lastRollTime < 1100) {
+        this._showCombo('DODGE COOLDOWN');
+        setTimeout(() => this._hideCombo(), 800);
+        return;
+      }
+      if (!this.sitting) {
+        if (!this.grounded) {
+          if (!this.DOUBLE_JUMP_ENABLED) {
+            return;
+          }
+        }
+        if (this.grounded && this.crouching && this._isCeilingBlocked()) {
           this._showCombo('NO SPACE TO ROLL');
           setTimeout(() => this._hideCombo(), 1200);
           return;
+        }
+        if (!this.grounded) {
+          this._showCombo('AIR DASH');
+          setTimeout(() => this._hideCombo(), 800);
         }
         this._roll();
       }
@@ -1338,6 +1367,7 @@ class CharCtrl {
 
   _roll() {
     if (this._rollActive) return;
+    this._lastRollTime = performance.now();
     this._rollActive = true;
     this._setState(S.ROLL);
     this.comboIdx = 0;
@@ -1352,19 +1382,56 @@ class CharCtrl {
     }
     this._rollMoving = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
 
+    // Check if we are in mid-air and have existing horizontal velocity to preserve and boost momentum
+    let currentFwdDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+    if (!this.grounded) {
+      if (this.usePhysics && this.physicsBody) {
+        const cv = this.physicsBody.getLinearVelocity();
+        const horiz = new BABYLON.Vector3(cv.x, 0, cv.z);
+        if (horiz.length() > 0.5) {
+          currentFwdDir = horiz.normalize();
+          this._rollMoving = true; // Force movement update so the air dash momentum is applied
+        }
+      } else if (this.speed > 0.5 && this.moveDir.length() > 0.1) {
+        currentFwdDir = this.moveDir.clone().normalize();
+        this._rollMoving = true;
+      }
+    }
+
     if (this._rollMoving) {
-      const camFwd = this._camForward();
-      let dir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
-      if (dir.length() > 0.01) dir.normalize(); else dir = camFwd;
-      this._rollDir = dir;
-      this.speed = Math.max(this.speed, 3.5 * this.SPEED_MULTIPLIER);
+      const hasInput = (inputX !== 0 || inputZ !== 0) || (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01));
+      if (hasInput) {
+        const camFwd = this._camForward();
+        let dir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
+        if (dir.length() > 0.01) dir.normalize(); else dir = camFwd;
+        this._rollDir = dir;
+      } else {
+        // No input, but has mid-air momentum: push in the direction of the momentum
+        this._rollDir = currentFwdDir;
+      }
+      const baseRollSpeed = this.grounded ? 3.5 : 4.8; // Stronger speed boost in the air (reduced to 4.8)
+      this.speed = Math.max(this.speed, baseRollSpeed * this.SPEED_MULTIPLIER);
     } else {
+      this._rollDir = currentFwdDir;
       this.speed = 0;
     }
 
-    this.anim.play('Roll', false, 0.2, null, 1.1);
+    // Apply vertical push/boost when rolling in mid-air
+    if (!this.grounded) {
+      const verticalBoost = this.JUMP_PWR * 0.55; // Balanced upward hop boost
+      if (this.usePhysics && this.physicsBody) {
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(
+          this._rollDir.x * this.speed,
+          verticalBoost,
+          this._rollDir.z * this.speed
+        ));
+      } else {
+        this.jumpVel = verticalBoost;
+      }
+    }
 
-    clearTimeout(this._rollTimeoutId);
+    this.anim.play('Roll', false, 0.5, null, 1.1);
+
     this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
       if (this.state !== S.ROLL) return;
@@ -1419,6 +1486,7 @@ class CharCtrl {
   }
 
   _showCombo(txt) {
+    if (!this.SHOW_COMBO) return;
     if (this.callbacks.onCombo) {
       this.callbacks.onCombo(txt, true);
     } else {
@@ -1856,8 +1924,9 @@ class CharCtrl {
 
     if (this.usePhysics) {
       const activeShape = useCrouchHeight ? this._crouchShape : this._standShape;
+      const prevTargetLocalY = this.targetLocalY;
       if (useCrouchHeight) {
-        this.targetLocalY = -0.70 - (this.crouching ? 0.08 : 0); // Crouch shape bottom is at -0.70
+        this.targetLocalY = -0.90 - (this.crouching ? 0.08 : 0); // Crouch shape bottom aligns with -0.90
       } else {
         this.targetLocalY = -0.90; // Stand shape bottom is at -0.90
       }
@@ -1868,6 +1937,13 @@ class CharCtrl {
           mass: 1,
           inertia: new BABYLON.Vector3(0, 0, 0)
         });
+
+        // Instantly offset the visual mesh local Y position to compensate for the instant physics body origin shift.
+        // This prevents the visual mesh from popping/jumping during shape transitions.
+        const shift = this.targetLocalY - prevTargetLocalY;
+        this.visualLocalY += shift;
+        this.visualMesh.position.y = this.visualLocalY;
+
         // When switching to the crouchShape the capsule bottom rises and Havok can
         // momentarily lift the body away from the ground, causing _checkGrounded() to miss
         // for 1-2 frames and triggering a spurious JUMP_LOOP fall state.
@@ -2735,7 +2811,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
   setLoad(10, 'Loading character...');
   const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
-  
+
   setLoad(75, 'Retargeting bones...');
   const charRoot = charRes.meshes[0];
   charRoot.name = 'Character_Visual';
@@ -2774,7 +2850,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const filteredGroups = charRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
 
   const animCtrl = new AnimCtrl(filteredGroups, scene);
-  
+
   // Allow passing keys, config and other options directly or inside charOptions
   const charOptions = Object.assign({}, options.charOptions);
   if (options.keys) charOptions.keys = options.keys;
