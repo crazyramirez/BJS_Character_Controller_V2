@@ -287,9 +287,9 @@
   const modalHTML = `
     <div class="info-modal-content">
       <div class="info-modal-header">
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 14px;">
           <h2 style="margin: 0;">BJS Character Controller V2 - Info & Integration</h2>
-          <a href="https://github.com/crazyramirez/BJS_Character_Controller_V2" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #a2a7db; font-size: 11px; text-decoration: none; font-weight: 600; letter-spacing: 0.5px; transition: all 0.25s; height: 24px;" onmouseover="this.style.background='rgba(0, 255, 153, 0.1)'; this.style.borderColor='rgba(0, 255, 153, 0.3)'; this.style.color='#00ff99';" onmouseout="this.style.background='rgba(255, 255, 255, 0.04)'; this.style.borderColor='rgba(255, 255, 255, 0.1)'; this.style.color='#a2a7db';">
+          <a href="https://github.com/crazyramirez/BJS_Character_Controller_V2" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #a2a7db; font-size: 11px; text-decoration: none; font-weight: 600; letter-spacing: 0.5px; transition: all 0.25s; height: 24px;" onmouseover="this.style.background='rgba(0, 255, 153, 0.1)'; this.style.borderColor='rgba(0, 255, 153, 0.3)'; this.style.color='#00ff99';" onmouseout="this.style.background='rgba(255, 255, 255, 0.04)'; this.style.borderColor='rgba(255, 255, 255, 0.1)'; this.style.color='#a2a7db';>
             <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.137 20.162 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
             </svg>
@@ -436,22 +436,31 @@
 &lt;script src="js/app.js"&gt;&lt;/script&gt;</div>
 
             <h3>High-Level Setup Helper (Recommended)</h3>
-            <p>You can initialize physics and load the character in just a few lines of code using the shared helper functions: <code>initPhysics</code> and <code>setupCharacter</code>. This helper also supports direct remapping of controls and animations via its options:</p>
-            <div class="info-code">// 1. Initialize physics (Havok or Kinematic fallback)
+            <p>You can initialize physics and load the character in just a few lines of code using the shared helper functions: <code>initPhysics</code> and <code>setupCharacter</code> (wrapped in a clean <code>loadCharacter</code> helper function across the app templates). This helper supports configuring model paths, spawn locations, bounding ellipsoids, controls, and animations:</p>
+            <div class="info-code">// 1. Define character initialization helper
+async function loadCharacter(scene, shadow, camera, usePhysics) {
+  return setupCharacter(scene, camera, usePhysics, {
+    shadow,                             // Optional: shadow generator to add character meshes to
+    assetsPath: 'assets/',              // Optional: path to GLB assets folder (defaults to 'assets/')
+    filename: 'character_animated.glb', // Optional: GLB file name (defaults to 'character_animated.glb')
+    spawnPosition: new BABYLON.Vector3(0, 2, 0), // Optional: starting position override
+    ellipsoid: new BABYLON.Vector3(0.35, 0.96, 0.35), // Optional: collision ellipsoid override
+    keys: { JUMP: ['KeyK'] },           // Optional: remap keyboard controls directly
+    config: { JUMP_PWR: 12 },           // Optional: override physical and camera parameters
+    configure: ({ animCtrl, filteredGroups }) => {
+      // Optional: callback to remap animations or customize keyframe ranges
+      animCtrl.setWalkAnim(filteredGroups[15]);
+    }
+  });
+}
+
+// 2. Initialize physics (Havok or Kinematic fallback)
 const usePhysics = await initPhysics(scene);
 
-// 2. Load character, parent capsule collider, and build controllers in one call
-const { playerCapsule, animCtrl, charCtrl } = await setupCharacter(scene, camera, usePhysics, {
-  shadow,                     // Optional: shadow generator to add character meshes to
-  keys: { JUMP: ['KeyK'] },   // Optional: remap keyboard controls directly
-  config: { JUMP_PWR: 12 },   // Optional: override physical and camera parameters
-  configure: ({ animCtrl, filteredGroups }) => {
-    // Optional: callback to remap animations or customize keyframe ranges
-    animCtrl.setWalkAnim(filteredGroups[15]);
-  }
-});
+// 3. Load the character using the helper
+const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
 
-// 3. Optional: Hook up HUD setting toggles dynamically via custom-hud.js
+// 4. Hook up HUD setting toggles dynamically via custom-hud.js
 if (typeof bindHUDControls === 'function') {
   bindHUDControls(charCtrl, camera, usePhysics);
 }</div>

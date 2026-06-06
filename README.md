@@ -63,7 +63,7 @@ window.location.reload();
 
 **Direct constructor option** (bypasses localStorage, for embedded use):
 ```javascript
-const charCtrl = new CharacterController(scene, camera, root, anims, {
+const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, {
   usePhysics: true,  // or false
   config: {
     SPEED_MULTIPLIER: 1.5 // Multiplies walking, running and jogging speeds
@@ -146,22 +146,36 @@ The core architecture consists of three components in the `js/` directory:
 3.  **`custom-pointer.js`**: Responsive custom cursor. Tracks a zero-latency hardware cursor and renders a spring-damper trailing ring (hidden completely when the `Hide Cursor` toggle is enabled).
 
 ### ⚡ High-Level Setup (Recommended)
-You can initialize physics and load the character in just a few lines of code:
+You can initialize physics and load the character in just a few lines of code using the shared helper functions: `initPhysics` and `setupCharacter` (wrapped in a clean `loadCharacter` helper function across the app templates). This helper supports configuring model paths, spawn locations, bounding ellipsoids, controls, and animations:
 
 ```javascript
-// 1. Initialize physics (Havok or Kinematic fallback)
+// 1. Define character initialization helper
+async function loadCharacter(scene, shadow, camera, usePhysics) {
+  return setupCharacter(scene, camera, usePhysics, {
+    shadow,                             // Optional: shadow generator to add character meshes to
+    assetsPath: 'assets/',              // Optional: path to GLB assets folder (defaults to 'assets/')
+    filename: 'character_animated.glb', // Optional: GLB file name (defaults to 'character_animated.glb')
+    spawnPosition: new BABYLON.Vector3(0, 2, 0), // Optional: starting position override
+    ellipsoid: new BABYLON.Vector3(0.35, 0.96, 0.35), // Optional: collision ellipsoid override
+    keys: { JUMP: ['KeyK'] },           // Optional: remap keyboard controls directly
+    config: { JUMP_PWR: 12 },           // Optional: override physical and camera parameters
+    configure: ({ animCtrl, filteredGroups }) => {
+      // Optional: callback to remap animations or customize keyframe ranges
+      animCtrl.setWalkAnim(filteredGroups[15]);
+    }
+  });
+}
+
+// 2. Initialize physics (Havok or Kinematic fallback)
 const usePhysics = await initPhysics(scene);
 
-// 2. Load character, parent capsule collider, and build controllers in one call
-const { playerCapsule, animCtrl, charCtrl } = await setupCharacter(scene, camera, usePhysics, {
-  shadow,                     // Optional: shadow generator to add character meshes to
-  keys: { JUMP: ['KeyK'] },   // Optional: remap keyboard controls directly
-  config: { JUMP_PWR: 12 },   // Optional: override physical and camera parameters
-  configure: ({ animCtrl, filteredGroups }) => {
-    // Optional: callback to remap animations or customize keyframe ranges
-    animCtrl.setWalkAnim(filteredGroups[15]);
-  }
-});
+// 3. Load the character using the helper
+const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
+
+// 4. Hook up HUD setting toggles dynamically via custom-hud.js
+if (typeof bindHUDControls === 'function') {
+  bindHUDControls(charCtrl, camera, usePhysics);
+}
 ```
 
 We have provided three setup examples to guide your implementation:
@@ -177,9 +191,12 @@ Animations are baked inside `character_animated.glb`. To merge new external GLB 
 
 ```bash
 # Install dependencies
-npm install fs-extra @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions draco3dgltf
+npm install
 
 # Run the merge tool
+node js/merge_animations.mjs
+
+# Example usage with custom paths
 node js/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_animated.glb
 ```
 
