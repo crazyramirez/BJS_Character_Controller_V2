@@ -449,7 +449,12 @@ const { playerCapsule, animCtrl, charCtrl } = await setupCharacter(scene, camera
     // Optional: callback to remap animations or customize keyframe ranges
     animCtrl.setWalkAnim(filteredGroups[15]);
   }
-});</div>
+});
+
+// 3. Optional: Hook up HUD setting toggles dynamically via custom-hud.js
+if (typeof bindHUDControls === 'function') {
+  bindHUDControls(charCtrl, camera, usePhysics);
+}</div>
 
             <h3>Minimal Instantiation (Manual Setup)</h3>
             <div class="info-code">// 1. Initialize the Animation Controller (AnimCtrl)
