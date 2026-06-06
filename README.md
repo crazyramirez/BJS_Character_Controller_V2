@@ -140,10 +140,13 @@ charCtrl.anim.setAnimationRanges('Walk_Loop', 10, 45);
 
 ## 🛠️ Implementation Quickstart
 
-The core architecture consists of three components in the `js/` directory:
-1.  **`character-controller.js`**: Unified character controller — handles both Havok Physics and Kinematic modes. Select the mode via the `usePhysics` constructor option or `localStorage`. Also exports helper functions `initPhysics` and `setupCharacter` for a clean, few-lines-of-code setup.
-2.  **`custom-hud.js`**: Tactile settings panel (toggles for Camera Lock, Havok Physics, Dynamic FOV, Hide Cursor, Double Jump, Air Control, and sliders).
-3.  **`custom-pointer.js`**: Responsive custom cursor. Tracks a zero-latency hardware cursor and renders a spring-damper trailing ring (hidden completely when the `Hide Cursor` toggle is enabled).
+The `js/` directory is organized into subfolders by role:
+
+- **`js/character-controller.js`** — Unified core engine. Handles Havok Physics and Kinematic modes, locomotion state machines, and animation blending. Exports `initPhysics` and `setupCharacter` helpers.
+- **`js/ui/custom-hud.js`** — Tactile settings overlay (Camera Lock, Physics toggle, Dynamic FOV, Hide Cursor, Double Jump, Air Control, sliders). Optional.
+- **`js/ui/custom-pointer.js`** — Spring-damper trailing cursor ring. Optional.
+- **`js/examples/`** — Ready-to-run setup templates (`app.js`, `app-minimal.js`, `app-complex.js`).
+- **`js/core/builder.js`** — Powers `builder.html`, the visual configuration tool (see below).
 
 ### ⚡ High-Level Setup (Recommended)
 You can initialize physics and load the character in just a few lines of code using the shared helper functions: `initPhysics` and `setupCharacter` (wrapped in a clean `loadCharacter` helper function across the app templates). This helper supports configuring model paths, spawn locations, bounding ellipsoids, controls, and animations:
@@ -179,9 +182,38 @@ if (typeof bindHUDControls === 'function') {
 ```
 
 We have provided three setup examples to guide your implementation:
-*   **[js/app-minimal.js](js/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.
-*   **[js/app-complex.js](js/app-complex.js)**: A full-featured setup designed to demonstrate how the character controller functions with a highly complex 3D scenery model ([assets/backyard_demo.glb](assets/backyard_demo.glb)) containing many intricate, complex collisions and polygon-heavy geometry.
-*   **[js/app.js](js/app.js)**: A fully featured production loading example including advanced lighting, shadows, skyboxes, procedural environment shapes (boxes, ramp, stairs), post-processing, and HUD settings synchronization.
+*   **[js/examples/app-minimal.js](js/examples/app-minimal.js)**: A bare-minimum integration template/guide to quickly see how to set up the Babylon.js engine, scene, capsule collider, parent the mesh, and initialize the controllers.
+*   **[js/examples/app-complex.js](js/examples/app-complex.js)**: A full-featured setup designed to demonstrate how the character controller functions with a highly complex 3D scenery model ([assets/backyard_demo.glb](assets/backyard_demo.glb)) containing many intricate, complex collisions and polygon-heavy geometry.
+*   **[js/examples/app.js](js/examples/app.js)**: A fully featured production loading example including advanced lighting, shadows, skyboxes, procedural environment shapes (boxes, ramp, stairs), post-processing, and HUD settings synchronization.
+
+---
+
+## 🔧 Visual Builder (`builder.html`)
+
+`builder.html` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required.
+
+### Tabs
+
+| Tab | What it does |
+|---|---|
+| **Model** | Set the GLB asset path and filename for your character model |
+| **Animations** | Auto-match Mixamo/custom animation names to controller slots. Each row has an `↺` reset button to re-run keyword auto-detection for that single slot |
+| **Controls** | Remap every key binding. Each action has an `↺` button to restore its default key |
+| **Physics** | Tune all physics, camera, and speed parameters with sliders and toggles. Each control has an `↺` reset to restore the baked default |
+| **Export** | Preview the final configuration code and download `custom-character-controller.js` |
+
+All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wipe all overrides and restore factory defaults.
+
+### Downloading `custom-character-controller.js`
+
+The **Export** tab lets you download a pre-configured version of `character-controller.js` with your settings baked in. This file includes an **auto-seed block** that writes your configuration values to `localStorage` on first load (detected by a config signature). This ensures your exported Physics settings always take priority over any stale `localStorage` values from previous sessions. If you export with new settings, the signature changes and the seed re-runs automatically.
+
+```html
+<!-- Use the downloaded file in place of the original: -->
+<script src="js/character-controller.js"></script>
+<!-- or, if using the builder export: -->
+<script src="js/custom-character-controller.js"></script>
+```
 
 ---
 
@@ -194,10 +226,10 @@ Animations are baked inside `character_animated.glb`. To merge new external GLB 
 npm install
 
 # Run the merge tool
-node js/merge_animations.mjs
+node js/core/merge_animations.mjs
 
 # Example usage with custom paths
-node js/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_animated.glb
+node js/core/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_animated.glb
 ```
 
 For batch conversion of FBX animations, see [FBX2GLB-Batch-Convert-Optimizer](https://github.com/crazyramirez/FBX2GLB-Batch-Convert-Optimizer).

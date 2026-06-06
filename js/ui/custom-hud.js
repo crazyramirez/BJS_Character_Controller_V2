@@ -416,12 +416,14 @@
           <!-- INTEGRATION PANE -->
           <div class="info-pane" id="tab-integration">
             <h3>How to Integrate in your Project</h3>
-            <p>The controller codebase is composed of three vanilla scripts in the <span class="info-kbd">js/</span> directory that run out-of-the-box (note that the HUD interface is optional):</p>
+            <p>The <span class="info-kbd">js/</span> directory is organized by role. Core scripts that run out-of-the-box (HUD and pointer are optional):</p>
             <ul>
-              <li><strong>character-controller.js:</strong> The unified core engine. Handles locomotion state machines, blends, and Havok/Kinematic motion paths (Required).</li>
-              <li><strong>custom-hud.js (Optional):</strong> The tactile settings overlay and quick configurations drawer.</li>
-              <li><strong>custom-pointer.js (Optional):</strong> Custom reactive mouse cursor.</li>
+              <li><strong>js/character-controller.js:</strong> The unified core engine. Handles locomotion state machines, blends, and Havok/Kinematic motion paths (Required).</li>
+              <li><strong>js/ui/custom-hud.js (Optional):</strong> The tactile settings overlay and quick configurations drawer.</li>
+              <li><strong>js/ui/custom-pointer.js (Optional):</strong> Custom reactive mouse cursor.</li>
+              <li><strong>js/examples/</strong> Ready-to-run setup templates (app.js, app-minimal.js, app-complex.js).</li>
             </ul>
+            <p><strong>Visual Builder:</strong> Open <span class="info-kbd">builder.html</span> to visually configure animations, key bindings, and physics parameters — then download a pre-configured <span class="info-kbd">custom-character-controller.js</span> with your settings baked in. Every control has an <span class="info-kbd">↺</span> reset button. All changes auto-save; use <strong>Reset All</strong> to restore factory defaults.</p>
             <p><strong>Note on cursor styling:</strong> You can hide all cursors (both hardware dot and custom canvas ring) by toggling the <strong>Hide Cursor</strong> switch in the HUD, which persists your preference in local storage and adds the <code>.cursor-hidden</code> class to the <code>body</code> element.</p>
 
             <h3>Recommended HTML Structure</h3>
@@ -430,10 +432,11 @@
 &lt;script src="https://cdn.babylonjs.com/babylon.js"&gt;&lt;/script&gt;
 &lt;script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"&gt;&lt;/script&gt;
 
-&lt;!-- Import custom controllers (custom-hud.js is optional) --&gt;
-&lt;script src="js/custom-hud.js"&gt;&lt;/script&gt;
+&lt;!-- Import custom controllers (HUD and pointer are optional) --&gt;
 &lt;script src="js/character-controller.js"&gt;&lt;/script&gt;
-&lt;script src="js/app.js"&gt;&lt;/script&gt;</div>
+&lt;script src="js/ui/custom-hud.js"&gt;&lt;/script&gt;
+&lt;script src="js/ui/custom-pointer.js"&gt;&lt;/script&gt;
+&lt;script src="js/examples/app.js"&gt;&lt;/script&gt;</div>
 
             <h3>High-Level Setup Helper (Recommended)</h3>
             <p>You can initialize physics and load the character in just a few lines of code using the shared helper functions: <code>initPhysics</code> and <code>setupCharacter</code> (wrapped in a clean <code>loadCharacter</code> helper function across the app templates). This helper supports configuring model paths, spawn locations, bounding ellipsoids, controls, and animations:</p>
@@ -483,9 +486,9 @@ const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, 
 
             <h3>Reference Example Templates</h3>
             <ul>
-              <li><strong>js/app-minimal.js:</strong> Barebones boilerplate to see engine setup, capsule creation, mesh parenting, and basic constructor bindings.</li>
-              <li><strong>js/app-complex.js:</strong> High-geometry environment demonstrating raycast grounding, stair climbing, and mesh slope alignment.</li>
-              <li><strong>js/app.js:</strong> Production loading flow including lighting rig, soft shadow maps, Aces Tonemapping, post-processing pipelines, and HUD syncing.</li>
+              <li><strong>js/examples/app-minimal.js:</strong> Barebones boilerplate to see engine setup, capsule creation, mesh parenting, and basic constructor bindings.</li>
+              <li><strong>js/examples/app-complex.js:</strong> High-geometry environment demonstrating raycast grounding, stair climbing, and mesh slope alignment.</li>
+              <li><strong>js/examples/app.js:</strong> Production loading flow including lighting rig, soft shadow maps, Aces Tonemapping, post-processing pipelines, and HUD syncing.</li>
             </ul>
           </div>
           
@@ -550,7 +553,7 @@ animCtrl.setIdleAnim(newIdleAnimGroup);</div>
 npm install @gltf-transform/core fs-extra
 
 # Run merge utility
-node js/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_animated.glb</div>
+node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_animated.glb</div>
           </div>
         </div>
       </div>

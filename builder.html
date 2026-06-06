@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BJS Character Controller Custom Generator</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="css/builder.css">
+</head>
+
+<body>
+
+  <div id="builder-container">
+    <!-- Configuration Sidebar -->
+    <div id="sidebar">
+      <div class="sidebar-header"
+        style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+        <div>
+          <h1 style="margin: 0; font-size: 1.15rem;">BJS Character Controller</h1>
+          <p style="margin: 2px 0 0 0; font-size: 0.72rem; color: var(--text-secondary);">Custom Generator &amp;
+            Exporter &nbsp;·&nbsp; v2.0</p>
+        </div>
+        <button id="btn-reset-all" class="btn-delete"
+          style="font-size: 0.72rem; padding: 6px 10px; border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); color: #fca5a5; border-radius: var(--r-sm); white-space: nowrap; height: fit-content;">Reset
+          All</button>
+      </div>
+
+      <!-- Auto-save notice -->
+      <div style="margin: 8px 0 4px; padding: 7px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.72rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
+        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#6ee7b7;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
+        <span>Changes save automatically. Use <strong style="color: #fca5a5;">Reset All</strong> to restore defaults.</span>
+      </div>
+
+      <!-- Tab Navigation -->
+      <nav class="tabs-nav">
+        <button class="tab-btn active" data-tab="model">Model</button>
+        <button class="tab-btn" data-tab="animations">Animations</button>
+        <button class="tab-btn" data-tab="keys">Controls</button>
+        <button class="tab-btn" data-tab="physics">Physics</button>
+        <button class="tab-btn" data-tab="export">Export</button>
+      </nav>
+
+      <!-- Tabs Content Panels -->
+      <div class="tabs-content">
+        <!-- 1. MODEL IMPORT PANEL -->
+        <div class="tab-panel active" id="panel-model">
+          <div class="settings-section">
+            <h3>Character Model</h3>
+            <p style="margin-bottom: 12px;">
+              Import a custom character model in GLB format with animations baked inside.
+            </p>
+            <div class="dropzone" id="dropzone">
+              <svg viewBox="0 0 24 24">
+                <path
+                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
+              </svg>
+              <p>Drag and Drop <strong>.glb</strong> file here</p>
+              <span>or browse local files</span>
+              <input type="file" id="glb-file-input" accept=".glb" style="display: none;">
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. ANIMATIONS MAPPING PANEL -->
+        <div class="tab-panel" id="panel-animations">
+          <div class="settings-section">
+            <h3>Standard Animations</h3>
+            <p style="margin-bottom: 14px;">
+              Map character controller locomotion and actions to your GLB animation groups.
+            </p>
+            <div id="animations-mapping-list" class="mapping-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Custom Animations</h3>
+            <p style="margin-bottom: 10px;">
+              Add custom action animations and map triggers to them.
+            </p>
+            <div id="custom-animations-list" class="custom-animation-list">
+              <!-- Dynamically populated -->
+            </div>
+            <button class="btn-add-anim" id="btn-add-custom-anim">+ Add Custom Action</button>
+          </div>
+        </div>
+
+        <!-- 3. KEY BINDINGS PANEL -->
+        <div class="tab-panel" id="panel-keys">
+          <div class="settings-section">
+            <h3>Control Mapping</h3>
+            <p style="margin-bottom: 14px;">
+              Click on a control action box and press any keyboard key to bind it.
+            </p>
+            <div id="keybindings-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. PHYSICS & SPEEDS PANEL -->
+        <div class="tab-panel" id="panel-physics">
+          <div class="settings-section">
+            <h3>Physics Engine Defaults</h3>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Gravity Strength</span>
+                <span class="control-value" id="slider-grav-val">22</span>
+              </div>
+              <input type="range" id="slider-grav" min="5" max="40" step="0.5" value="22">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Jump Takeoff Power</span>
+                <span class="control-value" id="slider-jump-pwr-val">9.5</span>
+              </div>
+              <input type="range" id="slider-jump-pwr" min="3" max="25" step="0.1" value="9.5">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Walk Speed</span>
+                <span class="control-value" id="slider-speed-walk-val">2.5</span>
+              </div>
+              <input type="range" id="slider-speed-walk" min="0.5" max="8" step="0.1" value="2.5">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Sprint Speed</span>
+                <span class="control-value" id="slider-speed-sprint-val">5.0</span>
+              </div>
+              <input type="range" id="slider-speed-sprint" min="2" max="15" step="0.1" value="5.0">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Acceleration</span>
+                <span class="control-value" id="slider-accel-val">14</span>
+              </div>
+              <input type="range" id="slider-accel" min="1" max="40" step="0.5" value="14">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Deceleration</span>
+                <span class="control-value" id="slider-decel-val">16</span>
+              </div>
+              <input type="range" id="slider-decel" min="1" max="40" step="0.5" value="16">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Rotation Speed</span>
+                <span class="control-value" id="slider-rot-val">40</span>
+              </div>
+              <input type="range" id="slider-rot" min="5" max="120" step="1" value="40">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Speed Multiplier</span>
+                <span class="control-value" id="slider-speed-mult-val">1.0x</span>
+              </div>
+              <input type="range" id="slider-speed-mult" min="0.5" max="2.0" step="0.1" value="1.0">
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Camera Follow</h3>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Lock Camera (Follow)</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-cam-follow-lock">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Cam Follow Distance</span>
+                <span class="control-value" id="slider-cam-dist-val">8.0m</span>
+              </div>
+              <input type="range" id="slider-cam-dist" min="2" max="15" step="0.5" value="8">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Cam Follow Pitch</span>
+                <span class="control-value" id="slider-cam-pitch-val">60°</span>
+              </div>
+              <input type="range" id="slider-cam-pitch" min="15" max="80" step="1" value="60">
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Steering &amp; Input</h3>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Lock Pitch (Horizontal Cam)</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-cam-lock-pitch">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Joystick Vertical Only</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-joystick-lock-x">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Dynamic FOV</h3>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Dynamic FOV</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-dynamic-fov" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Dynamic FOV Intensity</span>
+                <span class="control-value" id="slider-fov-max-val">0.10</span>
+              </div>
+              <input type="range" id="slider-fov-max" min="0" max="1" step="0.05" value="0.10">
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Air Locomotion</h3>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Double Jump</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-double-jump" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group checkbox-group"
+              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <span>Air Control</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-air-control">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. EXPORT / CODE GENERATOR PANEL -->
+        <div class="tab-panel" id="panel-export">
+          <div class="settings-section">
+            <h3>Export Code Snippet</h3>
+            <p style="margin-bottom: 8px;">
+              Copy-paste this code configuration into your project's <code>app.js</code> initialization:
+            </p>
+            <div class="code-preview-container">
+              <button id="btn-copy-code" class="btn-copy">Copy Code</button>
+              <textarea id="export-code" class="code-preview" readonly></textarea>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Download Complete File</h3>
+            <p style="margin-bottom: 12px;">
+              Generate and download a tailored standalone <code>character-controller.js</code> with all settings baked
+              in as default.
+            </p>
+            <button class="btn-action" id="btn-download">
+              <svg style="width: 20px; height: 20px; fill: white;" viewBox="0 0 24 24">
+                <path
+                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+              </svg>
+              Download custom-character-controller.js
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Buy Me a Coffee -->
+      <div style="margin-top: 12px; padding: 10px 12px; background: rgba(255,213,0,0.04); border: 1px solid rgba(255,213,0,0.12); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+        <span style="font-size: 0.72rem; color: var(--text-secondary); line-height: 1.4;">If you like this tool,<br>consider supporting my work!</span>
+        <a href="https://buymeacoffee.com/drlerian" target="_blank" rel="noopener noreferrer"
+          style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; background: #FFDD00; color: #000; font-size: 0.75rem; font-weight: 700; border-radius: 6px; text-decoration: none; white-space: nowrap; flex-shrink: 0; transition: opacity 0.2s;"
+          onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+          <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z"/></svg>
+          Buy me a coffee
+        </a>
+      </div>
+    </div>
+
+    <!-- Babylon 3D Viewport Playground -->
+    <div id="viewport-container">
+      <canvas id="c"></canvas>
+
+      <!-- Floating HUD Panel -->
+      <div class="hud-overlay">
+        <div class="hud-panel">
+          <h4>Active State</h4>
+          <div class="hud-stat" id="hud-state">IDLE</div>
+        </div>
+        <div class="hud-panel">
+          <h4>Current Speed</h4>
+          <div class="hud-stat" id="hud-speed">0.00 m/s</div>
+        </div>
+      </div>
+
+      <!-- Controls overlay tooltips -->
+      <div class="keyboard-controls-tooltip">
+        <h4>Playground controls</h4>
+        <div class="controls-grid">
+          <span class="key-cap">W A S D</span>
+          <span>Move character</span>
+
+          <span class="key-cap">SHIFT</span>
+          <span>Sprint Toggle</span>
+
+          <span class="key-cap">CTRL / C</span>
+          <span>Crouch Toggle</span>
+
+          <span class="key-cap">SPACE</span>
+          <span>Jump / Double Jump</span>
+
+          <span class="key-cap">R</span>
+          <span>Dodge Roll</span>
+
+          <span class="key-cap">Q</span>
+          <span>Attack Punch</span>
+
+          <span class="key-cap">E</span>
+          <span>Cast Spell</span>
+
+          <span class="key-cap">F</span>
+          <span>Interact</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Initializing builder Scene...</div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast" class="toast">Toast Message</div>
+
+  <!-- Inline token bridge: map old variable names used in HTML inline styles -->
+  <style>
+    :root {
+      --text-muted: var(--text-muted, #5c6475);
+    }
+
+    .btn-reset-single {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-muted, #5c6475);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+      line-height: 1;
+      outline: none;
+    }
+    .btn-reset-single:hover {
+      background: rgba(139,92,246,0.12);
+      border-color: rgba(139,92,246,0.35);
+      color: #a78bfa;
+    }
+
+    /* Descriptive paragraphs inside panels */
+    .settings-section>p {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .settings-section>p code {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: var(--text-cyan);
+      background: var(--cyan-dim);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+  </style>
+
+  <!-- Babylon Dependencies -->
+  <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+
+  <!-- builder & Controller Scripts -->
+  <script src="js/character-controller.js"></script>
+  <script src="js/core/builder.js"></script>
+
+</body>
+
+</html>
