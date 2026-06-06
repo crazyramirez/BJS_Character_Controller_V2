@@ -386,6 +386,9 @@ class AnimCtrl {
     incoming.setWeightForAllAnimatables(outgoing ? 0 : targetWeight);
 
     if (outgoing) {
+      if (outgoing.onAnimationGroupEndObservable) {
+        outgoing.onAnimationGroupEndObservable.clear();
+      }
       let elapsed = 0;
       const outgoingStartWeight = outgoing.animatables[0] ? outgoing.animatables[0].weight : targetWeight;
       const transition = {
@@ -1242,7 +1245,7 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'ROLL')) {
-      if (this.grounded && !inAction && !this.sitting && !this._rollActive) {
+      if (this.grounded && !this.sitting && !this._rollActive) {
         if (this.crouching && this._isCeilingBlocked()) {
           this._showCombo('NO SPACE TO ROLL');
           setTimeout(() => this._hideCombo(), 1200);
@@ -1337,6 +1340,7 @@ class CharCtrl {
     if (this._rollActive) return;
     this._rollActive = true;
     this._setState(S.ROLL);
+    this.comboIdx = 0;
 
     let inputX = 0, inputZ = 0;
     if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
