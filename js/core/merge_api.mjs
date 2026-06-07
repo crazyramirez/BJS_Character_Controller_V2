@@ -17,68 +17,114 @@ const DEFAULTS = {
   SKELETON_SOURCE: 'character',
   IGNORE_SCALE: true,
   IGNORE_NON_ROOT_TRANSLATION: true,
-  ARM_SPREAD_ANGLE: -5,
-  LEG_SPREAD_ANGLE: 5,
+  // Manual per-bone rotation offsets (degrees). Override for fine-tuning.
+  // ARM_SPREAD_ANGLE / LEG_SPREAD_ANGLE are now only used as manual overrides.
+  // Set ARM_SPREAD_ANGLE to a non-zero value to manually override auto A-pose correction.
+  ARM_SPREAD_ANGLE: 0,
+  LEG_SPREAD_ANGLE: 0,
   POSE_OFFSETS: {},
   COMPRESS_OUTPUT: true,
+  // Automatically detect A-pose arms and compensate using parent-space C matrix.
+  // This is the correct fix for characters like 3d_character_young_boy.glb.
+  AUTO_APOSE_CORRECTION: true,
+  // Arms drooped more than this many degrees are considered A-pose (vs T-pose).
+  APOSE_THRESHOLD_DEG: 15,
 };
 
-// ── Bone name mapping ────────────────────────────────────────────────────────
+/// ── Bone name mapping ──────────────────────────────────────────────────────
+//
+// Each key is a canonical Mixamo-normalized bone name.
+// Each value is a list of aliases from other skeleton conventions.
+// Conventions covered:
+//   UE5 (Mannequin/MetaHuman): upperarm_l, lowerarm_l, thigh_l, calf_l ...
+//   Unity Humanoid:            leftupperarm, leftlowerarm, leftshoulder ...
+//   VRM/VRoid (normalized):    leftupperarm, leftupperleg ... (after j_bip strip)
+//   Rigify (Blender):          upperarm.l, forearm.l (dots become blanks after normalize)
+//   RPM / Generic Mixamo:      leftarm, leftforearm, hips ...
+//   3ds Max Biped:             bip001 l upperarm (prefix stripped by normalizeName)
+//
 const BONE_MAP = {
-  'pelvis': ['hips', 'mixamorig:hips'],
-  'spine_01': ['spine', 'mixamorig:spine'],
-  'spine_02': ['spine1', 'mixamorig:spine1'],
-  'spine_03': ['spine2', 'mixamorig:spine2'],
-  'neck_01': ['neck', 'mixamorig:neck'],
-  'head': ['head', 'mixamorig:head'],
-  'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder'],
-  'upperarm_l': ['leftarm', 'mixamorig:leftarm'],
-  'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm'],
-  'hand_l': ['lefthand', 'mixamorig:lefthand'],
-  'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder'],
-  'upperarm_r': ['rightarm', 'mixamorig:rightarm'],
-  'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm'],
-  'hand_r': ['righthand', 'mixamorig:righthand'],
-  'thigh_l': ['leftupleg', 'mixamorig:leftupleg'],
-  'calf_l': ['leftleg', 'mixamorig:leftleg'],
-  'foot_l': ['leftfoot', 'mixamorig:leftfoot'],
-  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase'],
-  'ball_l': ['lefttoebase', 'mixamorig:lefttoebase'],
-  'thigh_r': ['rightupleg', 'mixamorig:rightupleg'],
-  'calf_r': ['rightleg', 'mixamorig:rightleg'],
-  'foot_r': ['rightfoot', 'mixamorig:rightfoot'],
-  'toe_r': ['righttoebase', 'mixamorig:righttoebase'],
-  'ball_r': ['righttoebase', 'mixamorig:righttoebase'],
-  'thumb_01_l': ['lefthandthumb1', 'mixamorig:lefthandthumb1'],
-  'thumb_02_l': ['lefthandthumb2', 'mixamorig:lefthandthumb2'],
-  'thumb_03_l': ['lefthandthumb3', 'mixamorig:lefthandthumb3'],
-  'index_01_l': ['lefthandindex1', 'mixamorig:lefthandindex1'],
-  'index_02_l': ['lefthandindex2', 'mixamorig:lefthandindex2'],
-  'index_03_l': ['lefthandindex3', 'mixamorig:lefthandindex3'],
-  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1'],
-  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2'],
-  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3'],
-  'ring_01_l': ['lefthandring1', 'mixamorig:lefthandring1'],
-  'ring_02_l': ['lefthandring2', 'mixamorig:lefthandring2'],
-  'ring_03_l': ['lefthandring3', 'mixamorig:lefthandring3'],
-  'pinky_01_l': ['lefthandpinky1', 'mixamorig:lefthandpinky1'],
-  'pinky_02_l': ['lefthandpinky2', 'mixamorig:lefthandpinky2'],
-  'pinky_03_l': ['lefthandpinky3', 'mixamorig:lefthandpinky3'],
-  'thumb_01_r': ['righthandthumb1', 'mixamorig:righthandthumb1'],
-  'thumb_02_r': ['righthandthumb2', 'mixamorig:righthandthumb2'],
-  'thumb_03_r': ['righthandthumb3', 'mixamorig:righthandthumb3'],
-  'index_01_r': ['righthandindex1', 'mixamorig:righthandindex1'],
-  'index_02_r': ['righthandindex2', 'mixamorig:righthandindex2'],
-  'index_03_r': ['righthandindex3', 'mixamorig:righthandindex3'],
-  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1'],
-  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2'],
-  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3'],
-  'ring_01_r': ['righthandring1', 'mixamorig:righthandring1'],
-  'ring_02_r': ['righthandring2', 'mixamorig:righthandring2'],
-  'ring_03_r': ['righthandring3', 'mixamorig:righthandring3'],
-  'pinky_01_r': ['righthandpinky1', 'mixamorig:righthandpinky1'],
-  'pinky_02_r': ['righthandpinky2', 'mixamorig:righthandpinky2'],
-  'pinky_03_r': ['righthandpinky3', 'mixamorig:righthandpinky3'],
+  // ── Root / Spine ────────────────────────────────────────
+  'pelvis':    ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
+  'spine_01':  ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback'],
+  'spine_02':  ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine'],
+  'spine_03':  ['spine2', 'mixamorig:spine2', 'chest', 'upperchest', 'upperspine', 'upperbody'],
+  'neck_01':   ['neck', 'mixamorig:neck', 'neck1'],
+  'neck_02':   ['neck1', 'mixamorig:neck1'],
+  'head':      ['head', 'mixamorig:head'],
+
+  // ── Left arm ──────────────────────────────────────────
+  //   UE5: clavicle_l    Unity: leftshoulder    Rigify: shoulderl (after normalize)
+  'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder', 'leftcollar', 'leftclavicle',
+                 'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl'],
+  //   UE5: upperarm_l    Unity: leftupperarm    Rigify: upperarml
+  'upperarm_l': ['leftarm', 'mixamorig:leftarm', 'leftupperarm', 'l_upperarm', 'upperarm_l',
+                 'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm'],
+  //   UE5: lowerarm_l    Unity: leftlowerarm    Rigify: forearml
+  'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm', 'leftlowerarm', 'l_lowerarm',
+                 'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm'],
+  'hand_l':    ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l'],
+
+  // ── Right arm ─────────────────────────────────────────
+  'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder', 'rightcollar', 'rightclavicle',
+                 'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr'],
+  'upperarm_r': ['rightarm', 'mixamorig:rightarm', 'rightupperarm', 'r_upperarm', 'upperarm_r',
+                 'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm'],
+  'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm', 'rightlowerarm', 'r_lowerarm',
+                 'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm'],
+  'hand_r':    ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r'],
+
+  // ── Left leg ──────────────────────────────────────────
+  //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl
+  'thigh_l':   ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
+                'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl'],
+  //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl
+  'calf_l':    ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
+                'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee'],
+  'foot_l':    ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l'],
+  'toe_l':     ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe'],
+  'ball_l':    ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
+
+  // ── Right leg ────────────────────────────────────────
+  'thigh_r':   ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
+                'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr'],
+  'calf_r':    ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
+                'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee'],
+  'foot_r':    ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r'],
+  'toe_r':     ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe'],
+  'ball_r':    ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
+
+  // ── Fingers ────────────────────────────────────────────
+  'thumb_01_l': ['lefthandthumb1', 'mixamorig:lefthandthumb1', 'thumb1l', 'l_thumb1', 'thumbproximall'],
+  'thumb_02_l': ['lefthandthumb2', 'mixamorig:lefthandthumb2', 'thumb2l', 'l_thumb2', 'thumbintermediatel'],
+  'thumb_03_l': ['lefthandthumb3', 'mixamorig:lefthandthumb3', 'thumb3l', 'l_thumb3', 'thumbdistall'],
+  'index_01_l': ['lefthandindex1', 'mixamorig:lefthandindex1', 'index1l', 'l_index1', 'indexproximall'],
+  'index_02_l': ['lefthandindex2', 'mixamorig:lefthandindex2', 'index2l', 'l_index2', 'indexintermediatel'],
+  'index_03_l': ['lefthandindex3', 'mixamorig:lefthandindex3', 'index3l', 'l_index3', 'indexdistall'],
+  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1', 'middle1l', 'l_middle1'],
+  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2', 'middle2l', 'l_middle2'],
+  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3', 'middle3l', 'l_middle3'],
+  'ring_01_l': ['lefthandring1', 'mixamorig:lefthandring1', 'ring1l', 'l_ring1'],
+  'ring_02_l': ['lefthandring2', 'mixamorig:lefthandring2', 'ring2l', 'l_ring2'],
+  'ring_03_l': ['lefthandring3', 'mixamorig:lefthandring3', 'ring3l', 'l_ring3'],
+  'pinky_01_l': ['lefthandpinky1', 'mixamorig:lefthandpinky1', 'pinky1l', 'l_pinky1', 'littleproximal'],
+  'pinky_02_l': ['lefthandpinky2', 'mixamorig:lefthandpinky2', 'pinky2l', 'l_pinky2'],
+  'pinky_03_l': ['lefthandpinky3', 'mixamorig:lefthandpinky3', 'pinky3l', 'l_pinky3'],
+  'thumb_01_r': ['righthandthumb1', 'mixamorig:righthandthumb1', 'thumb1r', 'r_thumb1'],
+  'thumb_02_r': ['righthandthumb2', 'mixamorig:righthandthumb2', 'thumb2r', 'r_thumb2'],
+  'thumb_03_r': ['righthandthumb3', 'mixamorig:righthandthumb3', 'thumb3r', 'r_thumb3'],
+  'index_01_r': ['righthandindex1', 'mixamorig:righthandindex1', 'index1r', 'r_index1'],
+  'index_02_r': ['righthandindex2', 'mixamorig:righthandindex2', 'index2r', 'r_index2'],
+  'index_03_r': ['righthandindex3', 'mixamorig:righthandindex3', 'index3r', 'r_index3'],
+  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1', 'middle1r', 'r_middle1'],
+  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2', 'middle2r', 'r_middle2'],
+  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3', 'middle3r', 'r_middle3'],
+  'ring_01_r': ['righthandring1', 'mixamorig:righthandring1', 'ring1r', 'r_ring1'],
+  'ring_02_r': ['righthandring2', 'mixamorig:righthandring2', 'ring2r', 'r_ring2'],
+  'ring_03_r': ['righthandring3', 'mixamorig:righthandring3', 'ring3r', 'r_ring3'],
+  'pinky_01_r': ['righthandpinky1', 'mixamorig:righthandpinky1', 'pinky1r', 'r_pinky1'],
+  'pinky_02_r': ['righthandpinky2', 'mixamorig:righthandpinky2', 'pinky2r', 'r_pinky2'],
+  'pinky_03_r': ['righthandpinky3', 'mixamorig:righthandpinky3', 'pinky3r', 'r_pinky3'],
 };
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -94,13 +140,33 @@ function stripBJSSuffix(name) {
 
 /**
  * Canonical bone id: lowercase, remove common rig prefixes and separators.
- * Works on both raw GLTF names and BJS-suffixed names.
+ * Handles:
+ *   - Mixamo:  mixamorig:LeftArm       → leftarm
+ *   - UE5:     upperarm_l              → upperarml
+ *   - Unity:   LeftUpperArm            → leftupperarm
+ *   - VRM:     J_Bip_L_UpperArm        → leftupperarm  (l/r mapped to left/right)
+ *   - Rigify:  DEF-upper_arm.L         → upperarml (dots+dashes stripped)
+ *   - Biped:   Bip001 L UpperArm       → lupperarm (prefix stripped)
+ *   - BJS:     LeftArm_27              → leftarm (numeric suffix stripped first)
  */
 function normalizeName(name) {
   if (!name) return '';
-  return stripBJSSuffix(name).toLowerCase()
-    .replace(/^(mixamorig\d*|armature|char|bi|bip\d*|biped|root|gltf_created_\d+_)\b[:_]*/i, '')
-    .replace(/[:_\-\.\s]/g, '');
+  let n = stripBJSSuffix(name).toLowerCase();
+
+  // VRM: J_Bip_L_UpperArm → l_upperarm, J_Bip_R_UpperArm → r_upperarm
+  n = n.replace(/^j_?bip_?([lr])_?/i, '$1_');
+
+  // Common rig prefixes to strip  (mixamorig, bip001, def-, etc.)
+  n = n.replace(/^(mixamorig\d*|armature|char|bi|bip\d+|biped|def[-_]?|root|gltf_created_\d+_)\b[:_ ]*/i, '');
+
+  // Rigify/Blender: .L / .R side suffix → l / r (keep for later)
+  n = n.replace(/\.([lr])$/i, '$1');
+
+  // UE5 / generic: side suffix _l / _r at END of token → keep as-is, remove separators next
+  // Strip remaining separators so 'upper_arm_l' → 'upperarml'
+  n = n.replace(/[:_\-\.\s]/g, '');
+
+  return n;
 }
 
 // ── Skeleton type fingerprinting ─────────────────────────────────────────────
@@ -119,7 +185,7 @@ const SKELETON_TYPES = [
     test: (names) =>
       names.some(n => n.includes('mixamorig')) ||
       (names.some(n => n === 'hips' || n === 'hips') &&
-       names.some(n => n === 'leftupleg' || n === 'leftarm')),
+        names.some(n => n === 'leftupleg' || n === 'leftarm')),
   },
   {
     id: 'unreal',
@@ -128,7 +194,7 @@ const SKELETON_TYPES = [
     test: (names) =>
       names.some(n => n === 'pelvis') &&
       (names.some(n => n === 'spine01' || n === 'spine_01') ||
-       names.some(n => n === 'thighl' || n === 'thigh_l')),
+        names.some(n => n === 'thighl' || n === 'thigh_l')),
   },
   {
     id: 'unity',
@@ -137,7 +203,7 @@ const SKELETON_TYPES = [
     test: (names) =>
       names.some(n => n === 'hips') &&
       (names.some(n => n === 'leftupperleg' || n === 'rightupperleg') ||
-       names.some(n => n === 'leftshoulder' && n === 'spine')),
+        names.some(n => n === 'leftshoulder' && n === 'spine')),
   },
   {
     id: 'vrm',
@@ -154,7 +220,7 @@ const SKELETON_TYPES = [
     test: (names) =>
       names.some(n => n === 'armature' || n === 'avatarroot' || n === 'avatarhead') ||
       (names.some(n => n === 'hips') && names.some(n => n === 'leftshoulder') &&
-       names.some(n => n.includes('lefthand') || n === 'lefthandindex1')),
+        names.some(n => n.includes('lefthand') || n === 'lefthandindex1')),
   },
   {
     id: 'rigify',
@@ -162,7 +228,7 @@ const SKELETON_TYPES = [
     color: '#f59e0b',
     test: (names) =>
       (names.some(n => n.includes('thighl') && n.startsWith('thigh')) &&
-       names.some(n => n.includes('upperarml'))) ||
+        names.some(n => n.includes('upperarml'))) ||
       names.some(n => n === 'deftorso' || n === 'defspine' || n.startsWith('def')),
   },
   {
@@ -194,6 +260,70 @@ function detectSkeletonType(rawNames) {
     return { id: 'custom', label: 'Custom Rig', color: '#9ca3af' };
   }
   return { id: 'unknown', label: 'Unknown Rig', color: '#6b7280' };
+}
+
+function vec3Subtract([x1, y1, z1], [x2, y2, z2]) {
+  return [x1 - x2, y1 - y2, z1 - z2];
+}
+
+function vec3Normalize([x, y, z]) {
+  const len = Math.sqrt(x * x + y * y + z * z);
+  return len > 0 ? [x / len, y / len, z / len] : [0, 0, 0];
+}
+
+function vec3Add([x1, y1, z1], [x2, y2, z2]) {
+  return [x1 + x2, y1 + y2, z1 + z2];
+}
+
+function detectPoseStyle(doc, charByName, charByNorm) {
+  const parentMap = buildParentMap(doc);
+  const rotations = new Map();
+  const positions = new Map();
+
+  function getTransforms(node) {
+    if (rotations.has(node)) return { rot: rotations.get(node), pos: positions.get(node) };
+
+    const localRot = node.getRotation() || [0, 0, 0, 1];
+    const localPos = node.getTranslation() || [0, 0, 0];
+
+    const parent = parentMap.get(node);
+    if (parent) {
+      const parentTransforms = getTransforms(parent);
+      const worldRot = qMul(parentTransforms.rot, localRot);
+      const worldPos = vec3Add(parentTransforms.pos, rotateVec3(localPos, parentTransforms.rot));
+      rotations.set(node, worldRot);
+      positions.set(node, worldPos);
+      return { rot: worldRot, pos: worldPos };
+    } else {
+      rotations.set(node, localRot);
+      positions.set(node, localPos);
+      return { rot: localRot, pos: localPos };
+    }
+  }
+
+  for (const node of doc.getRoot().listNodes()) {
+    getTransforms(node);
+  }
+
+  const leftArm = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
+  const leftForearm = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
+
+  if (!leftArm || !leftForearm) return 'UNKNOWN';
+
+  const posArm = positions.get(leftArm);
+  const posForearm = positions.get(leftForearm);
+
+  if (!posArm || !posForearm) return 'UNKNOWN';
+
+  const dir = vec3Normalize(vec3Subtract(posForearm, posArm));
+  const yVal = dir[1]; // y component
+
+  if (yVal > -0.22 && yVal < 0.22) {
+    return 'T-POSE';
+  } else if (yVal <= -0.22 && yVal >= -0.75) {
+    return 'A-POSE';
+  }
+  return 'CUSTOM';
 }
 
 function qInvert([x, y, z, w]) { return [-x, -y, -z, w]; }
@@ -338,7 +468,7 @@ export async function analyzeGLB(buffer) {
     const allNodes = doc.getRoot().listNodes();
     relevantNodes = allNodes.filter(n => {
       const hasChildren = n.listChildren().length > 0;
-      const hasParent   = parentMap.has(n);
+      const hasParent = parentMap.has(n);
       return hasChildren || hasParent;
     });
   }
@@ -359,11 +489,11 @@ export async function analyzeGLB(buffer) {
   const nodeSet = new Set(relevantNodes);
 
   const bones = relevantNodes.map(node => {
-    const rawName   = node.getName() || '(unnamed)';
+    const rawName = node.getName() || '(unnamed)';
     const cleanName = stripBJSSuffix(rawName); // remove BJS _N suffix for display
-    const depth     = getDepth(node);
-    const parent    = parentMap.get(node);
-    const isRoot    = !parent || !nodeSet.has(parent) || SYNTHETIC_ROOTS.test(parent.getName() || '');
+    const depth = getDepth(node);
+    const parent = parentMap.get(node);
+    const isRoot = !parent || !nodeSet.has(parent) || SYNTHETIC_ROOTS.test(parent.getName() || '');
 
     const children = node.listChildren()
       .filter(c => !hasSkin || boneNodes.has(c))
@@ -381,6 +511,24 @@ export async function analyzeGLB(buffer) {
   const rawNames = bones.map(b => b.name);
   const skeletonType = detectSkeletonType(rawNames);
 
+  const charByName = new Map();
+  const charByNorm = new Map();
+  relevantNodes.forEach(node => {
+    const name = node.getName();
+    if (name) {
+      charByName.set(name, node);
+      charByName.set(name.toLowerCase(), node);
+      const stripped = stripBJSSuffix(name);
+      if (stripped !== name) {
+        charByName.set(stripped, node);
+        charByName.set(stripped.toLowerCase(), node);
+      }
+      const n = normalizeName(name);
+      if (n) charByNorm.set(n, node);
+    }
+  });
+  const poseStyle = detectPoseStyle(doc, charByName, charByNorm);
+
   // ── 5. Animations ─────────────────────────────────────────────────────────
   const animations = doc.getRoot().listAnimations()
     .map(a => a.getName() || 'Unnamed')
@@ -396,6 +544,7 @@ export async function analyzeGLB(buffer) {
     hasSkin,
     boneCount: displayBones.length,
     skeletonType,
+    poseStyle,
   };
 }
 
@@ -432,12 +581,16 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   const charRestByName = new Map();
   const charWorldByName = new Map();
+  // Also index by node reference for quick parent→world lookup
+  const charWorldByNode = new Map();
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
+    const wrot = charWorldRots.get(node) || [0, 0, 0, 1];
     if (name) {
       charRestByName.set(name.toLowerCase(), node.getRotation() || [0, 0, 0, 1]);
-      charWorldByName.set(name.toLowerCase(), charWorldRots.get(node) || [0, 0, 0, 1]);
+      charWorldByName.set(name.toLowerCase(), wrot);
     }
+    charWorldByNode.set(node, wrot);
   }
 
   const animRestByName = new Map();
@@ -456,11 +609,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
   }
 
-  const origNodes  = new Set(charDoc.getRoot().listNodes());
+  const origNodes = new Set(charDoc.getRoot().listNodes());
   const origScenes = new Set(charDoc.getRoot().listScenes());
   const origMeshes = new Set(charDoc.getRoot().listMeshes());
-  const origSkins  = new Set(charDoc.getRoot().listSkins());
-  const origAnims  = new Set(charDoc.getRoot().listAnimations());
+  const origSkins = new Set(charDoc.getRoot().listSkins());
+  const origAnims = new Set(charDoc.getRoot().listAnimations());
 
   const charByName = new Map();
   const charByNorm = new Map();
@@ -479,6 +632,47 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       if (n) charByNorm.set(n, node);
     }
   }
+
+  // ── A-pose detection ──────────────────────────────────────────────────────
+  // Measure how far the character's arms droop from horizontal.
+  // Used to decide whether to apply A-pose correction during retargeting.
+  let _armDroopDeg = 0;
+  try {
+    const preParentMap = buildParentMap(charDoc);
+    const prePositions = new Map();
+    const preRotations = new Map();
+    function _getPreTransforms(node) {
+      if (preRotations.has(node)) return;
+      const lr = node.getRotation() || [0, 0, 0, 1];
+      const lp = node.getTranslation() || [0, 0, 0];
+      const parent = preParentMap.get(node);
+      if (parent) {
+        _getPreTransforms(parent);
+        preRotations.set(node, qMul(preRotations.get(parent), lr));
+        prePositions.set(node, vec3Add(prePositions.get(parent), rotateVec3(lp, preRotations.get(parent))));
+      } else {
+        preRotations.set(node, lr);
+        prePositions.set(node, lp);
+      }
+    }
+    for (const node of charDoc.getRoot().listNodes()) _getPreTransforms(node);
+
+    const leftArm  = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
+    const leftFore = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
+    if (leftArm && leftFore) {
+      const pA = prePositions.get(leftArm);
+      const pF = prePositions.get(leftFore);
+      if (pA && pF) {
+        const dir = vec3Normalize(vec3Subtract(pF, pA));
+        _armDroopDeg = Math.asin(-Math.min(1, Math.max(-1, dir[1]))) * (180 / Math.PI);
+        console.log(`[merge] Detected arm droop: ${_armDroopDeg.toFixed(1)}° ${_armDroopDeg > cfg.APOSE_THRESHOLD_DEG ? '→ A-pose correction enabled' : '→ near T-pose, no correction needed'}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[merge] Failed to detect arm pose:', err);
+  }
+
+  const _applyAposeCorrectionGlobal = cfg.AUTO_APOSE_CORRECTION && _armDroopDeg > cfg.APOSE_THRESHOLD_DEG;
 
   // Merge
   charDoc.merge(animDoc);
@@ -515,7 +709,52 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const rAnim = animRestByName.get(srcName) || [0, 0, 0, 1];
           const rChar = charRestByName.get(tgtName) || [0, 0, 0, 1];
           const Wanim = animWorldByName.get(srcName) || [0, 0, 0, 1];
-          const Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
+          let Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
+
+          // ── A-pose correction ────────────────────────────────────────────
+          // When the character is in A-pose, its world rotation for arm bones
+          // encodes the droop angle into C, which distorts the retargeted motion.
+          // Fix: for upper arm and forearm bones, walk up to the nearest
+          // shoulder/clavicle ancestor and use THAT world rotation as Wchar.
+          // This makes C ≈ identity for same-convention (Mixamo→Mixamo) pairs,
+          // so the animation's relative motion transfers correctly.
+          // Shoulder/clavicle bones are NOT corrected (they're the reference).
+          //
+          // Arm-bone patterns covered (after normalizeName / lowercase raw):
+          //   Mixamo/RPM:  leftarm, leftforearm
+          //   UE5:         upperarm_l, lowerarm_l
+          //   Unity:       leftupperarm, leftlowerarm
+          //   Rigify:      upperarml, forearml
+          const _isForearm = /leftforearm|rightforearm|lowerarm[_]?[lr]|forearm[_]?[lr]|forearml|forearmr|lowerarml|lowerarmr/.test(tgtName);
+          const _isUpperArm = !_isForearm && /leftarm|rightarm|upperarm[_]?[lr]|upperarml|upperarmr|arm[_]?[lr]|arml$|armr$/.test(tgtName);
+
+          if (_applyAposeCorrectionGlobal && (_isUpperArm || _isForearm)) {
+            // Walk up parent chain to nearest shoulder/clavicle/collar bone
+            // Shoulder ancestor patterns:
+            //   Mixamo/RPM: leftshoulder, rightshoulder
+            //   UE5:        clavicle_l, clavicle_r
+            //   Unity:      leftcollar, rightcollar
+            //   Generic:    collar, clavicle, shoulderblade
+            let ancestor = charParentMap.get(target);
+            while (ancestor) {
+              const aName = (ancestor.getName() || '').toLowerCase();
+              const isShoulderLike = aName.includes('shoulder') || aName.includes('clavicle')
+                || aName.includes('collar') || aName.includes('clavicle_l')
+                || aName.includes('clavicle_r');
+              if (isShoulderLike) {
+                const shoulderWorld = charWorldByNode.get(ancestor);
+                if (shoulderWorld) Wchar = shoulderWorld;
+                break;
+              }
+              // Safety: stop at spine/chest level to avoid going too far up
+              const isSpineLike = aName.includes('spine') || aName.includes('chest')
+                || aName.includes('pelvis') || aName.includes('hips');
+              if (isSpineLike) break;
+              ancestor = charParentMap.get(ancestor);
+            }
+          }
+          // ────────────────────────────────────────────────────────────────
+
           const C = qMul(qInvert(Wchar), Wanim);
           const Cinv = qInvert(C);
           const rAnimInv = qInvert(rAnim);
@@ -528,22 +767,27 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               if (arr) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
-                  const qKey = [arr[j], arr[j+1], arr[j+2], arr[j+3]];
+                  const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
                   const delta = qMul(rAnimInv, qKey);
                   const rotated = qMul(qMul(C, delta), Cinv);
                   let final = qMul(rChar, rotated);
 
+                  // Manual per-bone overrides (POSE_OFFSETS and legacy spread angles)
                   let pOffset = [0, 0, 0];
                   if (cfg.POSE_OFFSETS[tgtName]) pOffset = [...cfg.POSE_OFFSETS[tgtName]];
-                  if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) pOffset[1] += cfg.ARM_SPREAD_ANGLE;
-                  else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) pOffset[1] -= cfg.ARM_SPREAD_ANGLE;
-                  if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) pOffset[1] -= cfg.LEG_SPREAD_ANGLE;
-                  else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) pOffset[1] += cfg.LEG_SPREAD_ANGLE;
+                  if (cfg.ARM_SPREAD_ANGLE !== 0) {
+                    if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) pOffset[1] += cfg.ARM_SPREAD_ANGLE;
+                    else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) pOffset[1] -= cfg.ARM_SPREAD_ANGLE;
+                  }
+                  if (cfg.LEG_SPREAD_ANGLE !== 0) {
+                    if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) pOffset[1] -= cfg.LEG_SPREAD_ANGLE;
+                    else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) pOffset[1] += cfg.LEG_SPREAD_ANGLE;
+                  }
 
                   if (pOffset[0] !== 0 || pOffset[1] !== 0 || pOffset[2] !== 0) {
                     final = qMul(final, eulerToQuat(pOffset[0], pOffset[1], pOffset[2]));
                   }
-                  out[j] = final[0]; out[j+1] = final[1]; out[j+2] = final[2]; out[j+3] = final[3];
+                  out[j] = final[0]; out[j + 1] = final[1]; out[j + 2] = final[2]; out[j + 3] = final[3];
                 }
                 output.setArray(out);
               }
@@ -553,9 +797,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
         if (path === 'translation' && isRoot) {
           const srcParentName = animParentNameMap.get(srcName);
-          const WanimP = srcParentName ? (animWorldByName.get(srcParentName) || [0,0,0,1]) : [0,0,0,1];
+          const WanimP = srcParentName ? (animWorldByName.get(srcParentName) || [0, 0, 0, 1]) : [0, 0, 0, 1];
           const charParent = charParentMap.get(target);
-          const WcharP = charParent ? (charWorldByName.get(charParent.getName()?.toLowerCase()) || [0,0,0,1]) : [0,0,0,1];
+          const WcharP = charParent ? (charWorldByName.get(charParent.getName()?.toLowerCase()) || [0, 0, 0, 1]) : [0, 0, 0, 1];
           const Cp = qMul(qInvert(WcharP), WanimP);
           const animRestLocal = src.getTranslation() || [0, 0, 0];
           const charRest = target.getTranslation() || [0, 0, 0];
@@ -565,10 +809,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           if (arr) {
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
-              const kw = rotateVec3([arr[j], arr[j+1], arr[j+2]], Cp);
-              out[j]   = charRest[0] + kw[0] - animRestWorld[0];
-              out[j+1] = charRest[1] + kw[1] - animRestWorld[1];
-              out[j+2] = charRest[2] + kw[2] - animRestWorld[2];
+              const kw = rotateVec3([arr[j], arr[j + 1], arr[j + 2]], Cp);
+              out[j] = charRest[0] + kw[0] - animRestWorld[0];
+              out[j + 1] = charRest[1] + kw[1] - animRestWorld[1];
+              out[j + 2] = charRest[2] + kw[2] - animRestWorld[2];
             }
             output.setArray(out);
           }
@@ -581,7 +825,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     // Dispose imported nodes/meshes/skins
     for (const node of charDoc.getRoot().listNodes()) { if (!origNodes.has(node)) node.dispose(); }
     for (const mesh of charDoc.getRoot().listMeshes()) { if (!origMeshes.has(mesh)) mesh.dispose(); }
-    for (const skin of charDoc.getRoot().listSkins())  { if (!origSkins.has(skin)) skin.dispose(); }
+    for (const skin of charDoc.getRoot().listSkins()) { if (!origSkins.has(skin)) skin.dispose(); }
   }
 
   for (const scene of charDoc.getRoot().listScenes()) { if (!origScenes.has(scene)) scene.dispose(); }

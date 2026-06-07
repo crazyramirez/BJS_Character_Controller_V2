@@ -29,10 +29,16 @@ const IGNORE_SCALE = true;
 // Discard translation on non-root bones (prevents limb stretching)
 const IGNORE_NON_ROOT_TRANSLATION = true;
 
-// ── EASY POSTURE ADJUSTMENTS ───────────────────────────────────────────────
-// Adjust these simple variables to spread/adjust limbs without manually editing POSE_OFFSETS.
-const ARM_SPREAD_ANGLE = -5;  // Positive value spreads arms away from the body (degrees)
-const LEG_SPREAD_ANGLE = 5;   // Positive value spreads legs outward (degrees)
+// ── EASY POSTURE ADJUSTMENTS ─────────────────────────────────────────────
+// Manual per-bone yaw offset (degrees). Set to non-zero to manually tweak arm spread.
+// Leave at 0 when AUTO_APOSE_CORRECTION is true (recommended).
+const ARM_SPREAD_ANGLE = 0;
+const LEG_SPREAD_ANGLE = 0;
+
+// Automatically correct A-pose characters (arms drooped > APOSE_THRESHOLD_DEG).
+// Uses parent bone world rotation for the change-of-basis C matrix on arm/forearm bones.
+const AUTO_APOSE_CORRECTION = true;
+const APOSE_THRESHOLD_DEG = 15;
 
 // Per-bone rotation offsets applied AFTER retargeting (in degrees: [pitch, yaw, roll]).
 // Use this for custom per-bone tweaks. Values are added on top of ARM_SPREAD_ANGLE / LEG_SPREAD_ANGLE.
@@ -57,72 +63,109 @@ charPath = charPath || '../assets/character.glb';
 animPath = animPath || './assets//animations.glb';
 outputPath = outputPath || '../assets/character_animated.glb';
 
-// ── Bone name mapping ───────────────────────────────────────────────────────
+// ── Bone name mapping ───────────────────────────────────────────────
+// Shared with merge_api.mjs — covers Mixamo, RPM, UE5, Unity, VRM, Rigify.
 const BONE_MAP = {
-  'pelvis': ['hips', 'mixamorig:hips'],
-  'spine_01': ['spine', 'mixamorig:spine'],
-  'spine_02': ['spine1', 'mixamorig:spine1'],
-  'spine_03': ['spine2', 'mixamorig:spine2'],
-  'neck_01': ['neck', 'mixamorig:neck'],
-  'head': ['head', 'mixamorig:head'],
-  'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder'],
-  'upperarm_l': ['leftarm', 'mixamorig:leftarm'],
-  'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm'],
-  'hand_l': ['lefthand', 'mixamorig:lefthand'],
-  'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder'],
-  'upperarm_r': ['rightarm', 'mixamorig:rightarm'],
-  'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm'],
-  'hand_r': ['righthand', 'mixamorig:righthand'],
-  'thigh_l': ['leftupleg', 'mixamorig:leftupleg'],
-  'calf_l': ['leftleg', 'mixamorig:leftleg'],
-  'foot_l': ['leftfoot', 'mixamorig:leftfoot'],
-  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase'],
-  'ball_l': ['lefttoebase', 'mixamorig:lefttoebase'],
-  'thigh_r': ['rightupleg', 'mixamorig:rightupleg'],
-  'calf_r': ['rightleg', 'mixamorig:rightleg'],
-  'foot_r': ['rightfoot', 'mixamorig:rightfoot'],
-  'toe_r': ['righttoebase', 'mixamorig:righttoebase'],
-  'ball_r': ['righttoebase', 'mixamorig:righttoebase'],
-  'thumb_01_l': ['lefthandthumb1', 'mixamorig:lefthandthumb1'],
-  'thumb_02_l': ['lefthandthumb2', 'mixamorig:lefthandthumb2'],
-  'thumb_03_l': ['lefthandthumb3', 'mixamorig:lefthandthumb3'],
-  'index_01_l': ['lefthandindex1', 'mixamorig:lefthandindex1'],
-  'index_02_l': ['lefthandindex2', 'mixamorig:lefthandindex2'],
-  'index_03_l': ['lefthandindex3', 'mixamorig:lefthandindex3'],
-  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1'],
-  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2'],
-  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3'],
-  'ring_01_l': ['lefthandring1', 'mixamorig:lefthandring1'],
-  'ring_02_l': ['lefthandring2', 'mixamorig:lefthandring2'],
-  'ring_03_l': ['lefthandring3', 'mixamorig:lefthandring3'],
-  'pinky_01_l': ['lefthandpinky1', 'mixamorig:lefthandpinky1'],
-  'pinky_02_l': ['lefthandpinky2', 'mixamorig:lefthandpinky2'],
-  'pinky_03_l': ['lefthandpinky3', 'mixamorig:lefthandpinky3'],
-  'thumb_01_r': ['righthandthumb1', 'mixamorig:righthandthumb1'],
-  'thumb_02_r': ['righthandthumb2', 'mixamorig:righthandthumb2'],
-  'thumb_03_r': ['righthandthumb3', 'mixamorig:righthandthumb3'],
-  'index_01_r': ['righthandindex1', 'mixamorig:righthandindex1'],
-  'index_02_r': ['righthandindex2', 'mixamorig:righthandindex2'],
-  'index_03_r': ['righthandindex3', 'mixamorig:righthandindex3'],
-  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1'],
-  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2'],
-  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3'],
-  'ring_01_r': ['righthandring1', 'mixamorig:righthandring1'],
-  'ring_02_r': ['righthandring2', 'mixamorig:righthandring2'],
-  'ring_03_r': ['righthandring3', 'mixamorig:righthandring3'],
-  'pinky_01_r': ['righthandpinky1', 'mixamorig:righthandpinky1'],
-  'pinky_02_r': ['righthandpinky2', 'mixamorig:righthandpinky2'],
-  'pinky_03_r': ['righthandpinky3', 'mixamorig:righthandpinky3'],
+  // ── Root / Spine ───────────────────────────────────
+  'pelvis':    ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint'],
+  'spine_01':  ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lowerback'],
+  'spine_02':  ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine'],
+  'spine_03':  ['spine2', 'mixamorig:spine2', 'chest', 'upperchest', 'upperbody'],
+  'neck_01':   ['neck', 'mixamorig:neck', 'neck1'],
+  'neck_02':   ['neck1', 'mixamorig:neck1'],
+  'head':      ['head', 'mixamorig:head'],
+  // ── Left arm ───────────────────────────────────
+  'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder', 'leftcollar', 'leftclavicle',
+                 'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl'],
+  'upperarm_l': ['leftarm', 'mixamorig:leftarm', 'leftupperarm', 'l_upperarm', 'upperarm_l',
+                 'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm'],
+  'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm', 'leftlowerarm', 'l_lowerarm',
+                 'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm'],
+  'hand_l':    ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l'],
+  // ── Right arm ──────────────────────────────────
+  'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder', 'rightcollar', 'rightclavicle',
+                 'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr'],
+  'upperarm_r': ['rightarm', 'mixamorig:rightarm', 'rightupperarm', 'r_upperarm', 'upperarm_r',
+                 'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm'],
+  'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm', 'rightlowerarm', 'r_lowerarm',
+                 'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm'],
+  'hand_r':    ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r'],
+  // ── Left leg ───────────────────────────────────
+  'thigh_l':   ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
+                'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl'],
+  'calf_l':    ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
+                'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee'],
+  'foot_l':    ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l'],
+  'toe_l':     ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe'],
+  'ball_l':    ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
+  // ── Right leg ─────────────────────────────────
+  'thigh_r':   ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
+                'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr'],
+  'calf_r':    ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
+                'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee'],
+  'foot_r':    ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r'],
+  'toe_r':     ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe'],
+  'ball_r':    ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
+  // ── Fingers (Left) ──────────────────────────────
+  'thumb_01_l': ['lefthandthumb1', 'mixamorig:lefthandthumb1', 'thumb1l', 'l_thumb1'],
+  'thumb_02_l': ['lefthandthumb2', 'mixamorig:lefthandthumb2', 'thumb2l', 'l_thumb2'],
+  'thumb_03_l': ['lefthandthumb3', 'mixamorig:lefthandthumb3', 'thumb3l', 'l_thumb3'],
+  'index_01_l': ['lefthandindex1', 'mixamorig:lefthandindex1', 'index1l', 'l_index1'],
+  'index_02_l': ['lefthandindex2', 'mixamorig:lefthandindex2', 'index2l', 'l_index2'],
+  'index_03_l': ['lefthandindex3', 'mixamorig:lefthandindex3', 'index3l', 'l_index3'],
+  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1', 'middle1l', 'l_middle1'],
+  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2', 'middle2l', 'l_middle2'],
+  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3', 'middle3l', 'l_middle3'],
+  'ring_01_l': ['lefthandring1', 'mixamorig:lefthandring1', 'ring1l', 'l_ring1'],
+  'ring_02_l': ['lefthandring2', 'mixamorig:lefthandring2', 'ring2l', 'l_ring2'],
+  'ring_03_l': ['lefthandring3', 'mixamorig:lefthandring3', 'ring3l', 'l_ring3'],
+  'pinky_01_l': ['lefthandpinky1', 'mixamorig:lefthandpinky1', 'pinky1l', 'l_pinky1'],
+  'pinky_02_l': ['lefthandpinky2', 'mixamorig:lefthandpinky2', 'pinky2l', 'l_pinky2'],
+  'pinky_03_l': ['lefthandpinky3', 'mixamorig:lefthandpinky3', 'pinky3l', 'l_pinky3'],
+  // ── Fingers (Right) ─────────────────────────────
+  'thumb_01_r': ['righthandthumb1', 'mixamorig:righthandthumb1', 'thumb1r', 'r_thumb1'],
+  'thumb_02_r': ['righthandthumb2', 'mixamorig:righthandthumb2', 'thumb2r', 'r_thumb2'],
+  'thumb_03_r': ['righthandthumb3', 'mixamorig:righthandthumb3', 'thumb3r', 'r_thumb3'],
+  'index_01_r': ['righthandindex1', 'mixamorig:righthandindex1', 'index1r', 'r_index1'],
+  'index_02_r': ['righthandindex2', 'mixamorig:righthandindex2', 'index2r', 'r_index2'],
+  'index_03_r': ['righthandindex3', 'mixamorig:righthandindex3', 'index3r', 'r_index3'],
+  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1', 'middle1r', 'r_middle1'],
+  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2', 'middle2r', 'r_middle2'],
+  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3', 'middle3r', 'r_middle3'],
+  'ring_01_r': ['righthandring1', 'mixamorig:righthandring1', 'ring1r', 'r_ring1'],
+  'ring_02_r': ['righthandring2', 'mixamorig:righthandring2', 'ring2r', 'r_ring2'],
+  'ring_03_r': ['righthandring3', 'mixamorig:righthandring3', 'ring3r', 'r_ring3'],
+  'pinky_01_r': ['righthandpinky1', 'mixamorig:righthandpinky1', 'pinky1r', 'r_pinky1'],
+  'pinky_02_r': ['righthandpinky2', 'mixamorig:righthandpinky2', 'pinky2r', 'r_pinky2'],
+  'pinky_03_r': ['righthandpinky3', 'mixamorig:righthandpinky3', 'pinky3r', 'r_pinky3'],
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Strip common prefixes and separators to produce a canonical bone id. */
+/**
+ * Strip trailing numeric suffix added by BJS GLTF importer (e.g. Hips_66 → Hips)
+ * Also strips dot-suffixes used in Blender (thigh.L → thighL handled downstream)
+ */
+function stripBJSSuffix(name) {
+  if (!name) return name;
+  return name.replace(/_\d+$/, '');
+}
+
+/** Strip common prefixes and separators to produce a canonical bone id.
+ * Handles Mixamo, UE5, Unity, VRM (J_Bip_L_*), Rigify (.L/.R), Biped (Bip001).
+ */
 function normalizeName(name) {
   if (!name) return '';
-  return name.toLowerCase()
-    .replace(/^(mixamorig\d*|armature|char|bi|bip\d*|biped)\b[:_]/i, '')
-    .replace(/[:_\-\s]/g, '');
+  let n = stripBJSSuffix(name).toLowerCase();
+  // VRM: J_Bip_L_UpperArm → l_upperarm
+  n = n.replace(/^j_?bip_?([lr])_?/i, '$1_');
+  // Common prefixes (mixamorig, bip001, def-, armature, etc.)
+  n = n.replace(/^(mixamorig\d*|armature|char|bi|bip\d+|biped|def[-_]?|root|gltf_created_\d+_)\b[:_ ]*/i, '');
+  // Rigify/Blender: .L / .R side suffix
+  n = n.replace(/\.([lr])$/i, '$1');
+  // Strip remaining separators
+  n = n.replace(/[:_\-\.\s]/g, '');
+  return n;
 }
 
 // Quaternion helpers
@@ -174,6 +217,7 @@ function rotateVec3([x, y, z], [qx, qy, qz, qw]) {
   ];
 }
 
+
 /** Compute world-space quaternion rotation for every node. */
 function computeWorldRotations(doc) {
   const parentMap = buildParentMap(doc);
@@ -189,6 +233,15 @@ function computeWorldRotations(doc) {
   for (const node of doc.getRoot().listNodes()) get(node);
   return cache;
 }
+
+// ── Vec3 helpers (used for A-pose arm droop detection) ──────────────────────
+function vec3Add([a, b, c], [d, e, f]) { return [a + d, b + e, c + f]; }
+function vec3Subtract([a, b, c], [d, e, f]) { return [a - d, b - e, c - f]; }
+function vec3Normalize([x, y, z]) {
+  const l = Math.sqrt(x * x + y * y + z * z);
+  return l > 0 ? [x / l, y / l, z / l] : [0, 0, 0];
+}
+
 
 /** Find a character bone that corresponds to an animation bone. */
 function findMatchingBone(animNode, charByName, charByNorm) {
@@ -300,17 +353,58 @@ async function main() {
   // Build character bone lookup tables
   const charByName = new Map();
   const charByNorm = new Map();
+  const charWorldByNode = new Map();
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
+    const wrot = charWorldRots.get(node) || [0, 0, 0, 1];
     if (name) {
       charByName.set(name, node);
       charByName.set(name.toLowerCase(), node);
+      // Also index by BJS-suffix-stripped name so e.g. 'Hips_66' maps to 'Hips'
+      const stripped = stripBJSSuffix(name);
+      if (stripped !== name) {
+        charByName.set(stripped, node);
+        charByName.set(stripped.toLowerCase(), node);
+      }
       const n = normalizeName(name);
       if (n) charByNorm.set(n, node);
     }
+    charWorldByNode.set(node, wrot);
   }
 
   console.log(`Character: ${origNodes.size} nodes, ${origMeshes.size} meshes, ${origAnims.size} anims, ${origSkins.size} skins`);
+
+  // ── A-pose detection ─────────────────────────────────────────────────────
+  let _armDroopDeg = 0;
+  try {
+    const prePositions = new Map();
+    const preRotations = new Map();
+    const prePM = buildParentMap(charDoc);
+    function _preTrans(node) {
+      if (preRotations.has(node)) return;
+      const lr = node.getRotation() || [0,0,0,1];
+      const lp = node.getTranslation() || [0,0,0];
+      const par = prePM.get(node);
+      if (par) {
+        _preTrans(par);
+        preRotations.set(node, qMul(preRotations.get(par), lr));
+        prePositions.set(node, vec3Add(prePositions.get(par), rotateVec3(lp, preRotations.get(par))));
+      } else { preRotations.set(node, lr); prePositions.set(node, lp); }
+    }
+    for (const n of charDoc.getRoot().listNodes()) _preTrans(n);
+    const leftArm  = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
+    const leftFore = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
+    if (leftArm && leftFore) {
+      const pA = prePositions.get(leftArm), pF = prePositions.get(leftFore);
+      if (pA && pF) {
+        const dir = vec3Normalize(vec3Subtract(pF, pA));
+        _armDroopDeg = Math.asin(-Math.min(1, Math.max(-1, dir[1]))) * (180 / Math.PI);
+        console.log(`Detected arm droop: ${_armDroopDeg.toFixed(1)}° ${_armDroopDeg > APOSE_THRESHOLD_DEG ? '→ A-pose correction enabled' : '→ near T-pose, no correction needed'}`);
+      }
+    }
+  } catch (e) { console.warn('A-pose detection failed:', e.message); }
+
+  const _aposeCorrection = AUTO_APOSE_CORRECTION && _armDroopDeg > APOSE_THRESHOLD_DEG;
 
   // ── Merge ───────────────────────────────────────────────────────────────
   console.log('Merging animation document...');
@@ -370,7 +464,30 @@ async function main() {
           const rAnim = animRestByName.get(srcName) || [0, 0, 0, 1];
           const rChar = charRestByName.get(tgtName) || [0, 0, 0, 1];
           const Wanim = animWorldByName.get(srcName) || [0, 0, 0, 1];
-          const Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
+          let Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
+
+          // A-pose correction: walk up to nearest shoulder/clavicle/collar ancestor
+          // making C ≈ identity for same-convention (Mixamo/RPM/Unity→Mixamo) pairs.
+          // Shoulder/clavicle bones are excluded (they ARE the reference).
+          // Arm-bone patterns: Mixamo leftarm/leftforearm, UE5 upperarm_l/lowerarm_l,
+          //                    Unity leftupperarm/leftlowerarm, Rigify upperarml/forearml
+          const _isForearm = /leftforearm|rightforearm|lowerarm[_]?[lr]|forearm[_]?[lr]|forearml|forearmr|lowerarml|lowerarmr/.test(tgtName);
+          const _isUpperArm = !_isForearm && /leftarm|rightarm|upperarm[_]?[lr]|upperarml|upperarmr|arm[_]?[lr]|arml$|armr$/.test(tgtName);
+          if (_aposeCorrection && (_isUpperArm || _isForearm)) {
+            let ancestor = charParentMap.get(target);
+            while (ancestor) {
+              const aName = (ancestor.getName() || '').toLowerCase();
+              const isShoulderLike = aName.includes('shoulder') || aName.includes('clavicle') || aName.includes('collar');
+              if (isShoulderLike) {
+                const sw = charWorldByNode.get(ancestor);
+                if (sw) Wchar = sw;
+                break;
+              }
+              // Safety: stop at spine/chest level
+              if (aName.includes('spine') || aName.includes('chest') || aName.includes('pelvis') || aName.includes('hips')) break;
+              ancestor = charParentMap.get(ancestor);
+            }
+          }
 
           // Change-of-basis: C = Wchar⁻¹ · Wanim
           const C = qMul(qInvert(Wchar), Wanim);
@@ -398,18 +515,20 @@ async function main() {
                     pOffset = [...POSE_OFFSETS[tgtName]];
                   }
 
-                  // Auto-apply ARM_SPREAD_ANGLE to shoulders/arms (Y-up / Z-roll spread)
-                  if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) {
-                    pOffset[1] += ARM_SPREAD_ANGLE; // Positive roll spreads left arm out
-                  } else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) {
-                    pOffset[1] -= ARM_SPREAD_ANGLE; // Negative roll spreads right arm out
+                  // Manual ARM/LEG spread angle overrides (only when non-zero)
+                  if (ARM_SPREAD_ANGLE !== 0) {
+                    if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) {
+                      pOffset[1] += ARM_SPREAD_ANGLE;
+                    } else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) {
+                      pOffset[1] -= ARM_SPREAD_ANGLE;
+                    }
                   }
-
-                  // Auto-apply LEG_SPREAD_ANGLE to upper legs
-                  if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) {
-                    pOffset[1] -= LEG_SPREAD_ANGLE; // Negative roll spreads left leg out
-                  } else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) {
-                    pOffset[1] += LEG_SPREAD_ANGLE; // Positive roll spreads right leg out
+                  if (LEG_SPREAD_ANGLE !== 0) {
+                    if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) {
+                      pOffset[1] -= LEG_SPREAD_ANGLE;
+                    } else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) {
+                      pOffset[1] += LEG_SPREAD_ANGLE;
+                    }
                   }
 
                   if (pOffset[0] !== 0 || pOffset[1] !== 0 || pOffset[2] !== 0) {

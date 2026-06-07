@@ -148,6 +148,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     const originalKeyDown = CharCtrl.prototype._keyDown;
     CharCtrl.prototype._keyDown = function (code) {
+      this._previewAnim = null; // Clear active animation preview
       const activeEl = document.activeElement;
       const isTyping = activeEl && (
         activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT' || activeEl.tagName === 'TEXTAREA'
@@ -168,6 +169,18 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
       }
       originalKeyDown.call(this, code);
+    };
+
+    const originalUpdateLocoAnim = CharCtrl.prototype._updateLocoAnim;
+    CharCtrl.prototype._updateLocoAnim = function (hasMove, sprint, backward, blend = 0.35) {
+      if (hasMove) {
+        this._previewAnim = null;
+      }
+      if (this._previewAnim) {
+        this.anim.play(this._previewAnim, true, 0.15);
+        return;
+      }
+      originalUpdateLocoAnim.call(this, hasMove, sprint, backward, blend);
     };
   }
 
@@ -807,10 +820,42 @@ function renderSkeletonSection(info) {
   const noticEl = document.getElementById('skeleton-notice');
   const treeEl = document.getElementById('skeleton-tree');
   const countBadge = document.getElementById('bone-count-badge');
+  const typeBadge = document.getElementById('skeleton-type-badge');
+  const poseBadge = document.getElementById('skeleton-pose-badge');
   if (!treeEl) return;
 
   treeEl.innerHTML = '';
   if (countBadge) countBadge.textContent = `${info.boneCount} bone${info.boneCount !== 1 ? 's' : ''}`;
+
+  if (typeBadge) {
+    if (info.skeletonType && info.skeletonType.label) {
+      typeBadge.textContent = info.skeletonType.label;
+      typeBadge.style.display = 'inline-block';
+      typeBadge.style.backgroundColor = (info.skeletonType.color || '#6b7280') + '24';
+      typeBadge.style.borderColor = info.skeletonType.color || '#6b7280';
+      typeBadge.style.color = info.skeletonType.color || '#6b7280';
+    } else {
+      typeBadge.style.display = 'none';
+    }
+  }
+
+  if (poseBadge) {
+    if (info.poseStyle && info.poseStyle !== 'UNKNOWN') {
+      poseBadge.textContent = info.poseStyle;
+      poseBadge.style.display = 'inline-block';
+      if (info.poseStyle === 'T-POSE') {
+        poseBadge.style.backgroundColor = 'rgba(16, 185, 129, 0.12)';
+        poseBadge.style.borderColor = 'rgba(16, 185, 129, 0.45)';
+        poseBadge.style.color = '#34d399';
+      } else {
+        poseBadge.style.backgroundColor = 'rgba(245, 158, 11, 0.12)';
+        poseBadge.style.borderColor = 'rgba(245, 158, 11, 0.45)';
+        poseBadge.style.color = '#fbbf24';
+      }
+    } else {
+      poseBadge.style.display = 'none';
+    }
+  }
 
   if (!info.hasSkin || info.boneCount === 0) {
     if (noticEl) noticEl.style.display = 'flex';
@@ -844,6 +889,10 @@ function renderSkeletonSectionFromBJS() {
   const noticEl = document.getElementById('skeleton-notice');
   const treeEl = document.getElementById('skeleton-tree');
   const countBadge = document.getElementById('bone-count-badge');
+  const typeBadge = document.getElementById('skeleton-type-badge');
+  const poseBadge = document.getElementById('skeleton-pose-badge');
+  if (typeBadge) typeBadge.style.display = 'none';
+  if (poseBadge) poseBadge.style.display = 'none';
   if (!treeEl) return;
 
   treeEl.innerHTML = '';
@@ -955,6 +1004,7 @@ function renderAnimationLibrary() {
   detectedAnimations.forEach(animName => {
     const row = document.createElement('div');
     row.className = 'anim-entry';
+    row.setAttribute('data-anim', animName);
     row.innerHTML = `
       <span class="anim-icon">▶</span>
       <span class="anim-entry-name">${animName}</span>
@@ -963,12 +1013,26 @@ function renderAnimationLibrary() {
     container.appendChild(row);
   });
 
+  container.querySelectorAll('.anim-entry').forEach(row => {
+    row.addEventListener('click', (e) => {
+      // If clicking the delete button, ignore play trigger
+      if (e.target.closest('.btn-anim-delete')) return;
+
+      const animName = row.dataset.anim;
+      if (activeCharacter && activeCharacter.charCtrl) {
+        activeCharacter.charCtrl.state = window.S ? window.S.IDLE : 'IDLE';
+        activeCharacter.charCtrl._previewAnim = animName;
+        showToast(`Playing animation: ${animName}`);
+      }
+    });
+  });
+
   container.querySelectorAll('.btn-anim-delete').forEach(btn => {
     if (!isServerAvailable) {
       btn.classList.add('btn-disabled-offline');
       btn.setAttribute('title', 'Server offline');
     }
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
       if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
       deleteAnimation(btn.dataset.anim);
     });
