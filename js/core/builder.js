@@ -255,6 +255,10 @@ async function pingServer() {
       badge.className = 'server-badge online';
       badgeLabel.textContent = 'Server ✓';
       if (offlineWarn) offlineWarn.style.display = 'none';
+      const offlineBanner = document.getElementById('server-offline-banner');
+      if (offlineBanner) offlineBanner.style.display = 'none';
+      document.getElementById('dropzone-character')?.classList.remove('dropzone-disabled');
+      document.getElementById('dropzone-animations')?.classList.remove('dropzone-disabled');
       return;
     }
   } catch (_) { }
@@ -263,6 +267,10 @@ async function pingServer() {
   badge.className = 'server-badge offline';
   badgeLabel.textContent = 'Offline';
   if (offlineWarn) offlineWarn.style.display = 'inline';
+  const offlineBanner = document.getElementById('server-offline-banner');
+  if (offlineBanner) offlineBanner.style.display = 'flex';
+  document.getElementById('dropzone-character')?.classList.add('dropzone-disabled');
+  document.getElementById('dropzone-animations')?.classList.add('dropzone-disabled');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1570,11 +1578,13 @@ window.addEventListener('keydown', (e) => {
 function setupDragAndDrop() {
   // Character dropzone
   setupDropzone('dropzone-character', 'char-file-input', async (file) => {
+    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
     await loadCharacterMeshFile(file);
   });
 
   // Animations dropzone
   setupDropzone('dropzone-animations', 'anim-file-input', async (file) => {
+    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
     await loadAnimationBatchFile(file);
   });
 }
