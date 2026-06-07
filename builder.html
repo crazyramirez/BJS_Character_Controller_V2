@@ -5,7 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BJS Character Controller Builder — v2</title>
-  <meta name="description" content="Build, configure and export a BabylonJS character controller. Import separate character mesh and animation files, remap animations, tune physics and export ready-to-use code.">
+  <meta name="description"
+    content="Build, configure and export a BabylonJS character controller. Import separate character mesh and animation files, remap animations, tune physics and export ready-to-use code.">
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
     rel="stylesheet">
@@ -24,7 +25,7 @@
       <div class="sidebar-header">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
           <div>
-            <h1>BJS Character Controller</h1>
+            <h1>BJS Character Controller (BETA)</h1>
             <p>Custom Generator &amp; Exporter &nbsp;·&nbsp; v2.0</p>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -40,9 +41,14 @@
           </div>
         </div>
         <!-- Auto-save notice -->
-        <div style="margin-top:10px;padding:7px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:0.72rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
-          <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#6ee7b7;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
-          <span>Changes save automatically. Use <strong style="color:#fca5a5;">Reset All</strong> to restore defaults.</span>
+        <div
+          style="margin-top:10px;padding:7px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:0.72rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+          <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#6ee7b7;flex-shrink:0;">
+            <path
+              d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z" />
+          </svg>
+          <span>Changes save automatically. Use <strong style="color:#fca5a5;">Reset All</strong> to restore
+            defaults.</span>
         </div>
       </div>
 
@@ -66,7 +72,10 @@
           <!-- Server offline banner -->
           <div id="server-offline-banner" class="server-offline-banner" style="display:none;">
             <div class="server-offline-banner-icon">
-              <svg viewBox="0 0 24 24"><path d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z"/></svg>
+              <svg viewBox="0 0 24 24">
+                <path
+                  d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z" />
+              </svg>
             </div>
             <div class="server-offline-banner-body">
               <strong>Server offline — import &amp; merge disabled</strong>
@@ -75,7 +84,8 @@
                 <li>Install <strong>Node.js</strong> (nodejs.org)</li>
                 <li>Open terminal in project folder and run&nbsp;<code>npm install</code></li>
                 <li>Then run&nbsp;<code>npm start</code></li>
-                <li>Open&nbsp;<a href="http://localhost:3000/builder.html" target="_blank" rel="noopener noreferrer" class="offline-banner-link">http://localhost:3000/builder.html</a></li>
+                <li>Open&nbsp;<a href="http://localhost:3000/builder.html" target="_blank" rel="noopener noreferrer"
+                    class="offline-banner-link">http://localhost:3000/builder.html</a></li>
               </ol>
             </div>
           </div>
@@ -88,7 +98,10 @@
               Can contain mesh only, skeleton only, or both. Animations are optional here.
             </p>
             <div class="dropzone" id="dropzone-character">
-              <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+              <svg viewBox="0 0 24 24">
+                <path
+                  d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
+              </svg>
               <p>Drag &amp; drop <strong>.glb</strong> character here</p>
               <span>or click to browse</span>
               <input type="file" id="char-file-input" accept=".glb" style="display:none;">
@@ -96,7 +109,10 @@
 
             <!-- Character status badge -->
             <div id="char-status" class="file-status-bar" style="display:none;">
-              <svg class="status-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
+              <svg class="status-icon" viewBox="0 0 24 24">
+                <path
+                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z" />
+              </svg>
               <span id="char-status-text">No character loaded</span>
               <button id="btn-clear-character" class="btn-clear" title="Remove character">✕</button>
             </div>
@@ -111,10 +127,13 @@
             </h3>
             <div id="skeleton-content" class="collapsible-body collapsed">
               <div id="skeleton-notice" class="skeleton-no-skin" style="display:none;">
-                <svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 1 0 0 10A5 5 0 0 0 12 2zm0 12c-5.33 0-8 2.67-8 4v2h16v-2c0-1.33-2.67-4-8-4z"/></svg>
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 2a5 5 0 1 0 0 10A5 5 0 0 0 12 2zm0 12c-5.33 0-8 2.67-8 4v2h16v-2c0-1.33-2.67-4-8-4z" />
+                </svg>
                 <div>
                   <strong>No skeleton detected</strong>
-                  <p>This GLB has no rigged skeleton (skin). It will render as a static mesh. Animations may not work unless a skeleton is present.</p>
+                  <p>This GLB has no rigged skeleton (skin). It will render as a static mesh. Animations may not work
+                    unless a skeleton is present.</p>
                 </div>
               </div>
               <div id="skeleton-tree" class="skeleton-tree"></div>
@@ -134,7 +153,10 @@
 
             <div class="two-dropzone-actions">
               <div class="dropzone dropzone-sm" id="dropzone-animations">
-                <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" /></svg>
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
+                </svg>
                 <p>Batch import animations <strong>.glb</strong></p>
                 <span>Merges with current character</span>
                 <input type="file" id="anim-file-input" accept=".glb" style="display:none;">
@@ -152,21 +174,24 @@
 
           <!-- 1d. ANIMATION LIBRARY -->
           <div class="settings-section" id="section-anim-library" style="display:none;">
-             <h3 style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-               <span>
-                 Animation Library
-                 <span class="bone-count-badge" id="anim-count-badge">0 animations</span>
-               </span>
-               <button id="btn-clear-all-anims" class="btn-delete"
-                 style="font-size:0.7rem;padding:4px 8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.05);color:#fca5a5;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap;">
-                 Clear All
-               </button>
-             </h3>
+            <h3 style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <span>
+                Animation Library
+                <span class="bone-count-badge" id="anim-count-badge">0 animations</span>
+              </span>
+              <button id="btn-clear-all-anims" class="btn-delete"
+                style="font-size:0.7rem;padding:4px 8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.05);color:#fca5a5;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap;">
+                Clear All
+              </button>
+            </h3>
             <div id="anim-library" class="anim-library"></div>
             <button class="btn-add-anim" id="btn-add-single-anim" style="margin-top:10px;">
-              <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;">
+                <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+              </svg>
               Add Single Animation File
-              <input type="file" id="single-anim-file-input" accept=".glb" style="display:none;position:absolute;pointer-events:none;">
+              <input type="file" id="single-anim-file-input" accept=".glb"
+                style="display:none;position:absolute;pointer-events:none;">
             </button>
           </div>
 
@@ -412,11 +437,13 @@
           <div class="settings-section">
             <h3>Download Character Mesh (GLB)</h3>
             <p style="margin-bottom:12px;">
-              Download your character model <strong style="color:var(--text-primary);">.glb</strong> file with all active animations retargeted and merged inside.
+              Download your character model <strong style="color:var(--text-primary);">.glb</strong> file with all
+              active animations retargeted and merged inside.
             </p>
             <button class="btn-action btn-secondary" id="btn-download-glb">
               <svg style="width:20px;height:20px;fill:currentColor;" viewBox="0 0 24 24">
-                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+                <path
+                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
               </svg>
               Download character_animated.glb
             </button>
@@ -430,7 +457,8 @@
             </p>
             <button class="btn-action" id="btn-download">
               <svg style="width:20px;height:20px;fill:white;" viewBox="0 0 24 24">
-                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+                <path
+                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
               </svg>
               Download custom-character-controller.js
             </button>
@@ -441,12 +469,17 @@
       <!-- END tabs-content -->
 
       <!-- Buy Me a Coffee -->
-      <div style="margin:0 16px 12px;padding:10px 12px;background:rgba(255,213,0,0.04);border:1px solid rgba(255,213,0,0.12);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0;">
-        <span style="font-size:0.72rem;color:var(--text-secondary);line-height:1.4;">If you like this tool,<br>consider supporting my work!</span>
+      <div
+        style="margin:0 16px 12px;padding:10px 12px;background:rgba(255,213,0,0.04);border:1px solid rgba(255,213,0,0.12);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0;">
+        <span style="font-size:0.72rem;color:var(--text-secondary);line-height:1.4;">If you like this tool,<br>consider
+          supporting my work!</span>
         <a href="https://buymeacoffee.com/drlerian" target="_blank" rel="noopener noreferrer"
           style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;background:#FFDD00;color:#000;font-size:0.75rem;font-weight:700;border-radius:6px;text-decoration:none;white-space:nowrap;flex-shrink:0;transition:opacity 0.2s;"
           onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
-          <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z"/></svg>
+          <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;">
+            <path
+              d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z" />
+          </svg>
           Buy me a coffee
         </a>
       </div>
@@ -461,7 +494,10 @@
 
       <!-- Server offline viewport notice -->
       <div id="viewport-offline-notice" class="viewport-offline-notice" style="display:none;">
-        <svg viewBox="0 0 24 24"><path d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z"/></svg>
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z" />
+        </svg>
         <span>Server offline — import disabled &nbsp;·&nbsp; <code>npm start</code> to enable</span>
       </div>
 
@@ -511,7 +547,9 @@
         <div class="spinner-icon">🎮</div>
       </div>
       <h2 class="loader-title">Processing Assets</h2>
-      <div id="loading-status-text" class="loading-text" style="font-size:0.75rem;color:var(--text-muted);text-transform:none;letter-spacing:normal;">Initializing...</div>
+      <div id="loading-status-text" class="loading-text"
+        style="font-size:0.75rem;color:var(--text-muted);text-transform:none;letter-spacing:normal;">Initializing...
+      </div>
       <div class="loader-steps">
         <div class="loader-step" id="step-init">
           <div class="step-dot"></div>
@@ -542,26 +580,48 @@
 
   <!-- Shared token bridge -->
   <style>
-    :root { --text-muted: var(--text-muted, #5c6475); }
+    :root {
+      --text-muted: var(--text-muted, #5c6475);
+    }
 
     .btn-reset-single {
-      width: 18px; height: 18px; padding: 0;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.03);
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
       color: var(--text-muted, #5c6475);
-      border-radius: 4px; cursor: pointer; font-size: 12px;
-      display: inline-flex; align-items: center; justify-content: center;
-      transition: all 0.2s; flex-shrink: 0; line-height: 1; outline: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+      line-height: 1;
+      outline: none;
     }
+
     .btn-reset-single:hover {
-      background: rgba(139,92,246,0.12);
-      border-color: rgba(139,92,246,0.35);
+      background: rgba(139, 92, 246, 0.12);
+      border-color: rgba(139, 92, 246, 0.35);
       color: #a78bfa;
     }
-    .settings-section > p { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.55; }
-    .settings-section > p code {
-      font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-cyan);
-      background: var(--cyan-dim); padding: 1px 5px; border-radius: 3px;
+
+    .settings-section>p {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .settings-section>p code {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: var(--text-cyan);
+      background: var(--cyan-dim);
+      padding: 1px 5px;
+      border-radius: 3px;
     }
   </style>
 
@@ -575,10 +635,13 @@
   <div id="custom-confirm-modal" class="custom-confirm-overlay">
     <div class="custom-confirm-card">
       <div class="custom-confirm-icon">
-        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" /></svg>
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+        </svg>
       </div>
       <h4 class="custom-confirm-title" id="custom-confirm-title">Clear All Animations</h4>
-      <p class="custom-confirm-message" id="custom-confirm-message">Are you sure you want to clear all animations from the library?</p>
+      <p class="custom-confirm-message" id="custom-confirm-message">Are you sure you want to clear all animations from
+        the library?</p>
       <div class="custom-confirm-actions">
         <button class="custom-confirm-btn custom-confirm-btn-cancel" id="custom-confirm-btn-cancel">Cancel</button>
         <button class="custom-confirm-btn custom-confirm-btn-danger" id="custom-confirm-btn-ok">Clear All</button>
