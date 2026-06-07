@@ -182,6 +182,15 @@
               <span class="slider-toggle"></span>
             </label>
           </div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #aeb4ff;">
+            <span>Play Particles</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-particles" checked>
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
         </div>
         <div
           style="margin-top: 10px; font-size: 11px; color: #aeb4ff; font-weight: 500;">
@@ -424,6 +433,9 @@
               <li><strong>js/examples/</strong> Ready-to-run setup templates (app.js, app-minimal.js, app-complex.js).</li>
             </ul>
             <p><strong>Visual Builder:</strong> Open <span class="info-kbd">builder.html</span> to visually configure animations, key bindings, and physics parameters — then download a pre-configured <span class="info-kbd">custom-character-controller.js</span> with your settings baked in. Every control has an <span class="info-kbd">↺</span> reset button. All changes auto-save; use <strong>Reset All</strong> to restore factory defaults.</p>
+            <p style="background: rgba(139, 92, 246, 0.1); border: 1px dashed rgba(139, 92, 246, 0.3); padding: 10px 14px; border-radius: 6px; font-size: 11.5px; color: #d8b4fe; line-height: 1.4;">
+               <strong>⚡ NodeJS Builder in Development:</strong> We are currently building a server backend using NodeJS (<code>server.mjs</code>) to automate skeletal retargeting, GLB animation merging, and local asset optimizations via backend APIs directly from the builder UI.
+            </p>
             <p><strong>Note on cursor styling:</strong> You can hide all cursors (both hardware dot and custom canvas ring) by toggling the <strong>Hide Cursor</strong> switch in the HUD, which persists your preference in local storage and adds the <code>.cursor-hidden</code> class to the <code>body</code> element.</p>
 
             <h3>Recommended HTML Structure</h3>
@@ -840,6 +852,14 @@ node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/charac
       toggleShowCombo.addEventListener('change', (e) => {
         charCtrl.SHOW_COMBO = e.target.checked;
         localStorage.setItem('show-combo', e.target.checked);
+      });
+    }
+
+    const toggleParticles = $('toggle-particles');
+    if (toggleParticles) {
+      toggleParticles.checked = charCtrl.PLAY_PARTICLES;
+      toggleParticles.addEventListener('change', (e) => {
+        charCtrl.playParticles(e.target.checked);
       });
     }
   };

@@ -4,7 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BJS Character Controller Custom Generator</title>
+  <title>BJS Character Controller Builder — v2</title>
+  <meta name="description" content="Build, configure and export a BabylonJS character controller. Import separate character mesh and animation files, remap animations, tune physics and export ready-to-use code.">
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
     rel="stylesheet">
@@ -14,24 +15,35 @@
 <body>
 
   <div id="builder-container">
-    <!-- Configuration Sidebar -->
+    <!-- ═══════════════════════════════════════════════
+         SIDEBAR
+    ═══════════════════════════════════════════════ -->
     <div id="sidebar">
-      <div class="sidebar-header"
-        style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-        <div>
-          <h1 style="margin: 0; font-size: 1.15rem;">BJS Character Controller</h1>
-          <p style="margin: 2px 0 0 0; font-size: 0.72rem; color: var(--text-secondary);">Custom Generator &amp;
-            Exporter &nbsp;·&nbsp; v2.0</p>
-        </div>
-        <button id="btn-reset-all" class="btn-delete"
-          style="font-size: 0.72rem; padding: 6px 10px; border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); color: #fca5a5; border-radius: var(--r-sm); white-space: nowrap; height: fit-content;">Reset
-          All</button>
-      </div>
 
-      <!-- Auto-save notice -->
-      <div style="margin: 8px 0 4px; padding: 7px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.72rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#6ee7b7;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
-        <span>Changes save automatically. Use <strong style="color: #fca5a5;">Reset All</strong> to restore defaults.</span>
+      <!-- Header -->
+      <div class="sidebar-header">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <div>
+            <h1>BJS Character Controller</h1>
+            <p>Custom Generator &amp; Exporter &nbsp;·&nbsp; v2.0</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <!-- Server status badge -->
+            <span id="server-badge" class="server-badge offline" title="Server status">
+              <span class="server-badge-dot"></span>
+              <span id="server-badge-label">Offline</span>
+            </span>
+            <button id="btn-reset-all" class="btn-delete"
+              style="font-size:0.72rem;padding:6px 10px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.05);color:#fca5a5;border-radius:var(--r-sm);white-space:nowrap;">
+              Reset All
+            </button>
+          </div>
+        </div>
+        <!-- Auto-save notice -->
+        <div style="margin-top:10px;padding:7px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:0.72rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+          <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#6ee7b7;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
+          <span>Changes save automatically. Use <strong style="color:#fca5a5;">Reset All</strong> to restore defaults.</span>
+        </div>
       </div>
 
       <!-- Tab Navigation -->
@@ -43,32 +55,114 @@
         <button class="tab-btn" data-tab="export">Export</button>
       </nav>
 
-      <!-- Tabs Content Panels -->
+      <!-- ═══ TABS CONTENT ═══ -->
       <div class="tabs-content">
-        <!-- 1. MODEL IMPORT PANEL -->
+
+        <!-- ══════════════════════════════════════
+             1. MODEL TAB
+        ══════════════════════════════════════ -->
         <div class="tab-panel active" id="panel-model">
+
+          <!-- 1a. CHARACTER MESH -->
           <div class="settings-section">
-            <h3>Character Model</h3>
-            <p style="margin-bottom: 12px;">
-              Import a custom character model in GLB format with animations baked inside.
+            <h3>Character Mesh</h3>
+            <p style="margin-bottom:12px;">
+              Import your character <strong style="color:var(--text-primary);">.glb</strong> file.
+              Can contain mesh only, skeleton only, or both. Animations are optional here.
             </p>
-            <div class="dropzone" id="dropzone">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
-              </svg>
-              <p>Drag and Drop <strong>.glb</strong> file here</p>
-              <span>or browse local files</span>
-              <input type="file" id="glb-file-input" accept=".glb" style="display: none;">
+            <div class="dropzone" id="dropzone-character">
+              <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+              <p>Drag &amp; drop <strong>.glb</strong> character here</p>
+              <span>or click to browse</span>
+              <input type="file" id="char-file-input" accept=".glb" style="display:none;">
+            </div>
+
+            <!-- Character status badge -->
+            <div id="char-status" class="file-status-bar" style="display:none;">
+              <svg class="status-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
+              <span id="char-status-text">No character loaded</span>
+              <button id="btn-clear-character" class="btn-clear" title="Remove character">✕</button>
             </div>
           </div>
-        </div>
 
-        <!-- 2. ANIMATIONS MAPPING PANEL -->
+          <!-- 1b. SKELETON HIERARCHY (collapsible, shown when character loaded) -->
+          <div class="settings-section collapsible-section" id="section-skeleton" style="display:none;">
+            <h3 class="collapsible-header" data-target="skeleton-content">
+              Skeleton
+              <span class="bone-count-badge" id="bone-count-badge">0 bones</span>
+              <span class="chevron" id="chevron-skeleton">▸</span>
+            </h3>
+            <div id="skeleton-content" class="collapsible-body collapsed">
+              <div id="skeleton-notice" class="skeleton-no-skin" style="display:none;">
+                <svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 1 0 0 10A5 5 0 0 0 12 2zm0 12c-5.33 0-8 2.67-8 4v2h16v-2c0-1.33-2.67-4-8-4z"/></svg>
+                <div>
+                  <strong>No skeleton detected</strong>
+                  <p>This GLB has no rigged skeleton (skin). It will render as a static mesh. Animations may not work unless a skeleton is present.</p>
+                </div>
+              </div>
+              <div id="skeleton-tree" class="skeleton-tree"></div>
+            </div>
+          </div>
+
+          <!-- 1c. ANIMATION SET -->
+          <div class="settings-section">
+            <h3>Animation Set</h3>
+            <p style="margin-bottom:12px;">
+              Import an animations <strong style="color:var(--text-primary);">.glb</strong> file. The server
+              will retarget &amp; merge it with your character mesh using gltf-transform.
+              <span id="server-offline-warn" class="offline-warn" style="display:none;">
+                ⚠ Server offline — animations will be used as-is without retargeting.
+              </span>
+            </p>
+
+            <div class="two-dropzone-actions">
+              <div class="dropzone dropzone-sm" id="dropzone-animations">
+                <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" /></svg>
+                <p>Batch import animations <strong>.glb</strong></p>
+                <span>Merges with current character</span>
+                <input type="file" id="anim-file-input" accept=".glb" style="display:none;">
+              </div>
+            </div>
+
+            <!-- Merge progress -->
+            <div id="merge-progress-wrap" class="merge-progress-wrap" style="display:none;">
+              <div class="merge-progress-bar">
+                <div id="merge-progress-fill" class="merge-progress-fill"></div>
+              </div>
+              <span id="merge-progress-label" class="merge-progress-label">Merging on server…</span>
+            </div>
+          </div>
+
+          <!-- 1d. ANIMATION LIBRARY -->
+          <div class="settings-section" id="section-anim-library" style="display:none;">
+             <h3 style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+               <span>
+                 Animation Library
+                 <span class="bone-count-badge" id="anim-count-badge">0 animations</span>
+               </span>
+               <button id="btn-clear-all-anims" class="btn-delete"
+                 style="font-size:0.7rem;padding:4px 8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.05);color:#fca5a5;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap;">
+                 Clear All
+               </button>
+             </h3>
+            <div id="anim-library" class="anim-library"></div>
+            <button class="btn-add-anim" id="btn-add-single-anim" style="margin-top:10px;">
+              <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              Add Single Animation File
+              <input type="file" id="single-anim-file-input" accept=".glb" style="display:none;position:absolute;pointer-events:none;">
+            </button>
+          </div>
+
+        </div>
+        <!-- END panel-model -->
+
+        <!-- ══════════════════════════════════════
+             2. ANIMATIONS MAPPING TAB
+        ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-animations">
           <div class="settings-section">
             <h3>Standard Animations</h3>
-            <p style="margin-bottom: 14px;">
+            <p style="margin-bottom:14px;">
               Map character controller locomotion and actions to your GLB animation groups.
             </p>
             <div id="animations-mapping-list" class="mapping-list">
@@ -78,7 +172,7 @@
 
           <div class="settings-section">
             <h3>Custom Animations</h3>
-            <p style="margin-bottom: 10px;">
+            <p style="margin-bottom:10px;">
               Add custom action animations and map triggers to them.
             </p>
             <div id="custom-animations-list" class="custom-animation-list">
@@ -88,11 +182,13 @@
           </div>
         </div>
 
-        <!-- 3. KEY BINDINGS PANEL -->
+        <!-- ══════════════════════════════════════
+             3. KEY BINDINGS TAB
+        ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-keys">
           <div class="settings-section">
             <h3>Control Mapping</h3>
-            <p style="margin-bottom: 14px;">
+            <p style="margin-bottom:14px;">
               Click on a control action box and press any keyboard key to bind it.
             </p>
             <div id="keybindings-list">
@@ -101,7 +197,9 @@
           </div>
         </div>
 
-        <!-- 4. PHYSICS & SPEEDS PANEL -->
+        <!-- ══════════════════════════════════════
+             4. PHYSICS TAB
+        ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-physics">
           <div class="settings-section">
             <h3>Physics Engine Defaults</h3>
@@ -175,7 +273,7 @@
             <h3>Camera Follow</h3>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Lock Camera (Follow)</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-cam-follow-lock">
@@ -188,7 +286,7 @@
                 <span>Cam Follow Distance</span>
                 <span class="control-value" id="slider-cam-dist-val">8.0m</span>
               </div>
-              <input type="range" id="slider-cam-dist" min="2" max="15" step="0.5" value="8">
+              <input type="range" id="slider-cam-dist" min="2" max="15" step="any" value="8">
             </div>
 
             <div class="control-group">
@@ -196,7 +294,7 @@
                 <span>Cam Follow Pitch</span>
                 <span class="control-value" id="slider-cam-pitch-val">60°</span>
               </div>
-              <input type="range" id="slider-cam-pitch" min="15" max="80" step="1" value="60">
+              <input type="range" id="slider-cam-pitch" min="15" max="80" step="any" value="60">
             </div>
           </div>
 
@@ -204,7 +302,7 @@
             <h3>Steering &amp; Input</h3>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Lock Pitch (Horizontal Cam)</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-cam-lock-pitch">
@@ -213,7 +311,7 @@
             </div>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Joystick Vertical Only</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-joystick-lock-x">
@@ -226,7 +324,7 @@
             <h3>Dynamic FOV</h3>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Dynamic FOV</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-dynamic-fov" checked>
@@ -247,7 +345,7 @@
             <h3>Air Locomotion</h3>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Double Jump</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-double-jump" checked>
@@ -256,7 +354,7 @@
             </div>
 
             <div class="control-group checkbox-group"
-              style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <span>Air Control</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-air-control">
@@ -264,13 +362,28 @@
               </label>
             </div>
           </div>
+
+          <div class="settings-section">
+            <h3>Visuals</h3>
+
+            <div class="control-group checkbox-group"
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+              <span>Play Particles</span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-particles" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+          </div>
         </div>
 
-        <!-- 5. EXPORT / CODE GENERATOR PANEL -->
+        <!-- ══════════════════════════════════════
+             5. EXPORT TAB
+        ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-export">
           <div class="settings-section">
             <h3>Export Code Snippet</h3>
-            <p style="margin-bottom: 8px;">
+            <p style="margin-bottom:8px;">
               Copy-paste this code configuration into your project's <code>app.js</code> initialization:
             </p>
             <div class="code-preview-container">
@@ -280,39 +393,56 @@
           </div>
 
           <div class="settings-section">
+            <h3>Download Character Mesh (GLB)</h3>
+            <p style="margin-bottom:12px;">
+              Download your character model <strong style="color:var(--text-primary);">.glb</strong> file with all active animations retargeted and merged inside.
+            </p>
+            <button class="btn-action btn-secondary" id="btn-download-glb">
+              <svg style="width:20px;height:20px;fill:currentColor;" viewBox="0 0 24 24">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+              </svg>
+              Download character_animated.glb
+            </button>
+          </div>
+
+          <div class="settings-section">
             <h3>Download Complete File</h3>
-            <p style="margin-bottom: 12px;">
+            <p style="margin-bottom:12px;">
               Generate and download a tailored standalone <code>character-controller.js</code> with all settings baked
               in as default.
             </p>
             <button class="btn-action" id="btn-download">
-              <svg style="width: 20px; height: 20px; fill: white;" viewBox="0 0 24 24">
-                <path
-                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+              <svg style="width:20px;height:20px;fill:white;" viewBox="0 0 24 24">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
               </svg>
               Download custom-character-controller.js
             </button>
           </div>
         </div>
+
       </div>
+      <!-- END tabs-content -->
 
       <!-- Buy Me a Coffee -->
-      <div style="margin-top: 12px; padding: 10px 12px; background: rgba(255,213,0,0.04); border: 1px solid rgba(255,213,0,0.12); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-        <span style="font-size: 0.72rem; color: var(--text-secondary); line-height: 1.4;">If you like this tool,<br>consider supporting my work!</span>
+      <div style="margin:0 16px 12px;padding:10px 12px;background:rgba(255,213,0,0.04);border:1px solid rgba(255,213,0,0.12);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0;">
+        <span style="font-size:0.72rem;color:var(--text-secondary);line-height:1.4;">If you like this tool,<br>consider supporting my work!</span>
         <a href="https://buymeacoffee.com/drlerian" target="_blank" rel="noopener noreferrer"
-          style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; background: #FFDD00; color: #000; font-size: 0.75rem; font-weight: 700; border-radius: 6px; text-decoration: none; white-space: nowrap; flex-shrink: 0; transition: opacity 0.2s;"
+          style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;background:#FFDD00;color:#000;font-size:0.75rem;font-weight:700;border-radius:6px;text-decoration:none;white-space:nowrap;flex-shrink:0;transition:opacity 0.2s;"
           onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z"/></svg>
           Buy me a coffee
         </a>
       </div>
     </div>
+    <!-- END sidebar -->
 
-    <!-- Babylon 3D Viewport Playground -->
+    <!-- ═══════════════════════════════════════════════
+         BABYLON 3D VIEWPORT
+    ═══════════════════════════════════════════════ -->
     <div id="viewport-container">
       <canvas id="c"></canvas>
 
-      <!-- Floating HUD Panel -->
+      <!-- HUD -->
       <div class="hud-overlay">
         <div class="hud-panel">
           <h4>Active State</h4>
@@ -324,31 +454,24 @@
         </div>
       </div>
 
-      <!-- Controls overlay tooltips -->
+      <!-- Controls tooltip -->
       <div class="keyboard-controls-tooltip">
         <h4>Playground controls</h4>
         <div class="controls-grid">
           <span class="key-cap">W A S D</span>
           <span>Move character</span>
-
           <span class="key-cap">SHIFT</span>
           <span>Sprint Toggle</span>
-
           <span class="key-cap">CTRL / C</span>
           <span>Crouch Toggle</span>
-
           <span class="key-cap">SPACE</span>
           <span>Jump / Double Jump</span>
-
           <span class="key-cap">R</span>
           <span>Dodge Roll</span>
-
           <span class="key-cap">Q</span>
           <span>Attack Punch</span>
-
           <span class="key-cap">E</span>
           <span>Cast Spell</span>
-
           <span class="key-cap">F</span>
           <span>Interact</span>
         </div>
@@ -358,57 +481,64 @@
 
   <!-- Loading Overlay -->
   <div id="loading-overlay">
-    <div class="spinner"></div>
-    <div class="loading-text">Initializing builder Scene...</div>
+    <div class="loader-card">
+      <div class="spinner-container">
+        <div class="spinner-ring"></div>
+        <div class="spinner-glow"></div>
+        <div class="spinner-icon">🎮</div>
+      </div>
+      <h2 class="loader-title">Processing Assets</h2>
+      <div id="loading-status-text" class="loading-text" style="font-size:0.75rem;color:var(--text-muted);text-transform:none;letter-spacing:normal;">Initializing...</div>
+      <div class="loader-steps">
+        <div class="loader-step" id="step-init">
+          <div class="step-dot"></div>
+          <span class="step-text">Initialize 3D Scene</span>
+        </div>
+        <div class="loader-step" id="step-read">
+          <div class="step-dot"></div>
+          <span class="step-text">Read GLB Model Data</span>
+        </div>
+        <div class="loader-step" id="step-import">
+          <div class="step-dot"></div>
+          <span class="step-text">Build Skeleton & Meshes</span>
+        </div>
+        <div class="loader-step" id="step-analyze">
+          <div class="step-dot"></div>
+          <span class="step-text">Analyze Rig Bones</span>
+        </div>
+        <div class="loader-step" id="step-merge">
+          <div class="step-dot"></div>
+          <span class="step-text">Merge & Retarget Tracks</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Toast notifications -->
   <div id="toast" class="toast">Toast Message</div>
 
-  <!-- Inline token bridge: map old variable names used in HTML inline styles -->
+  <!-- Shared token bridge -->
   <style>
-    :root {
-      --text-muted: var(--text-muted, #5c6475);
-    }
+    :root { --text-muted: var(--text-muted, #5c6475); }
 
     .btn-reset-single {
-      width: 18px;
-      height: 18px;
-      padding: 0;
+      width: 18px; height: 18px; padding: 0;
       border: 1px solid rgba(255,255,255,0.08);
       background: rgba(255,255,255,0.03);
       color: var(--text-muted, #5c6475);
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s;
-      flex-shrink: 0;
-      line-height: 1;
-      outline: none;
+      border-radius: 4px; cursor: pointer; font-size: 12px;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0; line-height: 1; outline: none;
     }
     .btn-reset-single:hover {
       background: rgba(139,92,246,0.12);
       border-color: rgba(139,92,246,0.35);
       color: #a78bfa;
     }
-
-    /* Descriptive paragraphs inside panels */
-    .settings-section>p {
-      font-size: 0.78rem;
-      color: var(--text-secondary);
-      line-height: 1.55;
-    }
-
-    .settings-section>p code {
-      font-family: var(--font-mono);
-      font-size: 0.76rem;
-      color: var(--text-cyan);
-      background: var(--cyan-dim);
-      padding: 1px 5px;
-      border-radius: 3px;
+    .settings-section > p { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.55; }
+    .settings-section > p code {
+      font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-cyan);
+      background: var(--cyan-dim); padding: 1px 5px; border-radius: 3px;
     }
   </style>
 
@@ -418,7 +548,22 @@
   <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
   <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
 
-  <!-- builder & Controller Scripts -->
+  <!-- Custom Confirm Modal -->
+  <div id="custom-confirm-modal" class="custom-confirm-overlay">
+    <div class="custom-confirm-card">
+      <div class="custom-confirm-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" /></svg>
+      </div>
+      <h4 class="custom-confirm-title" id="custom-confirm-title">Clear All Animations</h4>
+      <p class="custom-confirm-message" id="custom-confirm-message">Are you sure you want to clear all animations from the library?</p>
+      <div class="custom-confirm-actions">
+        <button class="custom-confirm-btn custom-confirm-btn-cancel" id="custom-confirm-btn-cancel">Cancel</button>
+        <button class="custom-confirm-btn custom-confirm-btn-danger" id="custom-confirm-btn-ok">Clear All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Builder & Controller Scripts -->
   <script src="js/character-controller.js"></script>
   <script src="js/core/builder.js"></script>
 

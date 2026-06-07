@@ -54,13 +54,14 @@ const DEFAULT_CHAR_CONFIG = {
     AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
-    CAM_FOLLOW_LOCK: false, // If true, the camera is locked behind the character's facing direction
+    CAM_FOLLOW_LOCK: true, // If true, the camera is locked behind the character's facing direction
     CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
     CAM_LOCK_PITCH: false,   // If true, drag input only rotates camera horizontally (locks vertical/pitch axis)
     JOYSTICK_LOCK_X: false,  // If true, joystick input is locked to vertical axis only (no strafing/turning)
     DOUBLE_JUMP_ENABLED: true, // If true, the character can perform a double jump in mid-air
-    SPEED_MULTIPLIER: 1.0     // Speed multiplier for walking and running
+    SPEED_MULTIPLIER: 1.0,     // Speed multiplier for walking and running
+    PLAY_PARTICLES: true      // Play particles/dust under the character's feet
   },
 
   // Mobile / Touch controls configuration
@@ -661,6 +662,9 @@ class CharCtrl {
     const savedShowCombo = localStorage.getItem('show-combo');
     this.SHOW_COMBO = savedShowCombo !== null ? (savedShowCombo === 'true') : true;
 
+    const savedPlayParticles = localStorage.getItem('play-particles');
+    this.PLAY_PARTICLES = savedPlayParticles !== null ? (savedPlayParticles === 'true') : (config.PLAY_PARTICLES !== undefined ? config.PLAY_PARTICLES : true);
+
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
     console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
@@ -767,6 +771,7 @@ class CharCtrl {
     this._camShake = 0;
     this._bobTime = 0;
     this._initialCameraFOV = this.camera.fov || 0.8;
+    this._timeSinceSpawn = 0;
 
     // Cache initial visual mesh yaw rotation to preserve imports & orientations
     if (this.visualMesh.rotationQuaternion) {
@@ -786,8 +791,8 @@ class CharCtrl {
     this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
       // Sync camera radius zoom updates (wheel, trackpad, pinch) back to CAM_FOLLOW_DIST and HUD
       const now = performance.now();
-      const isWheelZooming = (now - (this._lastWheelTime || 0)) < 200;
-      const isTouchPinchZooming = this._pointerDragging && (this._activePointers ? this._activePointers.size >= 2 : false);
+      const isWheelZooming = (now - (this._lastWheelTime || 0)) < 250;
+      const isTouchPinchZooming = (this._touchCount !== undefined && this._touchCount >= 2);
       const isUserZooming = isWheelZooming || isTouchPinchZooming;
 
       const radiusDelta = this.camera.radius - this._lastCameraRadius;
@@ -801,6 +806,12 @@ class CharCtrl {
         const label = document.getElementById('cam-dist-val');
         if (slider) {
           slider.value = this.CAM_FOLLOW_DIST;
+        }
+        if (window.physicsConfig) {
+          window.physicsConfig.CAM_FOLLOW_DIST = this.CAM_FOLLOW_DIST;
+        }
+        if (typeof window.updateExportCode === 'function') {
+          window.updateExportCode();
         }
         if (label) {
           label.textContent = this.CAM_FOLLOW_DIST.toFixed(1) + 'm';
@@ -824,9 +835,18 @@ class CharCtrl {
           // Sync HUD slider and label
           const slider = document.getElementById('slider-cam-pitch');
           const label = document.getElementById('cam-pitch-val');
-          if (slider && label) {
+          if (slider) {
             const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
             slider.value = deg;
+          }
+          if (window.physicsConfig) {
+            window.physicsConfig.CAM_FOLLOW_PITCH = this.CAM_FOLLOW_PITCH;
+          }
+          if (typeof window.updateExportCode === 'function') {
+            window.updateExportCode();
+          }
+          if (label) {
+            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
             label.textContent = deg + '°';
           }
         }
@@ -863,7 +883,8 @@ class CharCtrl {
         const dt = this.scene.getEngine().getDeltaTime() / 1000;
         if (dt > 0 && dt < 0.1) {
           const targetAlpha = -this.rotY - Math.PI / 2;
-          this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-14 * dt));
+          const rate = (this.speed < 0.1) ? 38 : 16; // Much more responsive (snappy) when stopped, smooth when moving
+          this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-rate * dt));
         }
         this._lastCameraAlpha = this.camera.alpha;
         this._lastCameraBeta = this.camera.beta;
@@ -895,7 +916,8 @@ class CharCtrl {
     this.dustPS.blendMode = BABYLON.ParticleSystem.BLENDMODE_ADD;
 
     // Emitter is placed at the player's feet
-    this.dustPS.emitter = new BABYLON.Vector3(0, 0, 0);
+    const initialFeetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
+    this.dustPS.emitter = initialFeetPos;
     this.dustPS.minEmitBox = new BABYLON.Vector3(-0.25, -0.05, -0.25);
     this.dustPS.maxEmitBox = new BABYLON.Vector3(0.25, 0.05, 0.25);
 
@@ -921,7 +943,7 @@ class CharCtrl {
   }
 
   _emitLandingDust() {
-    if (this.dustPS) {
+    if (this.PLAY_PARTICLES && this.dustPS) {
       this.dustPS.manualEmitCount = 30; // Emit 30 particles instantly
       this.dustPS.start();              // Force restart to process manual emission
     }
@@ -992,6 +1014,15 @@ class CharCtrl {
         this._lastWheelTime = performance.now();
       };
       canvasEl.addEventListener('wheel', this._boundWheel, { passive: true });
+
+      // Track touchscreen touches to detect multitouch/pinches reliably
+      this._touchCount = 0;
+      this._boundTouchStart = (e) => { this._touchCount = e.touches.length; };
+      this._boundTouchEnd = (e) => { this._touchCount = e.touches.length; };
+      canvasEl.addEventListener('touchstart', this._boundTouchStart, { passive: true });
+      canvasEl.addEventListener('touchmove', this._boundTouchStart, { passive: true });
+      canvasEl.addEventListener('touchend', this._boundTouchEnd, { passive: true });
+      canvasEl.addEventListener('touchcancel', this._boundTouchEnd, { passive: true });
     }
   }
 
@@ -1188,6 +1219,14 @@ class CharCtrl {
         canvasEl.removeEventListener('pointerup', this._boundPointerUp);
         canvasEl.removeEventListener('pointercancel', this._boundPointerUp);
       }
+      if (this._boundTouchStart) {
+        canvasEl.removeEventListener('touchstart', this._boundTouchStart);
+        canvasEl.removeEventListener('touchmove', this._boundTouchStart);
+      }
+      if (this._boundTouchEnd) {
+        canvasEl.removeEventListener('touchend', this._boundTouchEnd);
+        canvasEl.removeEventListener('touchcancel', this._boundTouchEnd);
+      }
     }
 
     // 6. Dispose physics components
@@ -1204,8 +1243,17 @@ class CharCtrl {
     }
   }
 
+  playParticles(enable) {
+    this.PLAY_PARTICLES = !!enable;
+    localStorage.setItem('play-particles', this.PLAY_PARTICLES);
+    if (!this.PLAY_PARTICLES && this.dustPS) {
+      this.dustPS.emitRate = 0;
+      this.dustPS.stop();
+    }
+  }
+
   _keyDown(code) {
-    const inAction = ACTION_STATES.has(this.state);
+    const inAction = this._isInAction();
 
     if (this._matchesAction(code, 'CROUCH')) {
       if (this.grounded && !inAction && !this.sitting) {
@@ -1300,10 +1348,10 @@ class CharCtrl {
     this.grounded = false;
     this._setState(S.JUMP_START);
     // Dynamic takeoff squash
-    this.targetScale.set(1.15, 0.78, 1.15);
+    this.targetScale.set(1.05, 0.92, 1.05);
     setTimeout(() => {
       if (!this.grounded) {
-        this.targetScale.set(0.92, 1.14, 0.92);
+        this.targetScale.set(0.97, 1.05, 0.97);
       }
     }, 100);
     this.anim.play('Jump_Start', false, 0.2, () => {
@@ -1347,10 +1395,10 @@ class CharCtrl {
       }
     }
 
-    this.targetScale.set(1.15, 0.78, 1.15);
+    this.targetScale.set(1.05, 0.92, 1.05);
     setTimeout(() => {
       if (!this.grounded) {
-        this.targetScale.set(0.92, 1.14, 0.92);
+        this.targetScale.set(0.97, 1.05, 0.97);
       }
     }, 100);
 
@@ -1595,6 +1643,11 @@ class CharCtrl {
     }
   }
 
+  _isInAction() {
+    const LOCO_STATES = new Set(['IDLE', 'WALK', 'JOG', 'SPRINT', 'WALK_FORMAL', 'CROUCH_IDLE', 'CROUCH_WALK', 'CROUCH_RUN', 'JUMP_START', 'JUMP_LOOP', 'JUMP_LAND']);
+    return ACTION_STATES.has(this.state) || (!LOCO_STATES.has(this.state) && this.state !== 'NONE');
+  }
+
   // ── CAMERA HELPERS ─────────────────────────────────────
   _camForward() {
     const f = this.camera.target.subtract(this.camera.position);
@@ -1721,6 +1774,7 @@ class CharCtrl {
     const dt = this.scene.getEngine().getDeltaTime() / 1000;
     if (dt <= 0 || dt > 0.1) return;
     this.stateT += dt;
+    this._timeSinceSpawn += dt;
 
     // Freeze camera vectors during mouse orbit dragging under standard camera mode
     // to allow the character to keep their world direction and let the user look at their face.
@@ -1800,7 +1854,13 @@ class CharCtrl {
       this._hasDoubleJumped = false; // Reset double jump!
       const fallHeight = this._highestAirborneY - this.root.position.y;
       const fallingVel = this.usePhysics ? currentVelocity.y : this.jumpVel;
-      if (this.state === S.ROLL) {
+      const isInitialSpawn = this._timeSinceSpawn < 0.5;
+
+      if (isInitialSpawn) {
+        // Quietly settle character without emitting landing dust or playing landing camera shakes/anims
+        this._rollOnLand = false;
+        this._returnToLoco();
+      } else if (this.state === S.ROLL) {
         this._emitLandingDust();
         if (!this._rollActive) {
           this._returnToLoco(0.06);
@@ -1833,7 +1893,7 @@ class CharCtrl {
       this._highestAirborneY = this.root.position.y;
     }
 
-    let inAction = ACTION_STATES.has(this.state);
+    let inAction = this._isInAction();
 
     // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
     if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
@@ -1864,7 +1924,7 @@ class CharCtrl {
         if (currentVelocity.y <= 0.1) {
           const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
           if (deltaY > 0.005) {
-            const inAction = ACTION_STATES.has(this.state);
+            const inAction = this._isInAction();
             if (this.grounded && hasMove && !this.onScalable && !inAction) {
               this._setState(S.JUMP_LAND);
               this.anim.play('Jump_Land', false, 0.1, () => this._returnToLoco(), 1.65, 0.25);
@@ -1901,7 +1961,7 @@ class CharCtrl {
             // Detect single step climbing:
             // Must be grounded, moving forward/input active, NOT on stairs/ramps (onScalable is false),
             // and not already performing another action.
-            const inAction = ACTION_STATES.has(this.state);
+            const inAction = this._isInAction();
             if (this.grounded && hasMove && !this.onScalable && !inAction) {
               this._setState(S.JUMP_LAND);
               // Play JUMP_LAND animation with a lower weight (0.35) for a subtler, more natural step-up blend
@@ -2442,7 +2502,7 @@ class CharCtrl {
     }
 
     // ── UPDATE PROCEDURAL PARTICLES ────────────────────────
-    if (this.dustPS) {
+    if (this.PLAY_PARTICLES && this.dustPS) {
       const feetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
       this.dustPS.emitter = feetPos;
 
@@ -2457,6 +2517,8 @@ class CharCtrl {
       } else {
         this.dustPS.emitRate = 0;
       }
+    } else if (this.dustPS) {
+      this.dustPS.emitRate = 0;
     }
 
     // ── ADVANCED PROCEDURAL VISUALS & SUSPENSION ─────────
@@ -2555,21 +2617,21 @@ class CharCtrl {
     if (!this.grounded) {
       if (this.jumpVel > 1.0) {
         // Stretching upwards on rise
-        this.targetScale.set(0.92, 1.12, 0.92);
+        this.targetScale.set(0.97, 1.04, 0.97);
       } else if (this.jumpVel < -2.0 && this._airborneTime > 0.15) {
         // Stretching downwards on fall
-        this.targetScale.set(0.90, 1.15, 0.90);
+        this.targetScale.set(0.96, 1.05, 0.96);
       }
     } else {
       // Check if we just landed this frame and squash
       if (wasGrounded === false && this._lastAirborneTime > 0.15) {
         if (this.jumpVel < -4.0) {
           // Heavy landing squash & trigger heavy camera shake
-          this.targetScale.set(1.22, 0.72, 1.22);
+          this.targetScale.set(1.08, 0.88, 1.08);
           this._camShake = 0.22;
         } else {
           // Soft landing squash & trigger soft camera shake
-          this.targetScale.set(1.10, 0.88, 1.10);
+          this.targetScale.set(1.04, 0.95, 1.04);
           this._camShake = 0.08;
         }
         // Smoothly restore to normal scale after squash duration

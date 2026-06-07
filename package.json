@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node server.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,6 +16,8 @@
     "@gltf-transform/extensions": "^3.10.1",
     "@gltf-transform/functions": "^3.10.1",
     "draco3dgltf": "^1.5.7",
-    "fs-extra": "^11.3.5"
+    "express": "^5.2.1",
+    "fs-extra": "^11.3.5",
+    "multer": "^2.1.1"
   }
 }

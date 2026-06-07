@@ -192,6 +192,10 @@ We have provided three setup examples to guide your implementation:
 
 `builder.html` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required.
 
+> [!NOTE]
+> **NodeJS Visual Builder in Development:** A server-backed Visual Builder powered by NodeJS (`server.mjs`) is under active development. When running the local NodeJS server, it automatically handles advanced skeletal retargeting, GLB animation merges, and asset optimizations via a local backend API, bringing automatic offline compilation to your character workflow.
+
+
 ### Tabs
 
 | Tab | What it does |
