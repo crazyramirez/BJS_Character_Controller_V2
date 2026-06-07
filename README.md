@@ -204,9 +204,21 @@ We have provided three setup examples to guide your implementation:
 | **Animations** | Auto-match Mixamo/custom animation names to controller slots. Each row has an `↺` reset button to re-run keyword auto-detection for that single slot |
 | **Controls** | Remap every key binding. Each action has an `↺` button to restore its default key |
 | **Physics** | Tune all physics, camera, and speed parameters with sliders and toggles. Each control has an `↺` reset to restore the baked default |
-| **Export** | Preview the final configuration code and download `custom-character-controller.js` |
+| **Export** | Preview the final configuration code, download `custom-character-controller.js`, or export the character in GLB format with all animations incorporated |
 
 All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wipe all overrides and restore factory defaults.
+
+### 📥 Exporting the Character as GLB (with animations)
+
+The **Export** tab also provides the ability to export the character directly in `.glb` format with the configured animations incorporated. This allows you to generate a single, self-contained GLB file that includes both the character mesh and the mapped animations, ready to be used in other scenes or external tools.
+
+### 🔄 Retargeting & Animation Merging (`merge_api.mjs`)
+
+The Visual Builder utilizes the server-side module [merge_api.mjs](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/core/merge_api.mjs) (via `server.mjs`) to dynamically retarget and combine your character model with custom animations.
+
+When using the builder, you can import assets in different ways:
+- **Separate Import:** You can load your character mesh (with or without animations) in the **Model** tab, and then load external animation GLB files in the **Animations** tab.
+- **Using Embedded Animations:** If you want to use the animations already present in the character model itself, you must import the character model file in the **Model** tab, and then import the **same character model file** again in the **Animations** tab.
 
 ### Downloading `custom-character-controller.js`
 
