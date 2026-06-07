@@ -257,8 +257,7 @@ async function pingServer() {
       if (offlineWarn) offlineWarn.style.display = 'none';
       const offlineBanner = document.getElementById('server-offline-banner');
       if (offlineBanner) offlineBanner.style.display = 'none';
-      document.getElementById('dropzone-character')?.classList.remove('dropzone-disabled');
-      document.getElementById('dropzone-animations')?.classList.remove('dropzone-disabled');
+      syncOfflineUI(true);
       return;
     }
   } catch (_) { }
@@ -269,8 +268,29 @@ async function pingServer() {
   if (offlineWarn) offlineWarn.style.display = 'inline';
   const offlineBanner = document.getElementById('server-offline-banner');
   if (offlineBanner) offlineBanner.style.display = 'flex';
-  document.getElementById('dropzone-character')?.classList.add('dropzone-disabled');
-  document.getElementById('dropzone-animations')?.classList.add('dropzone-disabled');
+  syncOfflineUI(false);
+}
+
+function syncOfflineUI(online) {
+  const ids = ['dropzone-character', 'dropzone-animations'];
+  ids.forEach(id => {
+    document.getElementById(id)?.classList.toggle('dropzone-disabled', !online);
+  });
+
+  const btnIds = ['btn-add-single-anim', 'btn-clear-all-anims'];
+  btnIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('btn-disabled-offline', !online);
+    if (!online) el.setAttribute('title', 'Server offline');
+    else el.removeAttribute('title');
+  });
+
+  document.querySelectorAll('.btn-anim-delete').forEach(btn => {
+    btn.classList.toggle('btn-disabled-offline', !online);
+    if (!online) btn.setAttribute('title', 'Server offline');
+    else btn.setAttribute('title', 'Remove this animation');
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -927,7 +947,14 @@ function renderAnimationLibrary() {
   });
 
   container.querySelectorAll('.btn-anim-delete').forEach(btn => {
-    btn.addEventListener('click', () => deleteAnimation(btn.dataset.anim));
+    if (!isServerAvailable) {
+      btn.classList.add('btn-disabled-offline');
+      btn.setAttribute('title', 'Server offline');
+    }
+    btn.addEventListener('click', () => {
+      if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
+      deleteAnimation(btn.dataset.anim);
+    });
   });
 }
 
@@ -1321,6 +1348,7 @@ function setupSidebarControls() {
   if (btnAddSingle && singleInput) {
     btnAddSingle.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
       singleInput.click();
     });
     singleInput.addEventListener('change', (e) => {
@@ -1336,7 +1364,10 @@ function setupSidebarControls() {
 
   // Clear all animations button
   const btnClearAllAnims = document.getElementById('btn-clear-all-anims');
-  if (btnClearAllAnims) btnClearAllAnims.addEventListener('click', clearAllAnimations);
+  if (btnClearAllAnims) btnClearAllAnims.addEventListener('click', () => {
+    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
+    clearAllAnimations();
+  });
 
   // Download
   document.getElementById('btn-download').addEventListener('click', downloadControllerFile);

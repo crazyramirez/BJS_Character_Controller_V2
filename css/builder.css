@@ -507,6 +507,13 @@ input[type="range"]::-moz-range-thumb {
   filter: grayscale(0.6);
 }
 
+.btn-disabled-offline {
+  opacity: 0.35 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+  filter: grayscale(0.6) !important;
+}
+
 .dropzone svg {
   width: 38px;
   height: 38px;
@@ -1616,7 +1623,6 @@ input[type="range"]::-moz-range-thumb {
    COLLAPSIBLE SECTIONS
    ============================================================ */
 
-.collapsible-section { }
 
 .collapsible-header {
   cursor: pointer;
