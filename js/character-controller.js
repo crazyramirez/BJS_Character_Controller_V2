@@ -266,6 +266,7 @@ class AnimCtrl {
     this.activeWeight = 1.0;
     this.customWeights = new Map(); // Store specific defaults here
     this.onAnimationChange = null;  // Callback for decoupling UI
+    this._warnedMissing = new Set();
 
     // Support both pre-populated Map or a simple Array of AnimationGroups
     if (groups instanceof Map) {
@@ -341,9 +342,15 @@ class AnimCtrl {
     this.customWeights.set(name, w);
   }
 
+  _warnMissing(name) {
+    if (this._warnedMissing.has(name)) return;
+    this._warnedMissing.add(name);
+    console.warn('[AnimCtrl] missing:', name);
+  }
+
   play(name, loop = false, blendDuration = 0.25, onEnd = null, speedRatio = 1.0, weightParam = null) {
     const ag = this.g.get(name);
-    if (!ag) { console.warn('[AnimCtrl] missing:', name); return false; }
+    if (!ag) { this._warnMissing(name); return false; }
 
     // Apply speed multiplier to all animations except Locomotion and Jump states (which require fixed timing)
     let finalSpeedRatio = speedRatio;

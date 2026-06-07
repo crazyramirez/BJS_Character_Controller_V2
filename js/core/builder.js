@@ -700,14 +700,14 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   const filteredGroups = charRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
 
-  // Build detected animations list (additive: merge with existing)
   const newAnimNames = filteredGroups.map(ag => {
     const parts = ag.name.split('|');
     return parts[parts.length - 1].trim();
   });
-  // Merge additive: keep existing that don't have a name clash
-  const merged = [...new Set([...detectedAnimations, ...newAnimNames])];
-  detectedAnimations = merged;
+  // Full character load resets the list; animation-only imports merge additively
+  detectedAnimations = animOnly
+    ? [...new Set([...detectedAnimations, ...newAnimNames])]
+    : newAnimNames;
 
   // Capsule
   const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsuleBuilder', { radius: 0.4, height: 1.8 }, scene);
@@ -738,6 +738,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   });
 
   activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot };
+
+  // Apply mappings immediately so standard keys (Roll, Jump_Loop, etc.) are in animCtrl.g
+  // before the first render frame ticks. autoMapAnimations() later will re-run but this
+  // prevents the one-frame window where play('Roll') fires before setAnimation('Roll', ...).
+  applyAnimationsToController();
 
   // Camera follow
   let hasMadeInitialWalk = false;
