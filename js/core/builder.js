@@ -291,6 +291,23 @@ function syncOfflineUI(online) {
     if (!online) btn.setAttribute('title', 'Server offline');
     else btn.setAttribute('title', 'Remove this animation');
   });
+
+  const viewportNotice = document.getElementById('viewport-offline-notice');
+  if (viewportNotice) viewportNotice.style.display = online ? 'none' : 'flex';
+
+  const particlesCb = document.getElementById('toggle-particles');
+  if (particlesCb) {
+    if (!online) {
+      particlesCb.checked = false;
+      particlesCb.disabled = true;
+      particlesCb.closest('label')?.classList.add('btn-disabled-offline');
+      physicsConfig.PLAY_PARTICLES = false;
+      activeCharacter?.charCtrl?.playParticles(false);
+    } else {
+      particlesCb.disabled = false;
+      particlesCb.closest('label')?.classList.remove('btn-disabled-offline');
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1334,7 +1351,15 @@ function setupSidebarControls() {
   bindCheckbox('toggle-dynamic-fov', 'DYNAMIC_FOV');
   bindCheckbox('toggle-double-jump', 'DOUBLE_JUMP_ENABLED');
   bindCheckbox('toggle-air-control', 'AIR_CONTROL');
-  bindCheckbox('toggle-particles', 'PLAY_PARTICLES');
+  const particlesEl = document.getElementById('toggle-particles');
+  if (particlesEl) {
+    particlesEl.addEventListener('change', (e) => {
+      if (!isServerAvailable) { e.target.checked = false; return; }
+      physicsConfig.PLAY_PARTICLES = e.target.checked;
+      activeCharacter?.charCtrl?.playParticles(e.target.checked);
+      updateExportCode();
+    });
+  }
 
   // Add custom animation
   document.getElementById('btn-add-custom-anim').addEventListener('click', () => {

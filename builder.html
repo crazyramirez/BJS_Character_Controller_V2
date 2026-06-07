@@ -459,6 +459,12 @@
     <div id="viewport-container">
       <canvas id="c"></canvas>
 
+      <!-- Server offline viewport notice -->
+      <div id="viewport-offline-notice" class="viewport-offline-notice" style="display:none;">
+        <svg viewBox="0 0 24 24"><path d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z"/></svg>
+        <span>Server offline — import disabled &nbsp;·&nbsp; <code>npm start</code> to enable</span>
+      </div>
+
       <!-- HUD -->
       <div class="hud-overlay">
         <div class="hud-panel">
