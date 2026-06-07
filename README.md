@@ -190,10 +190,24 @@ We have provided three setup examples to guide your implementation:
 
 ## 🔧 Visual Builder (`builder.html`)
 
-`builder.html` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required.
+`builder.html` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required. You can use it as a static page, or run it with the local NodeJS development server to enable full backend-powered retargeting and GLB merges.
 
-> [!NOTE]
-> **NodeJS Visual Builder in Development:** A server-backed Visual Builder powered by NodeJS (`server.mjs`) is under active development. When running the local NodeJS server, it automatically handles advanced skeletal retargeting, GLB animation merges, and asset optimizations via a local backend API, bringing automatic offline compilation to your character workflow.
+### 🌐 Running with NodeJS / npm (Recommended)
+
+To run the local server which powers advanced skeletal retargeting, GLB animation merges, and asset optimizations via the local backend API:
+
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+2. **Start the local server:**
+   ```bash
+   npm start
+   ```
+
+3. **Open the builder:**
+   Navigate to [http://localhost:3000/builder.html](http://localhost:3000/builder.html) in your browser.
 
 
 ### Tabs
