@@ -418,7 +418,7 @@ function hideLoading() {
 function setLoaderStep(stepId, status) {
   const stepEl = document.getElementById(`step-${stepId}`);
   if (!stepEl) return;
-  
+
   stepEl.classList.remove('active', 'completed');
   if (status === 'active') {
     stepEl.classList.add('active');
@@ -516,20 +516,20 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
 
     // Run skeleton/animation analysis via server if available
     if (isServerAvailable) {
-       try {
-         const formData = new FormData();
-         formData.append('file', new Blob([arrayBuffer], { type: 'model/gltf-binary' }), file.name);
-         const res = await fetch('/api/analyze', { method: 'POST', body: formData });
-         if (res.ok) {
-           skeletonInfo = await res.json();
-           renderSkeletonSection(skeletonInfo);
-         }
-       } catch (e) {
-         console.warn('Server analyze failed, using BJS-detected info.', e);
-         renderSkeletonSectionFromBJS();
-       }
+      try {
+        const formData = new FormData();
+        formData.append('file', new Blob([arrayBuffer], { type: 'model/gltf-binary' }), file.name);
+        const res = await fetch('/api/analyze', { method: 'POST', body: formData });
+        if (res.ok) {
+          skeletonInfo = await res.json();
+          renderSkeletonSection(skeletonInfo);
+        }
+      } catch (e) {
+        console.warn('Server analyze failed, using BJS-detected info.', e);
+        renderSkeletonSectionFromBJS();
+      }
     } else {
-       renderSkeletonSectionFromBJS();
+      renderSkeletonSectionFromBJS();
     }
     setLoaderStep('analyze', 'completed');
 
@@ -1064,8 +1064,8 @@ function autoMapAnimations() {
     // Only restore a saved mapping if it actually points to an animation present in the model.
     // Never restore 'None' from a previous session — let the keyword matcher retry.
     if (previousMappings[stdKey.key] &&
-        previousMappings[stdKey.key].animName !== 'None' &&
-        detectedAnimations.includes(previousMappings[stdKey.key].animName)) {
+      previousMappings[stdKey.key].animName !== 'None' &&
+      detectedAnimations.includes(previousMappings[stdKey.key].animName)) {
       animMappings[stdKey.key] = { ...previousMappings[stdKey.key] };
       return;
     }
@@ -1801,7 +1801,7 @@ async function downloadCharacterGlbFile() {
       const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-      
+
       if (animationsGlbBuffer && animationsGlbBuffer.byteLength > 0) {
         formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
       }

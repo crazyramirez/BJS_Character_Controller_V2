@@ -1789,10 +1789,9 @@ class CharCtrl {
         this._groundNormal = pick.getNormal(true);
         const name = pick.pickedMesh.name || "";
         this.onStairs = /step|stair/i.test(name);
-        // Check if mesh is marked, matches step/stair naming patterns, is not default ground, or has sloped surface normals
+        // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
         if (pick.pickedMesh.meshType === "scalable" ||
-          (name && /step|stair|ramp|platform|floor/i.test(name)) ||
-          (name && name !== "gnd")) {
+          (name && /step|stair|ramp|platform|floor/i.test(name))) {
           onScalable = true;
         } else {
           const normal = this._groundNormal;
@@ -2042,8 +2041,8 @@ class CharCtrl {
               this._emitLandingDust();
             }
           } else {
-            // Apply a gentle downward snap pressure only when moving on stairs/ramps to prevent flying off step edges
-            this.jumpVel = hasMove && this.onScalable ? -3.5 : 0;
+            // Snap down on flat ground always (settles after jump); on scalable only when moving (prevents ramp sliding)
+            this.jumpVel = this.onScalable && !hasMove ? 0 : -3.5;
           }
         }
       }
