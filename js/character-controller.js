@@ -345,7 +345,7 @@ class AnimCtrl {
   _warnMissing(name) {
     if (this._warnedMissing.has(name)) return;
     this._warnedMissing.add(name);
-    console.warn('[AnimCtrl] missing:', name);
+    // console.warn('[AnimCtrl] missing:', name);
   }
 
   play(name, loop = false, blendDuration = 0.25, onEnd = null, speedRatio = 1.0, weightParam = null) {
