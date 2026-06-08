@@ -948,7 +948,38 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     console.log(`[merge] Character is not in T-pose (${poseStyle}) — generating virtual T-pose...`);
     virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
   }
+  // Apply Scale & Pivot Shift to the character nodes!
+  const sx = cfg.SCALE_X !== undefined ? cfg.SCALE_X : 1.0;
+  const sy = cfg.SCALE_Y !== undefined ? cfg.SCALE_Y : 1.0;
+  const sz = cfg.SCALE_Z !== undefined ? cfg.SCALE_Z : 1.0;
+  const px = cfg.PIVOT_X !== undefined ? cfg.PIVOT_X : 0.0;
+  const py = cfg.PIVOT_Y !== undefined ? cfg.PIVOT_Y : 0.0;
+  const pz = cfg.PIVOT_Z !== undefined ? cfg.PIVOT_Z : 0.0;
 
+  if (sx !== 1.0 || sy !== 1.0 || sz !== 1.0 || px !== 0.0 || py !== 0.0 || pz !== 0.0) {
+    console.log(`[merge] Applying scale [${sx}, ${sy}, ${sz}] and pivot offset [${px}, ${py}, ${pz}] to charDoc...`);
+    for (const scene of charDoc.getRoot().listScenes()) {
+      for (const node of scene.listChildren()) {
+        // Scale the root node itself
+        const scale = node.getScale() || [1, 1, 1];
+        node.setScale([
+          scale[0] * sx,
+          scale[1] * sy,
+          scale[2] * sz
+        ]);
+        
+        // Translate its children relative to the root node to shift the pivot point to [0, 0, 0]
+        for (const child of node.listChildren()) {
+          const trans = child.getTranslation() || [0, 0, 0];
+          child.setTranslation([
+            trans[0] - px,
+            trans[1] - py,
+            trans[2] - pz
+          ]);
+        }
+      }
+    }
+  }
   // Extract T-pose BEFORE building char bind pose maps — it determines which strategy to use.
   // Mixamo GLBs store node.getRotation() as identity; real T-pose orientation lives in "T_Pose" track.
   const tposeRestPose = extractTPoseRestPose(animDoc);
@@ -1197,9 +1228,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
               const kw = rotateVec3([arr[j], arr[j + 1], arr[j + 2]], Cp);
-              out[j] = charRest[0] + kw[0] - animRestWorld[0];
-              out[j + 1] = charRest[1] + kw[1] - animRestWorld[1];
-              out[j + 2] = charRest[2] + kw[2] - animRestWorld[2];
+              out[j] = charRest[0] + (kw[0] - animRestWorld[0]);
+              out[j + 1] = charRest[1] + (kw[1] - animRestWorld[1]);
+              out[j + 2] = charRest[2] + (kw[2] - animRestWorld[2]);
             }
             output.setArray(out);
           }

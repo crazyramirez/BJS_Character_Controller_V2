@@ -132,7 +132,7 @@ function savePreferences() {
 // CHARACTER TRANSFORMS (SCALE & PIVOT)
 // ═══════════════════════════════════════════════════════════
 function applyLiveTransformations() {
-  if (!activeCharacter || !activeCharacter.charRoot) return;
+  if (!activeCharacter || !activeCharacter.charTransformWrapper) return;
 
   const sx = charTransformConfig.SCALE_X;
   const sy = charTransformConfig.SCALE_Y;
@@ -142,18 +142,24 @@ function applyLiveTransformations() {
   const py = charTransformConfig.PIVOT_Y;
   const pz = charTransformConfig.PIVOT_Z;
 
-  // Apply scale
-  activeCharacter.charRoot.scaling.set(sx, sy, sz);
+  // Apply scale to wrapper
+  activeCharacter.charTransformWrapper.scaling.set(sx, sy, sz);
 
-  // Apply visual root offset (feet position relative to capsule center, shifting opposite of pivot)
-  activeCharacter.charRoot.position.set(-px * sx, -0.97 - py * sy, -pz * sz);
+  // Apply visual root offset (feet position relative to capsule center, shifting opposite of pivot, accounting for scaling and baseline capsule height)
+  activeCharacter.charTransformWrapper.position.set(-px * sx, -0.97 * (1 - sy) - py * sy, -pz * sz);
 }
 
 function syncCharTransformToUI() {
   const setSlider = (id, val, suffix = '') => {
     const el = document.getElementById(id);
     const valEl = document.getElementById('val-' + id.substring(7));
-    if (el) el.value = val;
+    if (el) {
+      const min = parseFloat(el.min);
+      const max = parseFloat(el.max);
+      if (val < min) el.min = (Math.floor(val * 2) / 2).toString();
+      if (val > max) el.max = (Math.ceil(val * 2) / 2).toString();
+      el.value = val;
+    }
     if (valEl) valEl.textContent = val.toFixed(2) + suffix;
   };
 
@@ -190,6 +196,7 @@ function setupCharTransformControls() {
   const pivotYSlider = document.getElementById('slider-pivot-y');
   const pivotZSlider = document.getElementById('slider-pivot-z');
   const resetBtn = document.getElementById('btn-reset-transform');
+  const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
   const onSliderChange = () => {
     charTransformConfig.UNIFORM_SCALE = uniformToggle ? uniformToggle.checked : true;
@@ -231,10 +238,57 @@ function setupCharTransformControls() {
 
   resetBtn?.addEventListener('click', () => {
     charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
+    
+    // Reset slider min/max ranges to default
+    const pX = document.getElementById('slider-pivot-x');
+    const pY = document.getElementById('slider-pivot-y');
+    const pZ = document.getElementById('slider-pivot-z');
+    if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
+    if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
+    if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
+
     syncCharTransformToUI();
     applyLiveTransformations();
     savePreferences();
     updateExportCode();
+  });
+
+  pivotGroundBtn?.addEventListener('click', () => {
+    if (!activeCharacter || !activeCharacter.charRoot) {
+      showToast('No character loaded!', true);
+      return;
+    }
+    
+    let minY = 0;
+    let hasMin = false;
+    
+    activeCharacter.rawMeshes.forEach(mesh => {
+      if (mesh.name === 'playerCapsuleBuilder') return;
+      if (!mesh.getBoundingInfo || !mesh.geometry) return;
+      
+      const localMin = mesh.getBoundingInfo().boundingBox.minimum;
+      const worldMin = BABYLON.Vector3.TransformCoordinates(localMin, mesh.getWorldMatrix());
+      const charRootInv = activeCharacter.charRoot.getWorldMatrix().clone().invert();
+      const localMinInCharRoot = BABYLON.Vector3.TransformCoordinates(worldMin, charRootInv);
+      
+      if (!hasMin || localMinInCharRoot.y < minY) {
+        minY = localMinInCharRoot.y;
+        hasMin = true;
+      }
+    });
+
+    if (hasMin) {
+      charTransformConfig.PIVOT_Y = Math.round(minY * 100) / 100;
+      
+      syncCharTransformToUI();
+      applyLiveTransformations();
+      savePreferences();
+      updateExportCode();
+      
+      showToast(`Pivot Y set to ground level: ${charTransformConfig.PIVOT_Y.toFixed(2)}m`);
+    } else {
+      showToast('Could not calculate ground level.', true);
+    }
   });
 }
 
@@ -865,7 +919,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   playerCapsule.checkCollisions = true;
   playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);
 
-  charRoot.setParent(playerCapsule);
+  const charTransformWrapper = new BABYLON.TransformNode('charTransformWrapperBuilder', scene);
+  charTransformWrapper.setParent(playerCapsule);
+  charTransformWrapper.position.set(0, 0, 0);
+  charTransformWrapper.rotation.set(0, 0, 0);
+
+  charRoot.setParent(charTransformWrapper);
   charRoot.position.set(0, -0.97, 0);
   charRoot.rotation.set(0, 0, 0);
 
@@ -885,7 +944,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     }
   });
 
-  activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot };
+  activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot, charTransformWrapper };
 
   // Apply live transformations immediately
   applyLiveTransformations();
@@ -1650,16 +1709,29 @@ function setupSidebarControls() {
       localStorage.removeItem('builder_key_bindings');
       localStorage.removeItem('builder_physics_config');
       localStorage.removeItem('builder_custom_animations');
+      localStorage.removeItem('builder_char_transform');
+      
       savedAnimMappings = null;
       keyBindings = JSON.parse(JSON.stringify(DEFAULT_KEY_BINDINGS));
       physicsConfig = JSON.parse(JSON.stringify(DEFAULT_PHYSICS_CONFIG));
+      charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
       customAnimations = [];
+
+      // Reset slider min/max ranges to default
+      const pX = document.getElementById('slider-pivot-x');
+      const pY = document.getElementById('slider-pivot-y');
+      const pZ = document.getElementById('slider-pivot-z');
+      if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
+      if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
+      if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
 
       autoMapAnimations();
       renderAnimationsMappingTab();
       renderCustomAnimationsTab();
       renderKeyBindingsUI();
       syncPhysicsConfigToUI();
+      syncCharTransformToUI();
+      applyLiveTransformations();
 
       if (activeCharacter && activeCharacter.charCtrl) {
         activeCharacter.charCtrl.keyBindings = keyBindings;
@@ -1958,7 +2030,7 @@ async function downloadCharacterGlbFile() {
         formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
       }
 
-      formData.append('options', JSON.stringify({ removeExistingAnimations: true }));
+      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: true })));
 
       const res = await fetch('/api/merge', {
         method: 'POST',

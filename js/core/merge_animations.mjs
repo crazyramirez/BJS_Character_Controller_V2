@@ -51,10 +51,18 @@ const COMPRESS_OUTPUT = true;
 // ── CLI ─────────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 let charPath = '', animPath = '', outputPath = '';
+let sx = 1.0, sy = 1.0, sz = 1.0;
+let px = 0.0, py = 0.0, pz = 0.0;
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '-c' || args[i] === '--character') && args[i + 1]) { charPath = args[++i]; }
   else if ((args[i] === '-a' || args[i] === '--animations') && args[i + 1]) { animPath = args[++i]; }
   else if ((args[i] === '-o' || args[i] === '--output') && args[i + 1]) { outputPath = args[++i]; }
+  else if (args[i] === '--scale-x' && args[i + 1]) { sx = parseFloat(args[++i]); }
+  else if (args[i] === '--scale-y' && args[i + 1]) { sy = parseFloat(args[++i]); }
+  else if (args[i] === '--scale-z' && args[i + 1]) { sz = parseFloat(args[++i]); }
+  else if (args[i] === '--pivot-x' && args[i + 1]) { px = parseFloat(args[++i]); }
+  else if (args[i] === '--pivot-y' && args[i + 1]) { py = parseFloat(args[++i]); }
+  else if (args[i] === '--pivot-z' && args[i + 1]) { pz = parseFloat(args[++i]); }
 }
 charPath = charPath || '../assets/character.glb';
 animPath = animPath || './assets//animations.glb';
@@ -644,7 +652,31 @@ async function main() {
     console.log(`Character is not in T-pose (${poseStyle}) — generating virtual T-pose...`);
     virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
   }
-
+  // Apply Scale & Pivot Shift to the character nodes!
+  if (sx !== 1.0 || sy !== 1.0 || sz !== 1.0 || px !== 0.0 || py !== 0.0 || pz !== 0.0) {
+    console.log(`Applying scale [${sx}, ${sy}, ${sz}] and pivot offset [${px}, ${py}, ${pz}] to character model...`);
+    for (const scene of charDoc.getRoot().listScenes()) {
+      for (const node of scene.listChildren()) {
+        // Scale the root node itself
+        const scale = node.getScale() || [1, 1, 1];
+        node.setScale([
+          scale[0] * sx,
+          scale[1] * sy,
+          scale[2] * sz
+        ]);
+        
+        // Translate its children relative to the root node to shift the pivot point to [0, 0, 0]
+        for (const child of node.listChildren()) {
+          const trans = child.getTranslation() || [0, 0, 0];
+          child.setTranslation([
+            trans[0] - px,
+            trans[1] - py,
+            trans[2] - pz
+          ]);
+        }
+      }
+    }
+  }
   const charRestByName = new Map(); // lowercase → local quat
   const charWorldByName = new Map(); // lowercase → world quat
 
@@ -815,9 +847,9 @@ async function main() {
           if (arr) {
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
-              out[j] = charRest[0] + arr[j] - animRest[0];
-              out[j + 1] = charRest[1] + arr[j + 1] - animRest[1];
-              out[j + 2] = charRest[2] + arr[j + 2] - animRest[2];
+              out[j] = charRest[0] + (arr[j] - animRest[0]);
+              out[j + 1] = charRest[1] + (arr[j + 1] - animRest[1]);
+              out[j + 2] = charRest[2] + (arr[j + 2] - animRest[2]);
             }
             output.setArray(out);
           }
