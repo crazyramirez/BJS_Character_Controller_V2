@@ -91,7 +91,9 @@ let charTransformConfig = {
   PIVOT_Y: 0.0,
   PIVOT_Z: 0.0,
   UNIFORM_SCALE: true,
-  SCALE_UNIFORM: 1.0
+  SCALE_UNIFORM: 1.0,
+  ARM_SPREAD_ANGLE: 0.0,
+  LEG_SPREAD_ANGLE: 0.0
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
 
@@ -160,7 +162,9 @@ function syncCharTransformToUI() {
       if (val > max) el.max = (Math.ceil(val * 2) / 2).toString();
       el.value = val;
     }
-    if (valEl) valEl.textContent = val.toFixed(2) + suffix;
+    if (valEl) {
+      valEl.textContent = suffix === '°' ? Math.round(val) + suffix : val.toFixed(2) + suffix;
+    }
   };
 
   const uniformToggle = document.getElementById('toggle-uniform-scale');
@@ -184,6 +188,8 @@ function syncCharTransformToUI() {
   setSlider('slider-pivot-x', charTransformConfig.PIVOT_X, 'm');
   setSlider('slider-pivot-y', charTransformConfig.PIVOT_Y, 'm');
   setSlider('slider-pivot-z', charTransformConfig.PIVOT_Z, 'm');
+  setSlider('slider-arm-spread', charTransformConfig.ARM_SPREAD_ANGLE, '°');
+  setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
 }
 
 function setupCharTransformControls() {
@@ -195,6 +201,8 @@ function setupCharTransformControls() {
   const pivotXSlider = document.getElementById('slider-pivot-x');
   const pivotYSlider = document.getElementById('slider-pivot-y');
   const pivotZSlider = document.getElementById('slider-pivot-z');
+  const armSpreadSlider = document.getElementById('slider-arm-spread');
+  const legSpreadSlider = document.getElementById('slider-leg-spread');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -220,6 +228,8 @@ function setupCharTransformControls() {
     charTransformConfig.PIVOT_X = pivotXSlider ? parseFloat(pivotXSlider.value) : 0.0;
     charTransformConfig.PIVOT_Y = pivotYSlider ? parseFloat(pivotYSlider.value) : 0.0;
     charTransformConfig.PIVOT_Z = pivotZSlider ? parseFloat(pivotZSlider.value) : 0.0;
+    charTransformConfig.ARM_SPREAD_ANGLE = armSpreadSlider ? parseFloat(armSpreadSlider.value) : 0.0;
+    charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -235,6 +245,8 @@ function setupCharTransformControls() {
   pivotXSlider?.addEventListener('input', onSliderChange);
   pivotYSlider?.addEventListener('input', onSliderChange);
   pivotZSlider?.addEventListener('input', onSliderChange);
+  armSpreadSlider?.addEventListener('input', onSliderChange);
+  legSpreadSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
@@ -246,6 +258,11 @@ function setupCharTransformControls() {
     if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
     if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
     if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
+
+    const armS = document.getElementById('slider-arm-spread');
+    const legS = document.getElementById('slider-leg-spread');
+    if (armS) { armS.min = "-45"; armS.max = "45"; }
+    if (legS) { legS.min = "-45"; legS.max = "45"; }
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -300,6 +317,9 @@ function getMergeOptions(extra = {}) {
     PIVOT_X: charTransformConfig.PIVOT_X,
     PIVOT_Y: charTransformConfig.PIVOT_Y,
     PIVOT_Z: charTransformConfig.PIVOT_Z,
+    ARM_SPREAD_ANGLE: charTransformConfig.ARM_SPREAD_ANGLE,
+    LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
+    removeExistingAnimations: true,
     ...extra
   };
 }
@@ -873,6 +893,9 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     if (activeCharacter.charCtrl._cameraLockObserver) {
       scene.onBeforeCameraRenderObservable.remove(activeCharacter.charCtrl._cameraLockObserver);
     }
+    if (activeCharacter.boneOffsetObserver) {
+      scene.onAfterAnimationsObservable.remove(activeCharacter.boneOffsetObserver);
+    }
     activeCharacter.playerCapsule.dispose();
     activeCharacter.animCtrl.destroy();
     activeCharacter = null;
@@ -945,6 +968,93 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   });
 
   activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot, charTransformWrapper };
+
+  // Cache original bone rotations for manual posture adjustment (arm/leg spread offsets)
+  const originalBoneRotations = new Map();
+  scene.skeletons.forEach(skel => {
+    skel.bones.forEach(bone => {
+      const node = bone.getTransformNode();
+      if (node) {
+        if (!node.rotationQuaternion) {
+          node.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(node.rotation.y, node.rotation.x, node.rotation.z);
+        }
+        originalBoneRotations.set(node.uniqueId, node.rotationQuaternion.clone());
+      }
+    });
+  });
+  activeCharacter.originalBoneRotations = originalBoneRotations;
+
+  // Set up observable to apply real-time bone rotation offsets (arm & leg spread angles)
+  activeCharacter.boneOffsetObserver = scene.onAfterAnimationsObservable.add(() => {
+    if (!activeCharacter) return;
+
+    // 1. Gather all unique node IDs that are currently animated by any playing animation group
+    const animatedNodes = new Set();
+    scene.animationGroups.forEach(ag => {
+      if (ag.isPlaying) {
+        ag.targetedAnimations.forEach(ta => {
+          if (ta.target) {
+            animatedNodes.add(ta.target.uniqueId);
+          }
+        });
+      }
+    });
+
+    const armAngle = charTransformConfig.ARM_SPREAD_ANGLE || 0;
+    const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
+
+    // 2. Loop through character bones and apply offsets (only if the bone matches arm/leg names)
+    scene.skeletons.forEach(skel => {
+      skel.bones.forEach(bone => {
+        const node = bone.getTransformNode();
+        if (!node) return;
+
+        const name = (bone.name || node.name || '').toLowerCase();
+        let isArm = false;
+        let isLeg = false;
+        let isLeft = false;
+        let isRight = false;
+
+        if (name.includes('leftshoulder') || name.includes('leftarm')) {
+          isArm = true;
+          isLeft = true;
+        } else if (name.includes('rightshoulder') || name.includes('rightarm')) {
+          isArm = true;
+          isRight = true;
+        } else if (name.includes('leftupleg') || name.includes('leftthigh')) {
+          isLeg = true;
+          isLeft = true;
+        } else if (name.includes('rightupleg') || name.includes('rightthigh')) {
+          isLeg = true;
+          isRight = true;
+        }
+
+        if (isArm || isLeg) {
+          // If the bone is not actively animated in the current frame, reset it to its rest pose rotation
+          if (!animatedNodes.has(node.uniqueId)) {
+            const origRot = originalBoneRotations.get(node.uniqueId);
+            if (origRot) {
+              node.rotationQuaternion.copyFrom(origRot);
+            }
+          }
+
+          // Compute custom yaw (Y-rotation) offset
+          let angleDeg = 0;
+          if (isArm) {
+            angleDeg = isLeft ? armAngle : -armAngle;
+          } else {
+            angleDeg = isLeft ? -legAngle : legAngle;
+          }
+
+          if (angleDeg !== 0) {
+            const angleRad = angleDeg * Math.PI / 180;
+            const offsetQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, angleRad);
+            node.rotationQuaternion.multiplyToRef(offsetQuat, node.rotationQuaternion);
+          }
+        }
+      });
+    });
+  });
 
   // Apply live transformations immediately
   applyLiveTransformations();
@@ -1180,6 +1290,9 @@ function clearCharacter() {
     }
     if (activeCharacter.charCtrl._cameraLockObserver) {
       scene.onBeforeCameraRenderObservable.remove(activeCharacter.charCtrl._cameraLockObserver);
+    }
+    if (activeCharacter.boneOffsetObserver) {
+      scene.onAfterAnimationsObservable.remove(activeCharacter.boneOffsetObserver);
     }
     activeCharacter.playerCapsule.dispose();
     activeCharacter.animCtrl.destroy();

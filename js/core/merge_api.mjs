@@ -405,30 +405,25 @@ function quatFromTwoVectors(a, b) {
 function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
   const parentMap = buildParentMap(doc);
   const rotations = new Map();
-  const positions = new Map();
 
   function getTransforms(node) {
-    if (rotations.has(node)) return { rot: rotations.get(node), pos: positions.get(node) };
+    if (rotations.has(node)) return { rot: rotations.get(node) };
 
     const localRot = node.getRotation() || [0, 0, 0, 1];
-    const localPos = node.getTranslation() || [0, 0, 0];
 
     const parent = parentMap.get(node);
     if (parent) {
       const parentTransforms = getTransforms(parent);
       const worldRot = qMul(parentTransforms.rot, localRot);
-      const worldPos = vec3Add(parentTransforms.pos, rotateVec3(localPos, parentTransforms.rot));
       rotations.set(node, worldRot);
-      positions.set(node, worldPos);
-      return { rot: worldRot, pos: worldPos };
+      return { rot: worldRot };
     } else {
       rotations.set(node, localRot);
-      positions.set(node, localPos);
-      return { rot: localRot, pos: localPos };
+      return { rot: localRot };
     }
   }
 
-  // Compute initial world transforms
+  // Compute initial world rotations
   for (const node of doc.getRoot().listNodes()) {
     getTransforms(node);
   }
@@ -439,7 +434,22 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     worldRotT.set(node, rotations.get(node) || [0, 0, 0, 1]);
   }
 
-  // Find arm bones
+  // Dynamic helper to compute updated world position of any bone
+  function getUpdatedWorldPos(node) {
+    const parent = parentMap.get(node);
+    const localPos = node.getTranslation() || [0, 0, 0];
+    if (parent) {
+      const parentPos = getUpdatedWorldPos(parent);
+      const parentRot = worldRotT.get(parent) || [0, 0, 0, 1];
+      return vec3Add(parentPos, rotateVec3(localPos, parentRot));
+    } else {
+      return localPos;
+    }
+  }
+
+  // Find bones
+  const hips = findMatchingBone({ getName: () => 'pelvis' }, charByName, charByNorm);
+
   const leftArm = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
   const leftForearm = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
   let leftHand = findMatchingBone({ getName: () => 'lefthand' }, charByName, charByNorm);
@@ -455,6 +465,16 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     const children = rightForearm.listChildren();
     if (children.length > 0) rightHand = children[0];
   }
+
+  const leftThigh = findMatchingBone({ getName: () => 'thigh_l' }, charByName, charByNorm);
+  const leftCalf = findMatchingBone({ getName: () => 'calf_l' }, charByName, charByNorm);
+  const leftFoot = findMatchingBone({ getName: () => 'foot_l' }, charByName, charByNorm);
+  const leftToe = findMatchingBone({ getName: () => 'toe_l' }, charByName, charByNorm);
+
+  const rightThigh = findMatchingBone({ getName: () => 'thigh_r' }, charByName, charByNorm);
+  const rightCalf = findMatchingBone({ getName: () => 'calf_r' }, charByName, charByNorm);
+  const rightFoot = findMatchingBone({ getName: () => 'foot_r' }, charByName, charByNorm);
+  const rightToe = findMatchingBone({ getName: () => 'toe_r' }, charByName, charByNorm);
 
   // Helper for recursive descendants list
   function getDescendants(node, list = []) {
@@ -474,51 +494,124 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 1. Left Arm
-  if (leftArm && leftForearm) {
-    const pArm = positions.get(leftArm);
-    const pFore = positions.get(leftForearm);
-    if (pArm && pFore) {
-      const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
-      const qAlignArm = quatFromTwoVectors(vArm, [1, 0, 0]);
-      applyCorrection(leftArm, qAlignArm);
+  // 1. Align Hips (Pelvis/Waist) to World Identity
+  if (hips) {
+    const wrot = worldRotT.get(hips) || [0, 0, 0, 1];
+    const qCorr = qInvert(wrot);
+    applyCorrection(hips, qCorr);
+  }
 
-      // Now Left Forearm
-      let vForeOriginal = null;
-      if (leftHand) {
-        const pHand = positions.get(leftHand);
-        if (pHand) vForeOriginal = vec3Normalize(vec3Subtract(pHand, pFore));
-      }
-      if (!vForeOriginal) {
-        vForeOriginal = vArm;
-      }
-      const vForeUpdated = rotateVec3(vForeOriginal, qAlignArm);
-      const qAlignFore = quatFromTwoVectors(vForeUpdated, [1, 0, 0]);
+  // 2. Left Arm
+  if (leftArm && leftForearm) {
+    const pArm = getUpdatedWorldPos(leftArm);
+    const pFore = getUpdatedWorldPos(leftForearm);
+    const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
+    const qAlignArm = quatFromTwoVectors(vArm, [1, 0, 0]);
+    applyCorrection(leftArm, qAlignArm);
+
+    // Left Forearm
+    const pForeUpdated = getUpdatedWorldPos(leftForearm);
+    let pHand = leftHand ? getUpdatedWorldPos(leftHand) : null;
+    if (!pHand) {
+      const children = leftForearm.listChildren();
+      if (children.length > 0) pHand = getUpdatedWorldPos(children[0]);
+    }
+    if (pHand) {
+      const vFore = vec3Normalize(vec3Subtract(pHand, pForeUpdated));
+      const qAlignFore = quatFromTwoVectors(vFore, [1, 0, 0]);
       applyCorrection(leftForearm, qAlignFore);
     }
   }
 
-  // 2. Right Arm
+  // 3. Right Arm
   if (rightArm && rightForearm) {
-    const pArm = positions.get(rightArm);
-    const pFore = positions.get(rightForearm);
-    if (pArm && pFore) {
-      const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
-      const qAlignArm = quatFromTwoVectors(vArm, [-1, 0, 0]);
-      applyCorrection(rightArm, qAlignArm);
+    const pArm = getUpdatedWorldPos(rightArm);
+    const pFore = getUpdatedWorldPos(rightForearm);
+    const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
+    const qAlignArm = quatFromTwoVectors(vArm, [-1, 0, 0]);
+    applyCorrection(rightArm, qAlignArm);
 
-      // Now Right Forearm
-      let vForeOriginal = null;
-      if (rightHand) {
-        const pHand = positions.get(rightHand);
-        if (pHand) vForeOriginal = vec3Normalize(vec3Subtract(pHand, pFore));
-      }
-      if (!vForeOriginal) {
-        vForeOriginal = vArm;
-      }
-      const vForeUpdated = rotateVec3(vForeOriginal, qAlignArm);
-      const qAlignFore = quatFromTwoVectors(vForeUpdated, [-1, 0, 0]);
+    // Right Forearm
+    const pForeUpdated = getUpdatedWorldPos(rightForearm);
+    let pHand = rightHand ? getUpdatedWorldPos(rightHand) : null;
+    if (!pHand) {
+      const children = rightForearm.listChildren();
+      if (children.length > 0) pHand = getUpdatedWorldPos(children[0]);
+    }
+    if (pHand) {
+      const vFore = vec3Normalize(vec3Subtract(pHand, pForeUpdated));
+      const qAlignFore = quatFromTwoVectors(vFore, [-1, 0, 0]);
       applyCorrection(rightForearm, qAlignFore);
+    }
+  }
+
+  // 4. Left Leg (Thigh -> Calf -> Foot)
+  if (leftThigh && leftCalf) {
+    const pThigh = getUpdatedWorldPos(leftThigh);
+    const pCalf = getUpdatedWorldPos(leftCalf);
+    const vThigh = vec3Normalize(vec3Subtract(pCalf, pThigh));
+    const qAlignThigh = quatFromTwoVectors(vThigh, [0, -1, 0]);
+    applyCorrection(leftThigh, qAlignThigh);
+
+    const pCalfUpdated = getUpdatedWorldPos(leftCalf);
+    let pFoot = leftFoot ? getUpdatedWorldPos(leftFoot) : null;
+    if (!pFoot) {
+      const children = leftCalf.listChildren();
+      if (children.length > 0) pFoot = getUpdatedWorldPos(children[0]);
+    }
+    if (pFoot) {
+      const vCalf = vec3Normalize(vec3Subtract(pFoot, pCalfUpdated));
+      const qAlignCalf = quatFromTwoVectors(vCalf, [0, -1, 0]);
+      applyCorrection(leftCalf, qAlignCalf);
+    }
+  }
+
+  // 5. Right Leg (Thigh -> Calf -> Foot)
+  if (rightThigh && rightCalf) {
+    const pThigh = getUpdatedWorldPos(rightThigh);
+    const pCalf = getUpdatedWorldPos(rightCalf);
+    const vThigh = vec3Normalize(vec3Subtract(pCalf, pThigh));
+    const qAlignThigh = quatFromTwoVectors(vThigh, [0, -1, 0]);
+    applyCorrection(rightThigh, qAlignThigh);
+
+    const pCalfUpdated = getUpdatedWorldPos(rightCalf);
+    let pFoot = rightFoot ? getUpdatedWorldPos(rightFoot) : null;
+    if (!pFoot) {
+      const children = rightCalf.listChildren();
+      if (children.length > 0) pFoot = getUpdatedWorldPos(children[0]);
+    }
+    if (pFoot) {
+      const vCalf = vec3Normalize(vec3Subtract(pFoot, pCalfUpdated));
+      const qAlignCalf = quatFromTwoVectors(vCalf, [0, -1, 0]);
+      applyCorrection(rightCalf, qAlignCalf);
+    }
+  }
+
+  // 6. Left Foot (Foot -> Toe)
+  if (leftFoot && leftToe) {
+    const pFoot = getUpdatedWorldPos(leftFoot);
+    const pToe = getUpdatedWorldPos(leftToe);
+    const vFoot = vec3Subtract(pToe, pFoot);
+    const vFootHoriz = [vFoot[0], 0, vFoot[2]];
+    const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
+    if (len > 0.001) {
+      const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
+      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, -1]);
+      applyCorrection(leftFoot, qAlignFoot);
+    }
+  }
+
+  // 7. Right Foot (Foot -> Toe)
+  if (rightFoot && rightToe) {
+    const pFoot = getUpdatedWorldPos(rightFoot);
+    const pToe = getUpdatedWorldPos(rightToe);
+    const vFoot = vec3Subtract(pToe, pFoot);
+    const vFootHoriz = [vFoot[0], 0, vFoot[2]];
+    const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
+    if (len > 0.001) {
+      const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
+      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, -1]);
+      applyCorrection(rightFoot, qAlignFoot);
     }
   }
 

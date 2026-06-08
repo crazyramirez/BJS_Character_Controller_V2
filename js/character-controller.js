@@ -281,7 +281,7 @@ class AnimCtrl {
       this.g = new Map();
     }
 
-    console.log('[AnimCtrl] loaded:', [...this.g.keys()].sort().join(', '));
+    // console.log('[AnimCtrl] loaded:', [...this.g.keys()].sort().join(', '));
 
     // Register Locomotion Blend Tree as a virtual animation group
     this.locoGroup = new LocoBlendGroup(this);
@@ -678,7 +678,7 @@ class CharCtrl {
 
     this._originalSensibilityX = this.camera.angularSensibilityX;
     this._originalRadius = this.camera.radius;
-    console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
+    // console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
     // Apply Hide Cursor state if persisted in localStorage
     if (localStorage.getItem('hide-cursor') === 'true') {
@@ -1055,7 +1055,7 @@ class CharCtrl {
     const knob = document.getElementById(this.touchConfig.knobId);
 
     if (!zone || !ring || !knob) {
-      console.log('[CharCtrl] Mobile joystick elements not found in DOM, skipping joystick initialization');
+      // console.log('[CharCtrl] Mobile joystick elements not found in DOM, skipping joystick initialization');
       return;
     }
 
@@ -2915,14 +2915,14 @@ async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
     const havokInstance = await HavokPhysics();
     const hk = new BABYLON.HavokPlugin(true, havokInstance);
     scene.enablePhysics(gravity, hk);
-    console.log("[Physics] Havok Physics initialized successfully.");
+    // console.log("[Physics] Havok Physics initialized successfully.");
     return true;
   } catch (e) {
     if (physicsOverride === 'true') {
-      console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
+      // console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
       localStorage.removeItem('use-physics');
     } else {
-      console.info('[Physics] Havok unavailable — using kinematic mode.', e);
+      // console.info('[Physics] Havok unavailable — using kinematic mode.', e);
     }
     return false;
   }

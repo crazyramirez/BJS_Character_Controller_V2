@@ -35,8 +35,8 @@ const IGNORE_NON_ROOT_TRANSLATION = true;
 
 // ── MANUAL POSTURE ADJUSTMENTS ────────────────────────────────────────────
 // Manual per-bone yaw offset (degrees). Leave at 0 if not needed.
-const ARM_SPREAD_ANGLE = 0;
-const LEG_SPREAD_ANGLE = 0;
+let ARM_SPREAD_ANGLE = 0;
+let LEG_SPREAD_ANGLE = 0;
 
 // Per-bone rotation offsets applied AFTER retargeting (in degrees: [pitch, yaw, roll]).
 // Bone names must be LOWERCASE and match the CHARACTER skeleton (Mixamo names).
@@ -63,6 +63,8 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === '--pivot-x' && args[i + 1]) { px = parseFloat(args[++i]); }
   else if (args[i] === '--pivot-y' && args[i + 1]) { py = parseFloat(args[++i]); }
   else if (args[i] === '--pivot-z' && args[i + 1]) { pz = parseFloat(args[++i]); }
+  else if (args[i] === '--arm-spread' && args[i + 1]) { ARM_SPREAD_ANGLE = parseFloat(args[++i]); }
+  else if (args[i] === '--leg-spread' && args[i + 1]) { LEG_SPREAD_ANGLE = parseFloat(args[++i]); }
 }
 charPath = charPath || '../assets/character.glb';
 animPath = animPath || './assets//animations.glb';
@@ -596,6 +598,8 @@ function findMatchingBone(animNode, charByName, charByNorm) {
     if (norm.endsWith(n) || n.endsWith(norm)) return node;
   }
   return null;
+}
+
 async function main() {
   console.log('==================================================');
   console.log('       GLB ANIMATION MERGER & OPTIMIZER           ');
@@ -664,7 +668,7 @@ async function main() {
           scale[1] * sy,
           scale[2] * sz
         ]);
-        
+
         // Translate its children relative to the root node to shift the pivot point to [0, 0, 0]
         for (const child of node.listChildren()) {
           const trans = child.getTranslation() || [0, 0, 0];
@@ -685,7 +689,7 @@ async function main() {
 
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
-    
+
     let restRot, worldRot;
     if (virtualPose) {
       restRot = virtualPose.localRotT.get(node) || [0, 0, 0, 1];
@@ -731,9 +735,10 @@ async function main() {
   const origScenes = new Set(charDoc.getRoot().listScenes());
   const origMeshes = new Set(charDoc.getRoot().listMeshes());
   const origSkins = new Set(charDoc.getRoot().listSkins());
-  const origAnims = new Set(charDoc.getRoot().listAnimations());
-
-
+  
+  // Discard all existing animations on the character GLB to prevent posture distortion and track pollution
+  charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
+  const origAnims = new Set();
 
   console.log(`Character: ${origNodes.size} nodes, ${origMeshes.size} meshes, ${origAnims.size} anims, ${origSkins.size} skins`);
 
