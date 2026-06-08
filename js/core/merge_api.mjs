@@ -24,10 +24,10 @@ const DEFAULTS = {
   LEG_SPREAD_ANGLE: 0,
   POSE_OFFSETS: {},
   COMPRESS_OUTPUT: true,
-  // Automatically detect A-pose arms and compensate using parent-space C matrix.
-  // This is the correct fix for characters like 3d_character_young_boy.glb.
-  AUTO_APOSE_CORRECTION: true,
-  // Arms drooped more than this many degrees are considered A-pose (vs T-pose).
+  // A-pose correction is disabled: the world-space change-of-basis C = inv(Wchar)·Wanim
+  // already handles A-pose (and any other baked coordinate frame) correctly on its own.
+  // Enabling this can corrupt the C matrix for characters re-exported from BabylonJS.
+  AUTO_APOSE_CORRECTION: false,
   APOSE_THRESHOLD_DEG: 15,
 };
 
@@ -381,6 +381,120 @@ function computeWorldRotations(doc) {
   for (const node of doc.getRoot().listNodes()) get(node);
   return cache;
 }
+
+function mat4Mul(a, b) {
+  const out = new Float32Array(16);
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k * 4 + row] * b[col * 4 + k];
+      out[col * 4 + row] = s;
+    }
+  }
+  return out;
+}
+
+// Invert a rigid-body (rotation + translation, no scale) column-major 4x4 matrix
+function invertRigidMat4(m) {
+  const R00=m[0], R10=m[1], R20=m[2];
+  const R01=m[4], R11=m[5], R21=m[6];
+  const R02=m[8], R12=m[9], R22=m[10];
+  const tx=m[12], ty=m[13], tz=m[14];
+  return new Float32Array([
+    R00, R01, R02, 0,
+    R10, R11, R12, 0,
+    R20, R21, R22, 0,
+    -(R00*tx + R10*ty + R20*tz),
+    -(R01*tx + R11*ty + R21*tz),
+    -(R02*tx + R12*ty + R22*tz),
+    1,
+  ]);
+}
+
+// Extract rotation quaternion from a column-major 4x4 matrix (Shepperd method)
+function mat4RotToQuat(m) {
+  const m00=m[0], m10=m[1], m20=m[2];
+  const m01=m[4], m11=m[5], m21=m[6];
+  const m02=m[8], m12=m[9], m22=m[10];
+  const trace = m00 + m11 + m22;
+  let x, y, z, w;
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    w = 0.25 / s; x = (m21 - m12) * s; y = (m02 - m20) * s; z = (m10 - m01) * s;
+  } else if (m00 > m11 && m00 > m22) {
+    const s = 2 * Math.sqrt(1 + m00 - m11 - m22);
+    w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const s = 2 * Math.sqrt(1 + m11 - m00 - m22);
+    w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s;
+  } else {
+    const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
+    w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s;
+  }
+  const len = Math.sqrt(x*x + y*y + z*z + w*w);
+  return len > 0 ? [x/len, y/len, z/len, w/len] : [0, 0, 0, 1];
+}
+
+/**
+ * Extract bind pose rotations from skin Inverse Bind Matrices.
+ * Returns per-bone local and world bind quaternions derived from IBMs, not node rotations.
+ * This correctly handles BJS re-exports where non-T-pose is baked into node rotations.
+ *
+ * Math: IBM_j = inv(W_j_bind), so W_j_bind = inv(IBM_j).
+ * Local bind: L_j = inv(W_parent_bind) * W_j_bind = IBM_parent * inv(IBM_j)
+ */
+function extractBindPoseFromIBMs(doc) {
+  const bindRotByName = new Map();
+  const bindWorldByName = new Map();
+  const parentMap = buildParentMap(doc);
+
+  for (const skin of doc.getRoot().listSkins()) {
+    const joints = skin.listJoints();
+    const ibmAcc = skin.getInverseBindMatrices();
+    if (!ibmAcc || joints.length === 0) continue;
+
+    const ibmArray = ibmAcc.getArray();
+    if (!ibmArray) continue;
+
+    const jointIndex = new Map();
+    joints.forEach((j, i) => jointIndex.set(j, i));
+    const jointSet = new Set(joints);
+
+    for (let i = 0; i < joints.length; i++) {
+      if (i * 16 + 16 > ibmArray.length) break;
+      const joint = joints[i];
+      const name = joint.getName();
+      if (!name) continue;
+
+      const ibm_i = ibmArray.slice(i * 16, i * 16 + 16);
+      const W_bind = invertRigidMat4(ibm_i);
+      const worldRot = mat4RotToQuat(W_bind);
+
+      const key = name.toLowerCase();
+      bindWorldByName.set(key, worldRot);
+      const stripped = stripBJSSuffix(name);
+      if (stripped !== name) bindWorldByName.set(stripped.toLowerCase(), worldRot);
+
+      // Find nearest ancestor that is also a skin joint
+      let parent = parentMap.get(joint);
+      while (parent && !jointSet.has(parent)) parent = parentMap.get(parent);
+
+      let localRot;
+      if (parent && jointIndex.has(parent)) {
+        const pi = jointIndex.get(parent);
+        const ibm_p = ibmArray.slice(pi * 16, pi * 16 + 16);
+        localRot = mat4RotToQuat(mat4Mul(ibm_p, W_bind));
+      } else {
+        localRot = worldRot;
+      }
+
+      bindRotByName.set(key, localRot);
+      if (stripped !== name) bindRotByName.set(stripped.toLowerCase(), localRot);
+    }
+  }
+
+  return { bindRotByName, bindWorldByName };
+}
 function findMatchingBone(animNode, charByName, charByNorm) {
   const src = animNode.getName();
   if (!src) return null;
@@ -406,6 +520,7 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   for (const [n, node] of charByNorm) {
     if (norm.endsWith(n) || n.endsWith(norm)) return node;
   }
+  console.log(`[findMatchingBone] Failed to find match for anim bone: "${src}" (normalized: "${norm}")`);
   return null;
 }
 
@@ -575,6 +690,23 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   const animDoc = await io.readBinary(new Uint8Array(animBuffer));
 
+  // Print bone names for debugging matching
+  console.log('--- DEBUG BONE NAMES ---');
+  const charJointNames = [];
+  for (const skin of charDoc.getRoot().listSkins()) {
+    for (const joint of skin.listJoints()) charJointNames.push(joint.getName());
+  }
+  console.log(`[debug] Character bone names (first 20): ${JSON.stringify(charJointNames.slice(0, 20))}`);
+  console.log(`[debug] Total character bones: ${charJointNames.length}`);
+
+  const animJointNames = [];
+  for (const skin of animDoc.getRoot().listSkins()) {
+    for (const joint of skin.listJoints()) animJointNames.push(joint.getName());
+  }
+  console.log(`[debug] Animation bone names (first 20): ${JSON.stringify(animJointNames.slice(0, 20))}`);
+  console.log(`[debug] Total animation bones: ${animJointNames.length}`);
+  console.log('------------------------');
+
   // Pre-merge analysis
   const charWorldRots = computeWorldRotations(charDoc);
   const animWorldRots = computeWorldRotations(animDoc);
@@ -583,12 +715,17 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const charWorldByName = new Map();
   // Also index by node reference for quick parent→world lookup
   const charWorldByNode = new Map();
+
+  // IBM-derived bind pose — handles BJS re-exports with non-T-pose baked into node rotations
+  const { bindRotByName, bindWorldByName } = extractBindPoseFromIBMs(charDoc);
+
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
     const wrot = charWorldRots.get(node) || [0, 0, 0, 1];
     if (name) {
-      charRestByName.set(name.toLowerCase(), node.getRotation() || [0, 0, 0, 1]);
-      charWorldByName.set(name.toLowerCase(), wrot);
+      const key = name.toLowerCase();
+      charRestByName.set(key, bindRotByName.get(key) || node.getRotation() || [0, 0, 0, 1]);
+      charWorldByName.set(key, bindWorldByName.get(key) || wrot);
     }
     charWorldByNode.set(node, wrot);
   }
@@ -675,7 +812,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const _applyAposeCorrectionGlobal = cfg.AUTO_APOSE_CORRECTION && _armDroopDeg > cfg.APOSE_THRESHOLD_DEG;
 
   // Merge
+  console.log(`[merge] charDoc anims BEFORE merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
+  console.log(`[merge] animDoc anims: ${animDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   charDoc.merge(animDoc);
+  console.log(`[merge] charDoc anims AFTER merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
 
   // Remove junk animations
   for (const anim of [...charDoc.getRoot().listAnimations()]) {
@@ -684,6 +824,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   }
 
   const importedAnims = charDoc.getRoot().listAnimations().filter(a => !origAnims.has(a));
+  console.log(`[merge] importedAnims (${importedAnims.length}): ${importedAnims.map(a => a.getName()).join(', ')}`);
 
   // Retarget
   if (cfg.SKELETON_SOURCE === 'character') {
@@ -826,11 +967,13 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     for (const node of charDoc.getRoot().listNodes()) { if (!origNodes.has(node)) node.dispose(); }
     for (const mesh of charDoc.getRoot().listMeshes()) { if (!origMeshes.has(mesh)) mesh.dispose(); }
     for (const skin of charDoc.getRoot().listSkins()) { if (!origSkins.has(skin)) skin.dispose(); }
+    console.log(`[merge] Anims after retarget+dispose: ${charDoc.getRoot().listAnimations().map(a => `${a.getName()}(${a.listChannels().length}ch)`).join(', ')}`);
   }
 
   for (const scene of charDoc.getRoot().listScenes()) { if (!origScenes.has(scene)) scene.dispose(); }
 
   await charDoc.transform(prune());
+  console.log(`[merge] Anims after prune: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   await charDoc.transform(unpartition());
 
   if (cfg.COMPRESS_OUTPUT) {

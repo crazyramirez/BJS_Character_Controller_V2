@@ -16,17 +16,17 @@ import { Readable } from 'stream';
 
 // multer is CommonJS — use createRequire to load it in ESM context
 const require = createRequire(import.meta.url);
-const multer  = require('multer');
+const multer = require('multer');
 
 import { mergeGLBs, analyzeGLB } from './js/core/merge_api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Multer: in-memory storage ────────────────────────────────────────────────
 const storage = multer.memoryStorage();
-const upload  = multer({ storage, limits: { fileSize: 256 * 1024 * 1024 } }); // 256 MB max
+const upload = multer({ storage, limits: { fileSize: 256 * 1024 * 1024 } }); // 256 MB max
 
 // ── Static files ─────────────────────────────────────────────────────────────
 app.use(express.static(__dirname));
@@ -58,7 +58,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
 // Optional JSON body param "options" (stringify) for merge overrides
 // Response: binary .glb
 app.post('/api/merge', upload.fields([
-  { name: 'character',  maxCount: 1 },
+  { name: 'character', maxCount: 1 },
   { name: 'animations', maxCount: 1 },
 ]), async (req, res) => {
   try {
@@ -71,12 +71,12 @@ app.post('/api/merge', upload.fields([
 
     let options = {};
     if (req.body?.options) {
-      try { options = JSON.parse(req.body.options); } catch(_) { /* ignore */ }
+      try { options = JSON.parse(req.body.options); } catch (_) { /* ignore */ }
     }
 
-    console.log(`[merge] char=${charFile.originalname} (${(charFile.size/1024/1024).toFixed(2)} MB)`);
+    console.log(`[merge] char=${charFile.originalname} (${(charFile.size / 1024 / 1024).toFixed(2)} MB)`);
     if (animFile) {
-      console.log(`[merge] anim=${animFile.originalname} (${(animFile.size/1024/1024).toFixed(2)} MB)`);
+      console.log(`[merge] anim=${animFile.originalname} (${(animFile.size / 1024 / 1024).toFixed(2)} MB)`);
     } else {
       console.log(`[merge] anim=none (clean animations mode)`);
     }
@@ -93,6 +93,10 @@ app.post('/api/merge', upload.fields([
     console.error('[merge] Error:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/builder', (req, res) => {
+  res.sendFile(__dirname + '/builder.html');
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

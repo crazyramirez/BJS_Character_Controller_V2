@@ -614,8 +614,10 @@ async function loadAnimationBatchFile(file) {
   if (isServerAvailable) {
     showMergeProgress(true, `Merging ${file.name} on server…`);
     try {
+      const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+      console.log(`[batch-import] Using ${originalCharacterGlbBuffer ? 'original' : 'current'} character buffer (${(baseBuffer.byteLength / 1024).toFixed(0)} KB) + anim file (${(animBuffer.byteLength / 1024).toFixed(0)} KB)`);
       const formData = new FormData();
-      formData.append('character', new Blob([characterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+      formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animBuffer], { type: 'model/gltf-binary' }), file.name);
 
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
@@ -628,8 +630,10 @@ async function loadAnimationBatchFile(file) {
       showLoading('Loading merged character…');
 
       const mergedBuffer = await res.arrayBuffer();
+      console.log(`[batch-import] Merged result: ${(mergedBuffer.byteLength / 1024).toFixed(0)} KB`);
       characterGlbBuffer = mergedBuffer; // update stored char buffer to the merged one
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
+      console.log(`[batch-import] Detected animations after load: [${detectedAnimations.join(', ')}]`);
       setLoaderStep('merge', 'completed');
 
       hideLoading();
