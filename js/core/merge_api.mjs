@@ -494,12 +494,20 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 1. Align Hips (Pelvis/Waist) to World Identity
-  if (hips) {
-    const wrot = worldRotT.get(hips) || [0, 0, 0, 1];
-    const qCorr = qInvert(wrot);
-    applyCorrection(hips, qCorr);
-  }
+  // Find spine/waist bones
+  const spine = findMatchingBone({ getName: () => 'spine' }, charByName, charByNorm);
+  const spine1 = findMatchingBone({ getName: () => 'spine1' }, charByName, charByNorm);
+  const spine2 = findMatchingBone({ getName: () => 'spine2' }, charByName, charByNorm);
+
+  // 1. Align Hips (Pelvis/Waist) and spine bones to World Identity (straightens back/cintura)
+  const waistBones = [hips, spine, spine1, spine2];
+  waistBones.forEach(bone => {
+    if (bone) {
+      const wrot = worldRotT.get(bone) || [0, 0, 0, 1];
+      const qCorr = qInvert(wrot);
+      applyCorrection(bone, qCorr);
+    }
+  });
 
   // 2. Left Arm
   if (leftArm && leftForearm) {
@@ -1037,10 +1045,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   // console.log(`[merge] Detected character pose style: ${poseStyle}`);
 
   let virtualPose = null;
-  if (poseStyle !== 'T-POSE') {
-    console.log(`[merge] Character is not in T-pose (${poseStyle}) — generating virtual T-pose...`);
-    virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
-  }
+  console.log(`[merge] Generating virtual T-pose alignment...`);
+  virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
   // Apply Scale & Pivot Shift to the character nodes!
   const sx = cfg.SCALE_X !== undefined ? cfg.SCALE_X : 1.0;
   const sy = cfg.SCALE_Y !== undefined ? cfg.SCALE_Y : 1.0;
