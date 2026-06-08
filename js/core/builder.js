@@ -28,6 +28,7 @@ const STANDARD_ANIM_KEYS = [
   { key: 'Jump_Loop', label: 'Jump Mid-Air Loop', defaultKeyword: /jump.*(loop|mid|air)/i },
   { key: 'Jump_Land', label: 'Jump Land', defaultKeyword: /jump.*(land|ground)/i },
   { key: 'Roll', label: 'Dodge Roll', defaultKeyword: /roll/i },
+  { key: 'Punch', label: 'Punch', defaultKeyword: /^(?!.*jab)(?!.*cross).*punch/i },
   { key: 'Punch_Jab', label: 'Punch Jab', defaultKeyword: /jab/i },
   { key: 'Punch_Cross', label: 'Punch Cross', defaultKeyword: /cross/i },
   { key: 'Spell_Simple_Enter', label: 'Spell Enter', defaultKeyword: /spell.*enter/i },
@@ -1098,6 +1099,8 @@ function applyAnimationsToController() {
         activeCharacter.animCtrl.setAnimation(stdKey.key, group);
         activeCharacter.animCtrl.setAnimationRanges(stdKey.key, mapping.from, mapping.to);
       }
+    } else {
+      activeCharacter.animCtrl.g.delete(stdKey.key);
     }
   });
 

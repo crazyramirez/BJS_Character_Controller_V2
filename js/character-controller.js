@@ -90,14 +90,14 @@ const S = {
   CROUCH_IDLE: 'CROUCH_IDLE', CROUCH_WALK: 'CROUCH_WALK', CROUCH_RUN: 'CROUCH_RUN',
   JUMP_START: 'JUMP_START', JUMP_LOOP: 'JUMP_LOOP', JUMP_LAND: 'JUMP_LAND',
   ROLL: 'ROLL',
-  PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
+  PUNCH: 'PUNCH', PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
   SPELL_ENTER: 'SPELL_ENTER', SPELL_SHOOT: 'SPELL_SHOOT', SPELL_EXIT: 'SPELL_EXIT',
   INTERACT: 'INTERACT', PICKUP: 'PICKUP',
 };
 
 const ACTION_STATES = new Set([
   S.JUMP_START, S.JUMP_LOOP, S.JUMP_LAND, S.ROLL,
-  S.PUNCH_JAB, S.PUNCH_CROSS,
+  S.PUNCH, S.PUNCH_JAB, S.PUNCH_CROSS,
   S.SPELL_ENTER, S.SPELL_SHOOT, S.SPELL_EXIT,
   S.INTERACT, S.PICKUP,
 ]);
@@ -554,6 +554,10 @@ class AnimCtrl {
 
   setRollAnim(animationGroup) {
     return this.setAnimation('Roll', animationGroup);
+  }
+
+  setPunchAnim(animationGroup) {
+    return this.setAnimation('Punch', animationGroup);
   }
 
   setPunchJabAnim(animationGroup) {
@@ -1338,7 +1342,8 @@ class CharCtrl {
         this._roll();
       }
     } else if (this._matchesAction(code, 'PUNCH')) {
-      if (this.grounded && !inAction && !this.weapon && !this.sitting)
+      const isPunching = this.state === S.PUNCH || this.state === S.PUNCH_JAB || this.state === S.PUNCH_CROSS;
+      if (this.grounded && (!inAction || isPunching) && !this.weapon && !this.sitting)
         this._punch();
     } else if (this._matchesAction(code, 'SPELL')) {
       if (!inAction && !this.sitting)
@@ -1514,29 +1519,90 @@ class CharCtrl {
 
   _punch() {
     const now = performance.now();
-    if (this.comboIdx === 1 && now - this.comboT < 900 / this.SPEED_MULTIPLIER) {
-      this.comboIdx = 2;
-      this._setState(S.PUNCH_CROSS);
-      this.anim.play('Punch_Cross', false, 0.08, () => {
-        this.comboIdx = 0;
-        this._setState(S.IDLE);
-        this._returnToLoco();
-        this._hideCombo();
-      }, 1.2);
-      this._showCombo('CROSS!');
+    const hasPunch = this.anim.has('Punch');
+    const comboWindow = 900 / this.SPEED_MULTIPLIER;
+
+    // Prevent spamming combo steps too quickly (minimum 250ms interval between hits)
+    if (this.comboIdx > 0 && (now - this.comboT) < 250 / this.SPEED_MULTIPLIER) {
+      return;
+    }
+
+    if (hasPunch) {
+      // 3-hit combo: Punch -> Punch_Jab -> Punch_Cross
+      if (this.comboIdx === 1 && now - this.comboT < comboWindow) {
+        // Hit 2: Punch_Jab
+        this.comboIdx = 2;
+        this.comboT = now;
+        this._setState(S.PUNCH_JAB);
+        this.anim.play('Punch_Jab', false, 0.08, () => {
+          if (this.comboIdx === 2) {
+            this.comboIdx = 0;
+            this._setState(S.IDLE);
+            this._returnToLoco();
+            this._hideCombo();
+          }
+        }, 1.2);
+        this._showCombo('JAB');
+      } else if (this.comboIdx === 2 && now - this.comboT < comboWindow) {
+        // Hit 3: Punch_Cross
+        this.comboIdx = 3;
+        this.comboT = now;
+        this._setState(S.PUNCH_CROSS);
+        this.anim.play('Punch_Cross', false, 0.08, () => {
+          if (this.comboIdx === 3) {
+            this.comboIdx = 0;
+            this._setState(S.IDLE);
+            this._returnToLoco();
+            this._hideCombo();
+          }
+        }, 1.2);
+        this._showCombo('CROSS!');
+      } else {
+        // Hit 1: Punch
+        this.comboIdx = 1;
+        this.comboT = now;
+        this._setState(S.PUNCH);
+        this.anim.play('Punch', false, 0.08, () => {
+          if (this.comboIdx === 1) {
+            this.comboIdx = 0;
+            this._setState(S.IDLE);
+            this._returnToLoco();
+            this._hideCombo();
+          }
+        }, 1.2);
+        this._showCombo('PUNCH');
+      }
     } else {
-      this.comboIdx = 1;
-      this.comboT = now;
-      this._setState(S.PUNCH_JAB);
-      this.anim.play('Punch_Jab', false, 0.08, () => {
-        if (this.comboIdx === 1) {
-          this.comboIdx = 0;
-          this._setState(S.IDLE);
-          this._returnToLoco();
-          this._hideCombo();
-        }
-      }, 1.2);
-      this._showCombo('JAB');
+      // 2-hit combo fallback: Punch_Jab -> Punch_Cross
+      if (this.comboIdx === 1 && now - this.comboT < comboWindow) {
+        // Hit 2: Punch_Cross
+        this.comboIdx = 2;
+        this.comboT = now;
+        this._setState(S.PUNCH_CROSS);
+        this.anim.play('Punch_Cross', false, 0.08, () => {
+          if (this.comboIdx === 2) {
+            this.comboIdx = 0;
+            this._setState(S.IDLE);
+            this._returnToLoco();
+            this._hideCombo();
+          }
+        }, 1.2);
+        this._showCombo('CROSS!');
+      } else {
+        // Hit 1: Punch_Jab
+        this.comboIdx = 1;
+        this.comboT = now;
+        this._setState(S.PUNCH_JAB);
+        this.anim.play('Punch_Jab', false, 0.08, () => {
+          if (this.comboIdx === 1) {
+            this.comboIdx = 0;
+            this._setState(S.IDLE);
+            this._returnToLoco();
+            this._hideCombo();
+          }
+        }, 1.2);
+        this._showCombo('JAB');
+      }
     }
   }
 
