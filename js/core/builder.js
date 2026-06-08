@@ -83,6 +83,18 @@ const DEFAULT_KEY_BINDINGS = JSON.parse(JSON.stringify(keyBindings));
 const DEFAULT_PHYSICS_CONFIG = JSON.parse(JSON.stringify(physicsConfig));
 let savedAnimMappings = null;
 
+let charTransformConfig = {
+  SCALE_X: 1.0,
+  SCALE_Y: 1.0,
+  SCALE_Z: 1.0,
+  PIVOT_X: 0.0,
+  PIVOT_Y: 0.0,
+  PIVOT_Z: 0.0,
+  UNIFORM_SCALE: true,
+  SCALE_UNIFORM: 1.0
+};
+const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
+
 // ═══════════════════════════════════════════════════════════
 // PREFERENCES
 // ═══════════════════════════════════════════════════════════
@@ -96,6 +108,8 @@ function loadPreferences() {
     if (physics) physicsConfig = Object.assign({}, DEFAULT_PHYSICS_CONFIG, JSON.parse(physics));
     const customs = localStorage.getItem('builder_custom_animations');
     if (customs) customAnimations = JSON.parse(customs);
+    const transforms = localStorage.getItem('builder_char_transform');
+    if (transforms) charTransformConfig = Object.assign({}, DEFAULT_CHAR_TRANSFORM, JSON.parse(transforms));
 
     const savedPlayParticles = localStorage.getItem('play-particles');
     if (savedPlayParticles !== null) {
@@ -110,7 +124,130 @@ function savePreferences() {
     localStorage.setItem('builder_key_bindings', JSON.stringify(keyBindings));
     localStorage.setItem('builder_physics_config', JSON.stringify(physicsConfig));
     localStorage.setItem('builder_custom_animations', JSON.stringify(customAnimations));
+    localStorage.setItem('builder_char_transform', JSON.stringify(charTransformConfig));
   } catch (e) { console.error('Failed to save preferences', e); }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHARACTER TRANSFORMS (SCALE & PIVOT)
+// ═══════════════════════════════════════════════════════════
+function applyLiveTransformations() {
+  if (!activeCharacter || !activeCharacter.charRoot) return;
+
+  const sx = charTransformConfig.SCALE_X;
+  const sy = charTransformConfig.SCALE_Y;
+  const sz = charTransformConfig.SCALE_Z;
+
+  const px = charTransformConfig.PIVOT_X;
+  const py = charTransformConfig.PIVOT_Y;
+  const pz = charTransformConfig.PIVOT_Z;
+
+  // Apply scale
+  activeCharacter.charRoot.scaling.set(sx, sy, sz);
+
+  // Apply visual root offset (feet position relative to capsule center, shifting opposite of pivot)
+  activeCharacter.charRoot.position.set(-px * sx, -0.97 - py * sy, -pz * sz);
+}
+
+function syncCharTransformToUI() {
+  const setSlider = (id, val, suffix = '') => {
+    const el = document.getElementById(id);
+    const valEl = document.getElementById('val-' + id.substring(7));
+    if (el) el.value = val;
+    if (valEl) valEl.textContent = val.toFixed(2) + suffix;
+  };
+
+  const uniformToggle = document.getElementById('toggle-uniform-scale');
+  if (uniformToggle) uniformToggle.checked = charTransformConfig.UNIFORM_SCALE;
+
+  const groupUniform = document.getElementById('group-scale-uniform');
+  const groupXyz = document.getElementById('group-scale-xyz');
+
+  if (charTransformConfig.UNIFORM_SCALE) {
+    if (groupUniform) groupUniform.style.display = 'block';
+    if (groupXyz) groupXyz.style.display = 'none';
+  } else {
+    if (groupUniform) groupUniform.style.display = 'none';
+    if (groupXyz) groupXyz.style.display = 'block';
+  }
+
+  setSlider('slider-scale-uniform', charTransformConfig.SCALE_UNIFORM, 'x');
+  setSlider('slider-scale-x', charTransformConfig.SCALE_X, 'x');
+  setSlider('slider-scale-y', charTransformConfig.SCALE_Y, 'x');
+  setSlider('slider-scale-z', charTransformConfig.SCALE_Z, 'x');
+  setSlider('slider-pivot-x', charTransformConfig.PIVOT_X, 'm');
+  setSlider('slider-pivot-y', charTransformConfig.PIVOT_Y, 'm');
+  setSlider('slider-pivot-z', charTransformConfig.PIVOT_Z, 'm');
+}
+
+function setupCharTransformControls() {
+  const uniformToggle = document.getElementById('toggle-uniform-scale');
+  const uniformSlider = document.getElementById('slider-scale-uniform');
+  const scaleXSlider = document.getElementById('slider-scale-x');
+  const scaleYSlider = document.getElementById('slider-scale-y');
+  const scaleZSlider = document.getElementById('slider-scale-z');
+  const pivotXSlider = document.getElementById('slider-pivot-x');
+  const pivotYSlider = document.getElementById('slider-pivot-y');
+  const pivotZSlider = document.getElementById('slider-pivot-z');
+  const resetBtn = document.getElementById('btn-reset-transform');
+
+  const onSliderChange = () => {
+    charTransformConfig.UNIFORM_SCALE = uniformToggle ? uniformToggle.checked : true;
+    charTransformConfig.SCALE_UNIFORM = uniformSlider ? parseFloat(uniformSlider.value) : 1.0;
+    
+    if (charTransformConfig.UNIFORM_SCALE) {
+      charTransformConfig.SCALE_X = charTransformConfig.SCALE_UNIFORM;
+      charTransformConfig.SCALE_Y = charTransformConfig.SCALE_UNIFORM;
+      charTransformConfig.SCALE_Z = charTransformConfig.SCALE_UNIFORM;
+      
+      // Sync XYZ sliders internally
+      if (scaleXSlider) scaleXSlider.value = charTransformConfig.SCALE_UNIFORM;
+      if (scaleYSlider) scaleYSlider.value = charTransformConfig.SCALE_UNIFORM;
+      if (scaleZSlider) scaleZSlider.value = charTransformConfig.SCALE_UNIFORM;
+    } else {
+      charTransformConfig.SCALE_X = scaleXSlider ? parseFloat(scaleXSlider.value) : 1.0;
+      charTransformConfig.SCALE_Y = scaleYSlider ? parseFloat(scaleYSlider.value) : 1.0;
+      charTransformConfig.SCALE_Z = scaleZSlider ? parseFloat(scaleZSlider.value) : 1.0;
+    }
+
+    charTransformConfig.PIVOT_X = pivotXSlider ? parseFloat(pivotXSlider.value) : 0.0;
+    charTransformConfig.PIVOT_Y = pivotYSlider ? parseFloat(pivotYSlider.value) : 0.0;
+    charTransformConfig.PIVOT_Z = pivotZSlider ? parseFloat(pivotZSlider.value) : 0.0;
+
+    syncCharTransformToUI();
+    applyLiveTransformations();
+    savePreferences();
+    updateExportCode();
+  };
+
+  uniformToggle?.addEventListener('change', onSliderChange);
+  uniformSlider?.addEventListener('input', onSliderChange);
+  scaleXSlider?.addEventListener('input', onSliderChange);
+  scaleYSlider?.addEventListener('input', onSliderChange);
+  scaleZSlider?.addEventListener('input', onSliderChange);
+  pivotXSlider?.addEventListener('input', onSliderChange);
+  pivotYSlider?.addEventListener('input', onSliderChange);
+  pivotZSlider?.addEventListener('input', onSliderChange);
+
+  resetBtn?.addEventListener('click', () => {
+    charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
+    syncCharTransformToUI();
+    applyLiveTransformations();
+    savePreferences();
+    updateExportCode();
+  });
+}
+
+function getMergeOptions(extra = {}) {
+  return {
+    SCALE_X: charTransformConfig.SCALE_X,
+    SCALE_Y: charTransformConfig.SCALE_Y,
+    SCALE_Z: charTransformConfig.SCALE_Z,
+    PIVOT_X: charTransformConfig.PIVOT_X,
+    PIVOT_Y: charTransformConfig.PIVOT_Y,
+    PIVOT_Z: charTransformConfig.PIVOT_Z,
+    ...extra
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -130,6 +267,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   setupSidebarControls();
   syncPhysicsConfigToUI();
+  setupCharTransformControls();
+  syncCharTransformToUI();
   setupDragAndDrop();
 
   // Await server ping BEFORE loading default character so isServerAvailable is set
@@ -561,6 +700,8 @@ async function applyPreloadedAnimations() {
       formData.append('character', new Blob([characterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
 
+      formData.append('options', JSON.stringify(getMergeOptions()));
+
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -620,6 +761,8 @@ async function loadAnimationBatchFile(file) {
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animBuffer], { type: 'model/gltf-binary' }), file.name);
+
+      formData.append('options', JSON.stringify(getMergeOptions()));
 
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
       if (!res.ok) {
@@ -743,6 +886,9 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   });
 
   activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot };
+
+  // Apply live transformations immediately
+  applyLiveTransformations();
 
   // Apply mappings immediately so standard keys (Roll, Jump_Loop, etc.) are in animCtrl.g
   // before the first render frame ticks. autoMapAnimations() later will re-run but this
@@ -957,11 +1103,17 @@ function updateCharStatusBar(filename) {
   const text = document.getElementById('char-status-text');
   if (bar) bar.style.display = 'flex';
   if (text) text.textContent = filename;
+
+  const ctrl = document.getElementById('char-transform-controls');
+  if (ctrl) ctrl.style.display = 'block';
 }
 
 function clearCharacter() {
   const bar = document.getElementById('char-status');
   if (bar) bar.style.display = 'none';
+
+  const ctrl = document.getElementById('char-transform-controls');
+  if (ctrl) ctrl.style.display = 'none';
 
   if (activeCharacter) {
     if (activeCharacter.charCtrl._updateObserver) {

@@ -45,54 +45,54 @@ const DEFAULTS = {
 //
 const BONE_MAP = {
   // ── Root / Spine ────────────────────────────────────────
-  'pelvis':    ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
-  'spine_01':  ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback'],
-  'spine_02':  ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine'],
-  'spine_03':  ['spine2', 'mixamorig:spine2', 'chest', 'upperchest', 'upperspine', 'upperbody'],
-  'neck_01':   ['neck', 'mixamorig:neck', 'neck1'],
-  'neck_02':   ['neck1', 'mixamorig:neck1'],
-  'head':      ['head', 'mixamorig:head'],
+  'pelvis': ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
+  'spine_01': ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback'],
+  'spine_02': ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine'],
+  'spine_03': ['spine2', 'mixamorig:spine2', 'chest', 'upperchest', 'upperspine', 'upperbody'],
+  'neck_01': ['neck', 'mixamorig:neck', 'neck1'],
+  'neck_02': ['neck1', 'mixamorig:neck1'],
+  'head': ['head', 'mixamorig:head'],
 
   // ── Left arm ──────────────────────────────────────────
   //   UE5: clavicle_l    Unity: leftshoulder    Rigify: shoulderl (after normalize)
   'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder', 'leftcollar', 'leftclavicle',
-                 'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl'],
+    'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl'],
   //   UE5: upperarm_l    Unity: leftupperarm    Rigify: upperarml
   'upperarm_l': ['leftarm', 'mixamorig:leftarm', 'leftupperarm', 'l_upperarm', 'upperarm_l',
-                 'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm'],
+    'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm'],
   //   UE5: lowerarm_l    Unity: leftlowerarm    Rigify: forearml
   'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm', 'leftlowerarm', 'l_lowerarm',
-                 'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm'],
-  'hand_l':    ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l'],
+    'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm'],
+  'hand_l': ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l'],
 
   // ── Right arm ─────────────────────────────────────────
   'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder', 'rightcollar', 'rightclavicle',
-                 'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr'],
+    'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr'],
   'upperarm_r': ['rightarm', 'mixamorig:rightarm', 'rightupperarm', 'r_upperarm', 'upperarm_r',
-                 'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm'],
+    'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm'],
   'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm', 'rightlowerarm', 'r_lowerarm',
-                 'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm'],
-  'hand_r':    ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r'],
+    'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm'],
+  'hand_r': ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r'],
 
   // ── Left leg ──────────────────────────────────────────
   //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl
-  'thigh_l':   ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
-                'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl'],
+  'thigh_l': ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
+    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl'],
   //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl
-  'calf_l':    ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
-                'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee'],
-  'foot_l':    ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l'],
-  'toe_l':     ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe'],
-  'ball_l':    ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
+  'calf_l': ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
+    'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee'],
+  'foot_l': ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l'],
+  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe'],
+  'ball_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
 
   // ── Right leg ────────────────────────────────────────
-  'thigh_r':   ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
-                'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr'],
-  'calf_r':    ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
-                'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee'],
-  'foot_r':    ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r'],
-  'toe_r':     ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe'],
-  'ball_r':    ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
+  'thigh_r': ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
+    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr'],
+  'calf_r': ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
+    'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee'],
+  'foot_r': ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r'],
+  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe'],
+  'ball_r': ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
 
   // ── Fingers ────────────────────────────────────────────
   'thumb_01_l': ['lefthandthumb1', 'mixamorig:lefthandthumb1', 'thumb1l', 'l_thumb1', 'thumbproximall'],
@@ -367,6 +367,177 @@ function rotateVec3([x, y, z], [qx, qy, qz, qw]) {
     iz * qw + iw * -qz + ix * -qy - iy * -qx,
   ];
 }
+function vec3Cross(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]
+  ];
+}
+function vec3Dot(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+function vec3Length(v) {
+  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+function quatNormalize(q) {
+  const len = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  return len > 0 ? [q[0] / len, q[1] / len, q[2] / len, q[3] / len] : [0, 0, 0, 1];
+}
+function quatFromTwoVectors(a, b) {
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (dot < -0.99999) {
+    let axis = vec3Cross(a, [1, 0, 0]);
+    if (vec3Length(axis) < 0.0001) {
+      axis = vec3Cross(a, [0, 1, 0]);
+    }
+    axis = vec3Normalize(axis);
+    return [axis[0], axis[1], axis[2], 0];
+  }
+  if (dot > 0.99999) {
+    return [0, 0, 0, 1];
+  }
+  const cross = vec3Cross(a, b);
+  const q = [cross[0], cross[1], cross[2], 1 + dot];
+  return quatNormalize(q);
+}
+
+function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
+  const parentMap = buildParentMap(doc);
+  const rotations = new Map();
+  const positions = new Map();
+
+  function getTransforms(node) {
+    if (rotations.has(node)) return { rot: rotations.get(node), pos: positions.get(node) };
+
+    const localRot = node.getRotation() || [0, 0, 0, 1];
+    const localPos = node.getTranslation() || [0, 0, 0];
+
+    const parent = parentMap.get(node);
+    if (parent) {
+      const parentTransforms = getTransforms(parent);
+      const worldRot = qMul(parentTransforms.rot, localRot);
+      const worldPos = vec3Add(parentTransforms.pos, rotateVec3(localPos, parentTransforms.rot));
+      rotations.set(node, worldRot);
+      positions.set(node, worldPos);
+      return { rot: worldRot, pos: worldPos };
+    } else {
+      rotations.set(node, localRot);
+      positions.set(node, localPos);
+      return { rot: localRot, pos: localPos };
+    }
+  }
+
+  // Compute initial world transforms
+  for (const node of doc.getRoot().listNodes()) {
+    getTransforms(node);
+  }
+
+  // Copy initial world rotations
+  const worldRotT = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    worldRotT.set(node, rotations.get(node) || [0, 0, 0, 1]);
+  }
+
+  // Find arm bones
+  const leftArm = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
+  const leftForearm = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
+  let leftHand = findMatchingBone({ getName: () => 'lefthand' }, charByName, charByNorm);
+  if (!leftHand && leftForearm) {
+    const children = leftForearm.listChildren();
+    if (children.length > 0) leftHand = children[0];
+  }
+
+  const rightArm = findMatchingBone({ getName: () => 'rightarm' }, charByName, charByNorm);
+  const rightForearm = findMatchingBone({ getName: () => 'rightforearm' }, charByName, charByNorm);
+  let rightHand = findMatchingBone({ getName: () => 'righthand' }, charByName, charByNorm);
+  if (!rightHand && rightForearm) {
+    const children = rightForearm.listChildren();
+    if (children.length > 0) rightHand = children[0];
+  }
+
+  // Helper for recursive descendants list
+  function getDescendants(node, list = []) {
+    list.push(node);
+    for (const child of node.listChildren()) {
+      getDescendants(child, list);
+    }
+    return list;
+  }
+
+  // Helper to apply world rotation correction to a node and its descendants
+  function applyCorrection(rootNode, qCorr) {
+    const descendants = getDescendants(rootNode);
+    for (const desc of descendants) {
+      const wrot = worldRotT.get(desc) || [0, 0, 0, 1];
+      worldRotT.set(desc, qMul(qCorr, wrot));
+    }
+  }
+
+  // 1. Left Arm
+  if (leftArm && leftForearm) {
+    const pArm = positions.get(leftArm);
+    const pFore = positions.get(leftForearm);
+    if (pArm && pFore) {
+      const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
+      const qAlignArm = quatFromTwoVectors(vArm, [1, 0, 0]);
+      applyCorrection(leftArm, qAlignArm);
+
+      // Now Left Forearm
+      let vForeOriginal = null;
+      if (leftHand) {
+        const pHand = positions.get(leftHand);
+        if (pHand) vForeOriginal = vec3Normalize(vec3Subtract(pHand, pFore));
+      }
+      if (!vForeOriginal) {
+        vForeOriginal = vArm;
+      }
+      const vForeUpdated = rotateVec3(vForeOriginal, qAlignArm);
+      const qAlignFore = quatFromTwoVectors(vForeUpdated, [1, 0, 0]);
+      applyCorrection(leftForearm, qAlignFore);
+    }
+  }
+
+  // 2. Right Arm
+  if (rightArm && rightForearm) {
+    const pArm = positions.get(rightArm);
+    const pFore = positions.get(rightForearm);
+    if (pArm && pFore) {
+      const vArm = vec3Normalize(vec3Subtract(pFore, pArm));
+      const qAlignArm = quatFromTwoVectors(vArm, [-1, 0, 0]);
+      applyCorrection(rightArm, qAlignArm);
+
+      // Now Right Forearm
+      let vForeOriginal = null;
+      if (rightHand) {
+        const pHand = positions.get(rightHand);
+        if (pHand) vForeOriginal = vec3Normalize(vec3Subtract(pHand, pFore));
+      }
+      if (!vForeOriginal) {
+        vForeOriginal = vArm;
+      }
+      const vForeUpdated = rotateVec3(vForeOriginal, qAlignArm);
+      const qAlignFore = quatFromTwoVectors(vForeUpdated, [-1, 0, 0]);
+      applyCorrection(rightForearm, qAlignFore);
+    }
+  }
+
+  // Compute local rotations in virtual T-pose
+  const localRotT = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    const parent = parentMap.get(node);
+    const wrot = worldRotT.get(node) || [0, 0, 0, 1];
+    if (parent) {
+      const pwrot = worldRotT.get(parent) || [0, 0, 0, 1];
+      localRotT.set(node, qMul(qInvert(pwrot), wrot));
+    } else {
+      localRotT.set(node, wrot);
+    }
+  }
+
+  return { worldRotT, localRotT };
+}
+
 function computeWorldRotations(doc) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
@@ -396,26 +567,26 @@ function mat4Mul(a, b) {
 
 // Invert a rigid-body (rotation + translation, no scale) column-major 4x4 matrix
 function invertRigidMat4(m) {
-  const R00=m[0], R10=m[1], R20=m[2];
-  const R01=m[4], R11=m[5], R21=m[6];
-  const R02=m[8], R12=m[9], R22=m[10];
-  const tx=m[12], ty=m[13], tz=m[14];
+  const R00 = m[0], R10 = m[1], R20 = m[2];
+  const R01 = m[4], R11 = m[5], R21 = m[6];
+  const R02 = m[8], R12 = m[9], R22 = m[10];
+  const tx = m[12], ty = m[13], tz = m[14];
   return new Float32Array([
     R00, R01, R02, 0,
     R10, R11, R12, 0,
     R20, R21, R22, 0,
-    -(R00*tx + R10*ty + R20*tz),
-    -(R01*tx + R11*ty + R21*tz),
-    -(R02*tx + R12*ty + R22*tz),
+    -(R00 * tx + R10 * ty + R20 * tz),
+    -(R01 * tx + R11 * ty + R21 * tz),
+    -(R02 * tx + R12 * ty + R22 * tz),
     1,
   ]);
 }
 
 // Extract rotation quaternion from a column-major 4x4 matrix (Shepperd method)
 function mat4RotToQuat(m) {
-  const m00=m[0], m10=m[1], m20=m[2];
-  const m01=m[4], m11=m[5], m21=m[6];
-  const m02=m[8], m12=m[9], m22=m[10];
+  const m00 = m[0], m10 = m[1], m20 = m[2];
+  const m01 = m[4], m11 = m[5], m21 = m[6];
+  const m02 = m[8], m12 = m[9], m22 = m[10];
   const trace = m00 + m11 + m22;
   let x, y, z, w;
   if (trace > 0) {
@@ -431,8 +602,8 @@ function mat4RotToQuat(m) {
     const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
     w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s;
   }
-  const len = Math.sqrt(x*x + y*y + z*z + w*w);
-  return len > 0 ? [x/len, y/len, z/len, w/len] : [0, 0, 0, 1];
+  const len = Math.sqrt(x * x + y * y + z * z + w * w);
+  return len > 0 ? [x / len, y / len, z / len, w / len] : [0, 0, 0, 1];
 }
 
 /**
@@ -520,8 +691,48 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   for (const [n, node] of charByNorm) {
     if (norm.endsWith(n) || n.endsWith(norm)) return node;
   }
-  console.log(`[findMatchingBone] Failed to find match for anim bone: "${src}" (normalized: "${norm}")`);
+  // console.log(`[findMatchingBone] Failed to find match for anim bone: "${src}" (normalized: "${norm}")`);
   return null;
+}
+
+/**
+ * Extract rest pose from the T-pose animation track (first keyframe per bone).
+ * Mixamo GLBs store node.getRotation() as identity — actual T-pose lives in the
+ * "T_Pose"/"TPose" animation. Using this gives correct Wanim for C = inv(Wchar)·Wanim.
+ * Returns { localByName, worldByName } (keyed by bone name lowercase), or null if no track found.
+ */
+function extractTPoseRestPose(doc) {
+  const tposeAnim = doc.getRoot().listAnimations()
+    .find(a => /t[_\-]?pose/i.test(a.getName() || ''));
+  if (!tposeAnim) return null;
+
+  const localByName = new Map();
+  for (const channel of tposeAnim.listChannels()) {
+    if (channel.getTargetPath() !== 'rotation') continue;
+    const node = channel.getTargetNode();
+    if (!node?.getName()) continue;
+    const arr = channel.getSampler()?.getOutput()?.getArray();
+    if (!arr || arr.length < 4) continue;
+    localByName.set(node.getName().toLowerCase(), [arr[0], arr[1], arr[2], arr[3]]);
+  }
+  if (localByName.size === 0) return null;
+
+  // Compute world rotations via parent hierarchy.
+  // Bones without a T-pose channel fall back to node.getRotation().
+  const parentMap = buildParentMap(doc);
+  const worldByName = new Map();
+  function getWorld(node) {
+    const name = node.getName()?.toLowerCase();
+    if (name && worldByName.has(name)) return worldByName.get(name);
+    const local = (name && localByName.get(name)) || node.getRotation() || [0, 0, 0, 1];
+    const parent = parentMap.get(node);
+    const world = parent ? qMul(getWorld(parent), local) : local;
+    if (name) worldByName.set(name, world);
+    return world;
+  }
+  for (const node of doc.getRoot().listNodes()) getWorld(node);
+
+  return { localByName, worldByName };
 }
 
 // ── Create shared IO instance ────────────────────────────────────────────────
@@ -690,26 +901,62 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   const animDoc = await io.readBinary(new Uint8Array(animBuffer));
 
+  const charByName = new Map();
+  const charByNorm = new Map();
+  for (const node of charDoc.getRoot().listNodes()) {
+    const name = node.getName();
+    if (name) {
+      charByName.set(name, node);
+      charByName.set(name.toLowerCase(), node);
+      const stripped = stripBJSSuffix(name);
+      if (stripped !== name) {
+        charByName.set(stripped, node);
+        charByName.set(stripped.toLowerCase(), node);
+      }
+      const n = normalizeName(name);
+      if (n) charByNorm.set(n, node);
+    }
+  }
+
   // Print bone names for debugging matching
-  console.log('--- DEBUG BONE NAMES ---');
+  // console.log('--- DEBUG BON
+  // E NAMES ---');
   const charJointNames = [];
   for (const skin of charDoc.getRoot().listSkins()) {
     for (const joint of skin.listJoints()) charJointNames.push(joint.getName());
   }
-  console.log(`[debug] Character bone names (first 20): ${JSON.stringify(charJointNames.slice(0, 20))}`);
-  console.log(`[debug] Total character bones: ${charJointNames.length}`);
+  // console.log(`[debug] Character bone names (first 20): ${JSON.stringify(charJointNames.slice(0, 20))}`);
+  // console.log(`[debug] Total character bones: ${charJointNames.length}`);
 
   const animJointNames = [];
   for (const skin of animDoc.getRoot().listSkins()) {
     for (const joint of skin.listJoints()) animJointNames.push(joint.getName());
   }
-  console.log(`[debug] Animation bone names (first 20): ${JSON.stringify(animJointNames.slice(0, 20))}`);
-  console.log(`[debug] Total animation bones: ${animJointNames.length}`);
-  console.log('------------------------');
+  // console.log(`[debug] Animation bone names (first 20): ${JSON.stringify(animJointNames.slice(0, 20))}`);
+  // console.log(`[debug] Total animation bones: ${animJointNames.length}`);
+  // console.log('------------------------');
 
   // Pre-merge analysis
   const charWorldRots = computeWorldRotations(charDoc);
   const animWorldRots = computeWorldRotations(animDoc);
+
+  const poseStyle = detectPoseStyle(charDoc, charByName, charByNorm);
+  // console.log(`[merge] Detected character pose style: ${poseStyle}`);
+
+  let virtualPose = null;
+  if (poseStyle !== 'T-POSE') {
+    console.log(`[merge] Character is not in T-pose (${poseStyle}) — generating virtual T-pose...`);
+    virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
+  }
+
+  // Extract T-pose BEFORE building char bind pose maps — it determines which strategy to use.
+  // Mixamo GLBs store node.getRotation() as identity; real T-pose orientation lives in "T_Pose" track.
+  const tposeRestPose = extractTPoseRestPose(animDoc);
+  if (tposeRestPose) {
+    // console.log(`[merge] T-pose rest pose extracted (${tposeRestPose.localByName.size} bones) — using visual bind pose for character`);
+  } else {
+    // console.log(`[merge] No T-pose animation found in anim GLB — falling back to IBM / node default rotations`);
+  }
 
   const charRestByName = new Map();
   const charWorldByName = new Map();
@@ -722,12 +969,27 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
     const wrot = charWorldRots.get(node) || [0, 0, 0, 1];
+
+    let restRot, worldRot;
+    if (virtualPose) {
+      restRot = virtualPose.localRotT.get(node) || [0, 0, 0, 1];
+      worldRot = virtualPose.worldRotT.get(node) || [0, 0, 0, 1];
+    } else {
+      if (tposeRestPose) {
+        restRot = node.getRotation() || [0, 0, 0, 1];
+        worldRot = wrot;
+      } else {
+        restRot = bindRotByName.get(name?.toLowerCase()) || node.getRotation() || [0, 0, 0, 1];
+        worldRot = bindWorldByName.get(name?.toLowerCase()) || wrot;
+      }
+    }
+
     if (name) {
       const key = name.toLowerCase();
-      charRestByName.set(key, bindRotByName.get(key) || node.getRotation() || [0, 0, 0, 1]);
-      charWorldByName.set(key, bindWorldByName.get(key) || wrot);
+      charRestByName.set(key, restRot);
+      charWorldByName.set(key, worldRot);
     }
-    charWorldByNode.set(node, wrot);
+    charWorldByNode.set(node, virtualPose ? (virtualPose.worldRotT.get(node) || wrot) : wrot);
   }
 
   const animRestByName = new Map();
@@ -736,8 +998,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   for (const node of animDoc.getRoot().listNodes()) {
     const name = node.getName();
     if (name) {
-      animRestByName.set(name.toLowerCase(), node.getRotation() || [0, 0, 0, 1]);
-      animWorldByName.set(name.toLowerCase(), animWorldRots.get(node) || [0, 0, 0, 1]);
+      const key = name.toLowerCase();
+      animRestByName.set(key, tposeRestPose?.localByName.get(key) || node.getRotation() || [0, 0, 0, 1]);
+      animWorldByName.set(key, tposeRestPose?.worldByName.get(key) || animWorldRots.get(node) || [0, 0, 0, 1]);
     }
     for (const child of node.listChildren()) {
       const cn = child.getName()?.toLowerCase();
@@ -752,23 +1015,6 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const origSkins = new Set(charDoc.getRoot().listSkins());
   const origAnims = new Set(charDoc.getRoot().listAnimations());
 
-  const charByName = new Map();
-  const charByNorm = new Map();
-  for (const node of charDoc.getRoot().listNodes()) {
-    const name = node.getName();
-    if (name) {
-      charByName.set(name, node);
-      charByName.set(name.toLowerCase(), node);
-      // Also index by BJS-suffix-stripped name so e.g. 'Hips_66' maps to 'Hips'
-      const stripped = stripBJSSuffix(name);
-      if (stripped !== name) {
-        charByName.set(stripped, node);
-        charByName.set(stripped.toLowerCase(), node);
-      }
-      const n = normalizeName(name);
-      if (n) charByNorm.set(n, node);
-    }
-  }
 
   // ── A-pose detection ──────────────────────────────────────────────────────
   // Measure how far the character's arms droop from horizontal.
@@ -794,7 +1040,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
     for (const node of charDoc.getRoot().listNodes()) _getPreTransforms(node);
 
-    const leftArm  = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
+    const leftArm = findMatchingBone({ getName: () => 'leftarm' }, charByName, charByNorm);
     const leftFore = findMatchingBone({ getName: () => 'leftforearm' }, charByName, charByNorm);
     if (leftArm && leftFore) {
       const pA = prePositions.get(leftArm);
@@ -812,10 +1058,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const _applyAposeCorrectionGlobal = cfg.AUTO_APOSE_CORRECTION && _armDroopDeg > cfg.APOSE_THRESHOLD_DEG;
 
   // Merge
-  console.log(`[merge] charDoc anims BEFORE merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
-  console.log(`[merge] animDoc anims: ${animDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
+  // console.log(`[merge] charDoc anims BEFORE merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
+  // console.log(`[merge] animDoc anims: ${animDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   charDoc.merge(animDoc);
-  console.log(`[merge] charDoc anims AFTER merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
+  // console.log(`[merge] charDoc anims AFTER merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
 
   // Remove junk animations
   for (const anim of [...charDoc.getRoot().listAnimations()]) {
@@ -824,7 +1070,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   }
 
   const importedAnims = charDoc.getRoot().listAnimations().filter(a => !origAnims.has(a));
-  console.log(`[merge] importedAnims (${importedAnims.length}): ${importedAnims.map(a => a.getName()).join(', ')}`);
+  // console.log(`[merge] importedAnims (${importedAnims.length}): ${importedAnims.map(a => a.getName()).join(', ')}`);
 
   // Retarget
   if (cfg.SKELETON_SOURCE === 'character') {
@@ -967,13 +1213,13 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     for (const node of charDoc.getRoot().listNodes()) { if (!origNodes.has(node)) node.dispose(); }
     for (const mesh of charDoc.getRoot().listMeshes()) { if (!origMeshes.has(mesh)) mesh.dispose(); }
     for (const skin of charDoc.getRoot().listSkins()) { if (!origSkins.has(skin)) skin.dispose(); }
-    console.log(`[merge] Anims after retarget+dispose: ${charDoc.getRoot().listAnimations().map(a => `${a.getName()}(${a.listChannels().length}ch)`).join(', ')}`);
+    // console.log(`[merge] Anims after retarget+dispose: ${charDoc.getRoot().listAnimations().map(a => `${a.getName()}(${a.listChannels().length}ch)`).join(', ')}`);
   }
 
   for (const scene of charDoc.getRoot().listScenes()) { if (!origScenes.has(scene)) scene.dispose(); }
 
   await charDoc.transform(prune());
-  console.log(`[merge] Anims after prune: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
+  // console.log(`[merge] Anims after prune: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   await charDoc.transform(unpartition());
 
   if (cfg.COMPRESS_OUTPUT) {
