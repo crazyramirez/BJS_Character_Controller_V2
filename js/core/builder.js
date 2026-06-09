@@ -195,7 +195,7 @@ function syncCharTransformToUI() {
 
 function resetCharacterTransform() {
   charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
-  
+
   // Reset slider min/max ranges to default
   const sU = document.getElementById('slider-scale-uniform');
   const sX = document.getElementById('slider-scale-x');
@@ -247,12 +247,12 @@ function setupCharTransformControls() {
   const onSliderChange = () => {
     charTransformConfig.UNIFORM_SCALE = uniformToggle ? uniformToggle.checked : true;
     charTransformConfig.SCALE_UNIFORM = uniformSlider ? parseFloat(uniformSlider.value) : 1.0;
-    
+
     if (charTransformConfig.UNIFORM_SCALE) {
       charTransformConfig.SCALE_X = charTransformConfig.SCALE_UNIFORM;
       charTransformConfig.SCALE_Y = charTransformConfig.SCALE_UNIFORM;
       charTransformConfig.SCALE_Z = charTransformConfig.SCALE_UNIFORM;
-      
+
       // Sync XYZ sliders internally
       if (scaleXSlider) scaleXSlider.value = charTransformConfig.SCALE_UNIFORM;
       if (scaleYSlider) scaleYSlider.value = charTransformConfig.SCALE_UNIFORM;
@@ -1904,7 +1904,7 @@ function setupSidebarControls() {
       localStorage.removeItem('builder_key_bindings');
       localStorage.removeItem('builder_physics_config');
       localStorage.removeItem('builder_custom_animations');
-      
+
       savedAnimMappings = null;
       keyBindings = JSON.parse(JSON.stringify(DEFAULT_KEY_BINDINGS));
       physicsConfig = JSON.parse(JSON.stringify(DEFAULT_PHYSICS_CONFIG));

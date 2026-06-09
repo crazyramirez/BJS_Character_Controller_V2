@@ -2790,8 +2790,11 @@ class CharCtrl {
     if (this.crouching) {
       const want = hasMove ? (sprint ? S.CROUCH_RUN : S.CROUCH_WALK) : S.CROUCH_IDLE;
 
-      // Sinks 8 cm relative to rest pose for a smooth visual crouch down
-      this.targetLocalY = this._standMeshY - 0.08;
+      // Sinks 8 cm relative to rest pose for a smooth visual crouch down.
+      // Physics mode: capsule bottom is fixed; targetLocalY already set by the shape-switch path.
+      if (!this.usePhysics) {
+        this.targetLocalY = this._standMeshY - 0.08;
+      }
 
       let speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
 

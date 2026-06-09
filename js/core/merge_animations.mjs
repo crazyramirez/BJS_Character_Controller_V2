@@ -885,7 +885,7 @@ async function main() {
             }
           }
         }
-        
+
         const ibmAcc = skin.getInverseBindMatrices();
         if (ibmAcc) {
           const arr = ibmAcc.getArray();
@@ -1023,7 +1023,7 @@ async function main() {
   const origScenes = new Set(charDoc.getRoot().listScenes());
   const origMeshes = new Set(charDoc.getRoot().listMeshes());
   const origSkins = new Set(charDoc.getRoot().listSkins());
-  
+
   // Discard all existing animations on the character GLB to prevent posture distortion and track pollution
   charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
   const origAnims = new Set();

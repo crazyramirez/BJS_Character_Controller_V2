@@ -54,44 +54,46 @@ const BONE_MAP = {
   'head': ['head', 'mixamorig:head'],
 
   // ── Left arm ──────────────────────────────────────────
-  //   UE5: clavicle_l    Unity: leftshoulder    Rigify: shoulderl (after normalize)
+  //   UE5: clavicle_l    Unity: leftshoulder    Rigify: shoulderl    Biped: lclavicle
   'clavicle_l': ['leftshoulder', 'mixamorig:leftshoulder', 'leftcollar', 'leftclavicle',
-    'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl'],
-  //   UE5: upperarm_l    Unity: leftupperarm    Rigify: upperarml
+    'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl', 'lclavicle'],
+  //   UE5: upperarm_l    Unity: leftupperarm    Rigify: upperarml    Biped: lupperarm
   'upperarm_l': ['leftarm', 'mixamorig:leftarm', 'leftupperarm', 'l_upperarm', 'upperarm_l',
-    'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm'],
-  //   UE5: lowerarm_l    Unity: leftlowerarm    Rigify: forearml
+    'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm', 'lupperarm'],
+  //   UE5: lowerarm_l    Unity: leftlowerarm    Rigify: forearml    Biped: lforearm
   'lowerarm_l': ['leftforearm', 'mixamorig:leftforearm', 'leftlowerarm', 'l_lowerarm',
-    'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm'],
-  'hand_l': ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l'],
+    'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm', 'lforearm'],
+  'hand_l': ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l', 'lhand'],
 
   // ── Right arm ─────────────────────────────────────────
+  //   Biped: rclavicle, rupperarm, rforearm, rhand
   'clavicle_r': ['rightshoulder', 'mixamorig:rightshoulder', 'rightcollar', 'rightclavicle',
-    'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr'],
+    'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr', 'rclavicle'],
   'upperarm_r': ['rightarm', 'mixamorig:rightarm', 'rightupperarm', 'r_upperarm', 'upperarm_r',
-    'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm'],
+    'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm', 'rupperarm'],
   'lowerarm_r': ['rightforearm', 'mixamorig:rightforearm', 'rightlowerarm', 'r_lowerarm',
-    'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm'],
-  'hand_r': ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r'],
+    'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm', 'rforearm'],
+  'hand_r': ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r', 'rhand'],
 
   // ── Left leg ──────────────────────────────────────────
-  //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl
+  //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl    Biped: lthigh
   'thigh_l': ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
-    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl'],
-  //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl
+    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh'],
+  //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl    Biped: lcalf
   'calf_l': ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
-    'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee'],
-  'foot_l': ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l'],
-  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe'],
+    'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee', 'lcalf'],
+  'foot_l': ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l', 'lfoot'],
+  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'ltoe0', 'ltoe'],
   'ball_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
 
   // ── Right leg ────────────────────────────────────────
+  //   Biped: rthigh, rcalf, rfoot
   'thigh_r': ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
-    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr'],
+    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh'],
   'calf_r': ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
-    'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee'],
-  'foot_r': ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r'],
-  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe'],
+    'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee', 'rcalf'],
+  'foot_r': ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r', 'rfoot'],
+  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'rtoe0', 'rtoe'],
   'ball_r': ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
 
   // ── Fingers ────────────────────────────────────────────
@@ -235,8 +237,9 @@ const SKELETON_TYPES = [
     id: 'biped',
     label: 'Biped / 3ds Max',
     color: '#14b8a6',
-    test: (names) =>
-      names.some(n => n.startsWith('bip') && (n.includes('pelvis') || n.includes('spine'))),
+    // Test raw names (before normalization strips the Bip001 prefix)
+    testRaw: (names) =>
+      names.some(n => /^bip\d+\s+(pelvis|spine)/i.test(n)),
   },
 ];
 
@@ -247,9 +250,11 @@ const SKELETON_TYPES = [
 function detectSkeletonType(rawNames) {
   // Normalize for matching (strip BJS suffix + lowercase + remove separators)
   const normed = rawNames.map(n => normalizeName(n));
+  const rawLower = rawNames.map(n => (n || '').toLowerCase());
 
   for (const type of SKELETON_TYPES) {
-    if (type.test(normed)) return { id: type.id, label: type.label, color: type.color };
+    const testFn = type.testRaw ? () => type.testRaw(rawLower) : () => type.test(normed);
+    if (testFn()) return { id: type.id, label: type.label, color: type.color };
   }
 
   // Fallback heuristics
@@ -800,6 +805,11 @@ function findMatchingBone(animNode, charByName, charByNorm) {
     if (alts.includes(lo)) {
       hit = charByName.get(key) || charByName.get(key.toLowerCase());
       if (hit) return hit;
+      // Also try all sibling aliases of this key against charByName
+      for (const alt of alts) {
+        hit = charByName.get(alt) || charByName.get(alt.toLowerCase());
+        if (hit) return hit;
+      }
     }
   }
   const norm = normalizeName(src);
@@ -1024,10 +1034,13 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
   }
 
+
   let hipsNode = null;
   for (const node of charDoc.getRoot().listNodes()) {
-    const name = (node.getName() || '').toLowerCase();
-    if (name === 'mixamorig:hips' || name === 'hips' || name === 'pelvis') {
+    const raw = (node.getName() || '').toLowerCase();
+    // Strip any namespace prefix (e.g. "mott_var01:hips" → "hips", "mixamorig:hips" → "hips")
+    const name = raw.includes(':') ? raw.split(':').pop() : raw;
+    if (name === 'hips' || name === 'pelvis') {
       hipsNode = node;
       break;
     }
@@ -1036,23 +1049,30 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   if (hipsNode) {
     const parentMap = buildParentMap(charDoc);
     let originalRootScale = [1, 1, 1];
+    let originalRootRot = [0, 0, 0, 1];
+    const _qMulLocal = ([x1, y1, z1, w1], [x2, y2, z2, w2]) => [
+      x1 * w2 + w1 * x2 + y1 * z2 - z1 * y2, y1 * w2 + w1 * y2 + z1 * x2 - x1 * z2,
+      z1 * w2 + w1 * z2 + x1 * y2 - y1 * x2, w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    ];
     let curr = parentMap.get(hipsNode);
     while (curr) {
       const s = curr.getScale() || [1, 1, 1];
-      originalRootScale = [originalRootScale[0] * s[0], originalRootScale[1] * s[1], originalRootScale[2] * s[2]];
+      // Use absolute scale — negative components are coordinate-system reflections
+      // already baked into vertex data by tools like BJS Sandbox; don't flip skeleton.
+      originalRootScale = [
+        originalRootScale[0] * Math.abs(s[0]),
+        originalRootScale[1] * Math.abs(s[1]),
+        originalRootScale[2] * Math.abs(s[2]),
+      ];
+      const r = curr.getRotation();
+      if (r) originalRootRot = _qMulLocal(r, originalRootRot);
       curr = parentMap.get(curr);
     }
 
-    let rootNode = null;
-    for (const node of charDoc.getRoot().listNodes()) {
-      if (node.getName() === 'RootNode') {
-        rootNode = node;
-        break;
-      }
-    }
-    if (!rootNode) {
-      rootNode = charDoc.createNode('RootNode');
-    }
+    // Always create a fresh root node at scene level.
+    // Never reuse an existing 'RootNode' buried inside the hierarchy — it would
+    // compound scales with its ancestors (e.g. Sketchfab_model × RootNode).
+    const rootNode = charDoc.createNode('RootNode');
 
     const finalScale = [
       originalRootScale[0] * sx,
@@ -1062,6 +1082,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     rootNode.setScale(finalScale);
     rootNode.setTranslation([0, 0, 0]);
     rootNode.setRotation([0, 0, 0, 1]);
+    // Normalise accumulated ancestor rotation — will be baked into skeleton root below.
+    const rotLen = Math.hypot(...originalRootRot);
+    const normRot = rotLen > 0 ? originalRootRot.map(v => v / rotLen) : [0, 0, 0, 1];
 
     for (const scene of charDoc.getRoot().listScenes()) {
       scene.addChild(rootNode);
@@ -1115,7 +1138,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             }
           }
         }
-        
+
         const ibmAcc = skin.getInverseBindMatrices();
         if (ibmAcc) {
           const arr = ibmAcc.getArray();
@@ -1136,11 +1159,17 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       syntheticRootNode.addChild(hipsNode);
     } else {
       const hipsTrans = hipsNode.getTranslation() || [0, 0, 0];
-      hipsNode.setTranslation([
+      // Apply pivot offset then bake ancestor coordinate rotation into Hips local transform.
+      // This keeps RootNode rotation-free so the BabylonJS scene root reset (charRoot.rotation=0)
+      // does not discard the coordinate-system conversion (e.g. +90°X for Z-up Sketchfab exports).
+      // World bind transform of every joint is unchanged, so IBMs remain valid.
+      const hipsTransAdjusted = [
         hipsTrans[0] - px / finalScale[0],
         hipsTrans[1] - py / finalScale[1],
-        hipsTrans[2] - pz / finalScale[2]
-      ]);
+        hipsTrans[2] - pz / finalScale[2],
+      ];
+      hipsNode.setTranslation(rotateVec3(hipsTransAdjusted, normRot));
+      hipsNode.setRotation(qMul(normRot, hipsNode.getRotation() || [0, 0, 0, 1]));
       rootNode.addChild(hipsNode);
     }
 
@@ -1153,10 +1182,12 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
     for (const meshNode of meshNodes) {
       const mTrans = meshNode.getTranslation() || [0, 0, 0];
+      // Mesh vertices are already in the correct coordinate space (pre-transformed by the
+      // original exporter). Only apply the pivot offset — no coordinate rotation needed.
       meshNode.setTranslation([
         mTrans[0] - px / finalScale[0],
         mTrans[1] - py / finalScale[1],
-        mTrans[2] - pz / finalScale[2]
+        mTrans[2] - pz / finalScale[2],
       ]);
       rootNode.addChild(meshNode);
     }
@@ -1354,9 +1385,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   charDoc.merge(animDoc);
   // console.log(`[merge] charDoc anims AFTER merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
 
-  // Remove junk animations
+  // Remove junk animations — including original skeleton animations that are no longer valid
+  // after coordinate-baking (e.g. "Armature|mixamo.com|Layer0" from Sketchfab exports).
   for (const anim of [...charDoc.getRoot().listAnimations()]) {
-    if (anim.getName() === 'mixamo.com') { anim.dispose(); continue; }
+    if (anim.getName().includes('mixamo.com')) { anim.dispose(); continue; }
     if (anim.getName() === 'A_TPose') anim.setName('TPose');
   }
 
