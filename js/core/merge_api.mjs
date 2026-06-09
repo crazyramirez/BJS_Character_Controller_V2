@@ -1231,11 +1231,15 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const animWorldRots = computeWorldRotations(animDoc);
 
   const poseStyle = detectPoseStyle(charDoc, charByName, charByNorm);
-  // console.log(`[merge] Detected character pose style: ${poseStyle}`);
+  console.log(`[merge] Detected character pose style: ${poseStyle}`);
 
   let virtualPose = null;
-  console.log(`[merge] Generating virtual T-pose alignment...`);
-  virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
+  if (poseStyle !== 'T-POSE') {
+    console.log(`[merge] Generating virtual T-pose alignment...`);
+    virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
+  } else {
+    console.log(`[merge] Character already in T-pose — skipping virtual T-pose adjustment.`);
+  }
   // Extract T-pose BEFORE building char bind pose maps — it determines which strategy to use.
   // Mixamo GLBs store node.getRotation() as identity; real T-pose orientation lives in "T_Pose" track.
   const tposeRestPose = extractTPoseRestPose(animDoc);
