@@ -119,14 +119,18 @@
             </div>
 
             <!-- Character Scale & Pivot Controls -->
-            <div id="char-transform-controls" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid rgba(255,255,255,0.08);">
-              <h4 style="font-size:0.8rem; margin-bottom:12px; color:var(--text-primary); display:flex; justify-content:space-between; align-items:center;">
+            <div id="char-transform-controls"
+              style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid rgba(255,255,255,0.08);">
+              <h4
+                style="font-size:0.8rem; margin-bottom:12px; color:var(--text-primary); display:flex; justify-content:space-between; align-items:center;">
                 <span>Character Scale &amp; Pivot</span>
-                <button id="btn-reset-transform" class="btn-reset-single" title="Reset transform" style="font-size: 10px; width: 16px; height: 16px;">↺</button>
+                <button id="btn-reset-transform" class="btn-reset-single" title="Reset transform"
+                  style="font-size: 10px; width: 16px; height: 16px;">↺</button>
               </h4>
-              
+
               <!-- Uniform scale toggle -->
-              <div class="control-group checkbox-group" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+              <div class="control-group checkbox-group"
+                style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
                 <span style="font-size:0.75rem; color:var(--text-secondary);">Uniform Scaling</span>
                 <label class="switch">
                   <input type="checkbox" id="toggle-uniform-scale" checked>
@@ -136,7 +140,8 @@
 
               <!-- Uniform scale slider -->
               <div class="control-group" id="group-scale-uniform" style="margin-bottom:10px;">
-                <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                <div class="control-label"
+                  style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                   <span>Uniform Scale</span>
                   <span class="control-value" id="val-scale-uniform" style="color:var(--text-cyan);">1.00x</span>
                 </div>
@@ -146,21 +151,24 @@
               <!-- Scale X, Y, Z sliders (hidden by default when uniform scaling is checked) -->
               <div id="group-scale-xyz" style="display:none;">
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Scale X</span>
                     <span class="control-value" id="val-scale-x" style="color:var(--text-cyan);">1.00x</span>
                   </div>
                   <input type="range" id="slider-scale-x" min="0.1" max="5.0" step="0.05" value="1.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Scale Y</span>
                     <span class="control-value" id="val-scale-y" style="color:var(--text-cyan);">1.00x</span>
                   </div>
                   <input type="range" id="slider-scale-y" min="0.1" max="5.0" step="0.05" value="1.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Scale Z</span>
                     <span class="control-value" id="val-scale-z" style="color:var(--text-cyan);">1.00x</span>
                   </div>
@@ -171,27 +179,31 @@
               <!-- Pivot Offset X, Y, Z sliders -->
               <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.06);">
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset X</span>
                     <span class="control-value" id="val-pivot-x" style="color:var(--text-cyan);">0.00m</span>
                   </div>
                   <input type="range" id="slider-pivot-x" min="-2.0" max="2.0" step="0.05" value="0.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset Y</span>
                     <span class="control-value" id="val-pivot-y" style="color:var(--text-cyan);">0.00m</span>
                   </div>
                   <input type="range" id="slider-pivot-y" min="-2.0" max="2.0" step="0.05" value="0.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset Z</span>
                     <span class="control-value" id="val-pivot-z" style="color:var(--text-cyan);">0.00m</span>
                   </div>
                   <input type="range" id="slider-pivot-z" min="-2.0" max="2.0" step="0.05" value="0.0">
                 </div>
-                <button id="btn-pivot-ground" class="btn-secondary" style="font-size:0.72rem; width:100%; margin-top:8px; padding: 6px 12px; border-radius: var(--r-sm); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--border);">
+                <button id="btn-pivot-ground" class="btn-secondary"
+                  style="font-size:0.72rem; width:100%; margin-top:8px; padding: 6px 12px; border-radius: var(--r-sm); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--border);">
                   <span>⇩ Pivot to Ground</span>
                 </button>
               </div>
@@ -199,18 +211,20 @@
               <!-- Arm & Leg Spread Angle sliders -->
               <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.06);">
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Arm Spread Angle</span>
                     <span class="control-value" id="val-arm-spread" style="color:var(--text-cyan);">0°</span>
                   </div>
-                  <input type="range" id="slider-arm-spread" min="-45" max="45" step="1" value="0">
+                  <input type="range" id="slider-arm-spread" min="-10" max="10" step="0.1" value="0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
-                  <div class="control-label" style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Leg Spread Angle</span>
                     <span class="control-value" id="val-leg-spread" style="color:var(--text-cyan);">0°</span>
                   </div>
-                  <input type="range" id="slider-leg-spread" min="-45" max="45" step="1" value="0">
+                  <input type="range" id="slider-leg-spread" min="-10" max="10" step="0.1" value="0">
                 </div>
               </div>
             </div>

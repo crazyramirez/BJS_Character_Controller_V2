@@ -34,7 +34,7 @@ const IGNORE_SCALE = true;
 const IGNORE_NON_ROOT_TRANSLATION = true;
 
 // ── MANUAL POSTURE ADJUSTMENTS ────────────────────────────────────────────
-// Manual per-bone yaw offset (degrees). Leave at 0 if not needed.
+// Manual per-bone yaw/roll offset (degrees). Leave at 0 if not needed.
 let ARM_SPREAD_ANGLE = 0;
 let LEG_SPREAD_ANGLE = 0;
 
@@ -1048,16 +1048,16 @@ async function main() {
               let pOffset = POSE_OFFSETS[tgtName] ? [...POSE_OFFSETS[tgtName]] : [0, 0, 0];
               if (ARM_SPREAD_ANGLE !== 0) {
                 if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) {
-                  pOffset[1] += ARM_SPREAD_ANGLE;
+                  pOffset[2] += ARM_SPREAD_ANGLE;
                 } else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) {
-                  pOffset[1] -= ARM_SPREAD_ANGLE;
+                  pOffset[2] -= ARM_SPREAD_ANGLE;
                 }
               }
               if (LEG_SPREAD_ANGLE !== 0) {
                 if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) {
-                  pOffset[1] -= LEG_SPREAD_ANGLE;
+                  pOffset[2] -= LEG_SPREAD_ANGLE;
                 } else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) {
-                  pOffset[1] += LEG_SPREAD_ANGLE;
+                  pOffset[2] += LEG_SPREAD_ANGLE;
                 }
               }
               if (pOffset[0] !== 0 || pOffset[1] !== 0 || pOffset[2] !== 0) {

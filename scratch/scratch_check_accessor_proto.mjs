@@ -16,7 +16,7 @@ async function main() {
   const doc = await io.readBinary(fs.readFileSync(file));
 
   const joints0 = doc.getRoot().listMeshes()[0].listPrimitives()[0].getAttribute('JOINTS_0');
-  
+
   console.log('Accessor methods:');
   const proto = Object.getPrototypeOf(joints0);
   const methods = Object.getOwnPropertyNames(proto).filter(name => typeof proto[name] === 'function');

@@ -1434,12 +1434,12 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                   let pOffset = [0, 0, 0];
                   if (cfg.POSE_OFFSETS[tgtName]) pOffset = [...cfg.POSE_OFFSETS[tgtName]];
                   if (cfg.ARM_SPREAD_ANGLE !== 0) {
-                    if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) pOffset[1] += cfg.ARM_SPREAD_ANGLE;
-                    else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) pOffset[1] -= cfg.ARM_SPREAD_ANGLE;
+                    if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) pOffset[2] += cfg.ARM_SPREAD_ANGLE;
+                    else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) pOffset[2] -= cfg.ARM_SPREAD_ANGLE;
                   }
                   if (cfg.LEG_SPREAD_ANGLE !== 0) {
-                    if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) pOffset[1] -= cfg.LEG_SPREAD_ANGLE;
-                    else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) pOffset[1] += cfg.LEG_SPREAD_ANGLE;
+                    if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) pOffset[2] -= cfg.LEG_SPREAD_ANGLE;
+                    else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) pOffset[2] += cfg.LEG_SPREAD_ANGLE;
                   }
 
                   if (pOffset[0] !== 0 || pOffset[1] !== 0 || pOffset[2] !== 0) {

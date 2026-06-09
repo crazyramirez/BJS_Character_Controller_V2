@@ -163,7 +163,7 @@ function syncCharTransformToUI() {
       el.value = val;
     }
     if (valEl) {
-      valEl.textContent = suffix === '°' ? Math.round(val) + suffix : val.toFixed(2) + suffix;
+      valEl.textContent = suffix === '°' ? val.toFixed(1) + suffix : val.toFixed(2) + suffix;
     }
   };
 
@@ -1061,7 +1061,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             }
           }
 
-          // Compute custom yaw (Y-rotation) offset
+          // Compute custom offset (Roll/Z-axis for both arms and legs)
           let angleDeg = 0;
           if (isArm) {
             angleDeg = isLeft ? armAngle : -armAngle;
@@ -1071,7 +1071,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
           if (angleDeg !== 0) {
             const angleRad = angleDeg * Math.PI / 180;
-            const offsetQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, angleRad);
+            const offsetQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, angleRad);
             node.rotationQuaternion.multiplyToRef(offsetQuat, node.rotationQuaternion);
           }
         }
