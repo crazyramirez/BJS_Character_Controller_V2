@@ -434,6 +434,29 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
       const qAlignFore = quatFromTwoVectors(vFore, [1, 0, 0]);
       applyCorrection(leftForearm, qAlignFore);
     }
+
+    // Left Hand
+    if (leftHand) {
+      const pHandUpdated = getUpdatedWorldPos(leftHand);
+      let pFinger = null;
+      const fingerBones = ['middle_01_l', 'index_01_l', 'ring_01_l', 'thumb_01_l', 'pinky_01_l'];
+      for (const name of fingerBones) {
+        const bone = findMatchingBone({ getName: () => name }, charByName, charByNorm);
+        if (bone && parentMap.get(bone) === leftHand) {
+          pFinger = getUpdatedWorldPos(bone);
+          break;
+        }
+      }
+      if (!pFinger) {
+        const children = leftHand.listChildren();
+        if (children.length > 0) pFinger = getUpdatedWorldPos(children[0]);
+      }
+      if (pFinger) {
+        const vHand = vec3Normalize(vec3Subtract(pFinger, pHandUpdated));
+        const qAlignHand = quatFromTwoVectors(vHand, [1, 0, 0]);
+        applyCorrection(leftHand, qAlignHand);
+      }
+    }
   }
 
   // 3. Right Arm
@@ -455,6 +478,29 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
       const vFore = vec3Normalize(vec3Subtract(pHand, pForeUpdated));
       const qAlignFore = quatFromTwoVectors(vFore, [-1, 0, 0]);
       applyCorrection(rightForearm, qAlignFore);
+    }
+
+    // Right Hand
+    if (rightHand) {
+      const pHandUpdated = getUpdatedWorldPos(rightHand);
+      let pFinger = null;
+      const fingerBones = ['middle_01_r', 'index_01_r', 'ring_01_r', 'thumb_01_r', 'pinky_01_r'];
+      for (const name of fingerBones) {
+        const bone = findMatchingBone({ getName: () => name }, charByName, charByNorm);
+        if (bone && parentMap.get(bone) === rightHand) {
+          pFinger = getUpdatedWorldPos(bone);
+          break;
+        }
+      }
+      if (!pFinger) {
+        const children = rightHand.listChildren();
+        if (children.length > 0) pFinger = getUpdatedWorldPos(children[0]);
+      }
+      if (pFinger) {
+        const vHand = vec3Normalize(vec3Subtract(pFinger, pHandUpdated));
+        const qAlignHand = quatFromTwoVectors(vHand, [-1, 0, 0]);
+        applyCorrection(rightHand, qAlignHand);
+      }
     }
   }
 
@@ -500,7 +546,8 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 6. Left Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  // 6. Left Foot (Foot -> Toe) — disabled to prevent pitch distortion
+  /*
   if (leftFoot) {
     const pFoot = getUpdatedWorldPos(leftFoot);
     let pToePos = leftToe ? getUpdatedWorldPos(leftToe) : null;
@@ -510,16 +557,19 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const footLen = vec3Length(vFoot);
-      if (footLen > 0.001) {
-        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
-        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+      const vFootXZ = [vFoot[0], 0, vFoot[2]];
+      const xzLen = vec3Length(vFootXZ);
+      if (xzLen > 0.001) {
+        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
+        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
         applyCorrection(leftFoot, qAlignFoot);
       }
     }
   }
+  */
 
-  // 7. Right Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  // 7. Right Foot (Foot -> Toe) — disabled to prevent pitch distortion
+  /*
   if (rightFoot) {
     const pFoot = getUpdatedWorldPos(rightFoot);
     let pToePos = rightToe ? getUpdatedWorldPos(rightToe) : null;
@@ -529,14 +579,16 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const footLen = vec3Length(vFoot);
-      if (footLen > 0.001) {
-        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
-        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+      const vFootXZ = [vFoot[0], 0, vFoot[2]];
+      const xzLen = vec3Length(vFootXZ);
+      if (xzLen > 0.001) {
+        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
+        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
         applyCorrection(rightFoot, qAlignFoot);
       }
     }
   }
+  */
 
   // Compute local rotations in virtual T-pose
   const localRotT = new Map();

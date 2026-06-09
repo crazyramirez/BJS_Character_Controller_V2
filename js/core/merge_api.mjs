@@ -595,7 +595,8 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 6. Left Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  // 6. Left Foot (Foot -> Toe) — disabled to prevent pitch distortion
+  /*
   if (leftFoot) {
     const pFoot = getUpdatedWorldPos(leftFoot);
     let pToePos = leftToe ? getUpdatedWorldPos(leftToe) : null;
@@ -605,16 +606,19 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const footLen = vec3Length(vFoot);
-      if (footLen > 0.001) {
-        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
-        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+      const vFootXZ = [vFoot[0], 0, vFoot[2]];
+      const xzLen = vec3Length(vFootXZ);
+      if (xzLen > 0.001) {
+        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
+        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
         applyCorrection(leftFoot, qAlignFoot);
       }
     }
   }
+  */
 
-  // 7. Right Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  // 7. Right Foot (Foot -> Toe) — disabled to prevent pitch distortion
+  /*
   if (rightFoot) {
     const pFoot = getUpdatedWorldPos(rightFoot);
     let pToePos = rightToe ? getUpdatedWorldPos(rightToe) : null;
@@ -624,14 +628,16 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const footLen = vec3Length(vFoot);
-      if (footLen > 0.001) {
-        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
-        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+      const vFootXZ = [vFoot[0], 0, vFoot[2]];
+      const xzLen = vec3Length(vFootXZ);
+      if (xzLen > 0.001) {
+        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
+        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
         applyCorrection(rightFoot, qAlignFoot);
       }
     }
   }
+  */
 
   // Compute local rotations in virtual T-pose
   const localRotT = new Map();
