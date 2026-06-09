@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { mergeGLBs } from './js/core/merge_api.mjs';
+import { mergeGLBs } from '../js/core/merge_api.mjs';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
@@ -7,7 +7,7 @@ import draco3d from 'draco3dgltf';
 async function main() {
   const charBuffer = fs.readFileSync('d:\\DEV\\BJS Character Controller V2\\assets\\characters_test\\gang.glb');
   const animBuffer = fs.readFileSync('d:\\DEV\\BJS Character Controller V2\\assets\\character_animated.glb');
-  
+
   console.log('Running mergeGLBs with animations...');
   const mergedBuffer = await mergeGLBs(charBuffer, animBuffer, { COMPRESS_OUTPUT: true });
 
@@ -27,7 +27,7 @@ async function main() {
         const joints0 = prim.getAttribute('JOINTS_0');
         if (joints0) {
           console.log(`Resulting mesh "${mesh.getName()}" JOINTS_0: type=${joints0.getArray().constructor.name}, componentType=${joints0.getComponentType()}`);
-          
+
           // Print first 10 joint indices to see if they look correct
           const arr = joints0.getArray();
           console.log(`  First 10 values: ${Array.from(arr.slice(0, 10)).join(', ')}`);

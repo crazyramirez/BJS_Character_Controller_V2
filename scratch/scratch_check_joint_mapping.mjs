@@ -2,7 +2,7 @@ import fs from 'fs';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
-import { mergeGLBs } from './js/core/merge_api.mjs';
+import { mergeGLBs } from '../js/core/merge_api.mjs';
 
 function cleanBoneName(name) {
   if (!name) return '';

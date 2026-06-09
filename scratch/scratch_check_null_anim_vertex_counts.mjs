@@ -2,7 +2,7 @@ import fs from 'fs';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
-import { mergeGLBs } from './js/core/merge_api.mjs';
+import { mergeGLBs } from '../js/core/merge_api.mjs';
 
 async function main() {
   const charBuffer = fs.readFileSync('d:\\DEV\\BJS Character Controller V2\\assets\\characters_test\\gang.glb');

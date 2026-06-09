@@ -2,7 +2,7 @@ import fs from 'fs';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
-import { mergeGLBs } from './js/core/merge_api.mjs';
+import { mergeGLBs } from '../js/core/merge_api.mjs';
 
 // Inline matrix 4 math implementation
 function mat4_create() {
@@ -21,28 +21,28 @@ function mat4_multiply(out, a, b) {
   let a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
 
   let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
-  out[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
-  out[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
-  out[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
-  out[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  out[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+  out[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+  out[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+  out[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
 
   b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
-  out[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
-  out[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
-  out[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
-  out[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  out[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+  out[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+  out[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+  out[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
 
   b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
-  out[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
-  out[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
-  out[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
-  out[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  out[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+  out[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+  out[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+  out[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
 
   b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
-  out[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
-  out[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
-  out[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
-  out[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  out[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+  out[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+  out[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+  out[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
   return out;
 }
 
@@ -135,9 +135,9 @@ async function main() {
     const pFoot = [mFoot[12], mFoot[13], mFoot[14]];
     const pToe = [mToe[12], mToe[13], mToe[14]];
     const dir = [pToe[0] - pFoot[0], pToe[1] - pFoot[1], pToe[2] - pFoot[2]];
-    console.log(`  Merged LeftFoot world pos: [${pFoot.map(v=>v.toFixed(4)).join(', ')}]`);
-    console.log(`  Merged LeftToeBase world pos: [${pToe.map(v=>v.toFixed(4)).join(', ')}]`);
-    console.log(`  Direction vector (Foot -> Toe): [${dir.map(v=>v.toFixed(4)).join(', ')}]`);
+    console.log(`  Merged LeftFoot world pos: [${pFoot.map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`  Merged LeftToeBase world pos: [${pToe.map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`  Direction vector (Foot -> Toe): [${dir.map(v => v.toFixed(4)).join(', ')}]`);
   } else {
     console.log('  Could not find LeftFoot or LeftToeBase in merged file.');
   }

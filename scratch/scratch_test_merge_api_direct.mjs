@@ -1,12 +1,12 @@
 import fs from 'fs';
-import { mergeGLBs } from './js/core/merge_api.mjs';
+import { mergeGLBs } from '../js/core/merge_api.mjs';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
 
 async function main() {
   const charBuffer = fs.readFileSync('d:\\DEV\\BJS Character Controller V2\\assets\\characters_test\\gang.glb');
-  
+
   console.log('Running mergeGLBs...');
   const mergedBuffer = await mergeGLBs(charBuffer, null, { COMPRESS_OUTPUT: true });
 
