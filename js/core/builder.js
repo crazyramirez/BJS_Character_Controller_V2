@@ -285,37 +285,53 @@ function setupCharTransformControls() {
       showToast('No character loaded!', true);
       return;
     }
-    
-    let minY = 0;
-    let hasMin = false;
-    
-    activeCharacter.rawMeshes.forEach(mesh => {
-      if (mesh.name === 'playerCapsuleBuilder') return;
-      if (!mesh.getBoundingInfo || !mesh.geometry) return;
-      
-      const localMin = mesh.getBoundingInfo().boundingBox.minimum;
-      const worldMin = BABYLON.Vector3.TransformCoordinates(localMin, mesh.getWorldMatrix());
-      const charRootInv = activeCharacter.charRoot.getWorldMatrix().clone().invert();
-      const localMinInCharRoot = BABYLON.Vector3.TransformCoordinates(worldMin, charRootInv);
-      
-      if (!hasMin || localMinInCharRoot.y < minY) {
-        minY = localMinInCharRoot.y;
-        hasMin = true;
-      }
-    });
 
-    if (hasMin) {
-      charTransformConfig.PIVOT_Y = Math.round(minY * 100) / 100;
-      
-      syncCharTransformToUI();
-      applyLiveTransformations();
-      savePreferences();
-      updateExportCode();
-      
-      showToast(`Pivot Y set to ground level: ${charTransformConfig.PIVOT_Y.toFixed(2)}m`);
-    } else {
-      showToast('Could not calculate ground level.', true);
+    // Prefer toebase bone world Y as ground reference so toes land flat at y=0.
+    // Fallback to bounding box minimum (heel) if no toe bones found.
+    let groundY = null;
+    if (scene.skeletons && scene.skeletons.length) {
+      scene.skeletons.forEach(skel => {
+        skel.bones.forEach(bone => {
+          const name = (bone.name || '').toLowerCase();
+          if (!name.includes('toe')) return;
+          const node = bone.getTransformNode();
+          if (!node) return;
+          node.computeWorldMatrix(true);
+          const wp = BABYLON.Vector3.TransformCoordinates(BABYLON.Vector3.Zero(), node.getWorldMatrix());
+          if (groundY === null || wp.y < groundY) groundY = wp.y;
+        });
+      });
     }
+
+    if (groundY === null) {
+      activeCharacter.rawMeshes.forEach(mesh => {
+        if (mesh.name === 'playerCapsuleBuilder') return;
+        if (!mesh.getBoundingInfo || !mesh.geometry) return;
+        mesh.computeWorldMatrix(true);
+        const worldMin = mesh.getBoundingInfo().boundingBox.minimumWorld;
+        if (groundY === null || worldMin.y < groundY) groundY = worldMin.y;
+      });
+    }
+
+    if (groundY === null) {
+      showToast('Could not calculate ground level.', true);
+      return;
+    }
+
+    // Shift wrapper.y up by -groundY to land reference point at y=0
+    // wrapper.y = -0.97*(1-sy) - py*sy → changing py by delta shifts wrapper by -delta*sy
+    // Need wrapper to increase by -groundY → delta = groundY / sy
+    const sy = charTransformConfig.SCALE_Y;
+    charTransformConfig.PIVOT_Y = charTransformConfig.PIVOT_Y + groundY / sy;
+    charTransformConfig.PIVOT_X = 0;
+    charTransformConfig.PIVOT_Z = 0;
+
+    syncCharTransformToUI();
+    applyLiveTransformations();
+    savePreferences();
+    updateExportCode();
+
+    showToast(`Pivot adjusted — feet at ground level.`);
   });
 }
 
