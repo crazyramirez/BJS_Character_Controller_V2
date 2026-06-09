@@ -34,7 +34,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
-    filename: 'character_animated_2.glb'
+    filename: 'character_animated.glb'
   });
 }
 
