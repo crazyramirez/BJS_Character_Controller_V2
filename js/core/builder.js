@@ -763,6 +763,21 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   }
 }
 
+async function updateSkeletonInfoAfterMerge(mergedBuffer) {
+  if (!isServerAvailable) return;
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([mergedBuffer], { type: 'model/gltf-binary' }), 'merged.glb');
+    const res = await fetch('/api/analyze', { method: 'POST', body: formData });
+    if (res.ok) {
+      skeletonInfo = await res.json();
+      renderSkeletonSection(skeletonInfo);
+    }
+  } catch (e) {
+    console.warn('Post-merge skeleton analysis failed:', e);
+  }
+}
+
 async function applyPreloadedAnimations() {
   if (!characterGlbBuffer || !animationsGlbBuffer) return;
 
@@ -788,6 +803,7 @@ async function applyPreloadedAnimations() {
       const mergedBuffer = await res.arrayBuffer();
       characterGlbBuffer = mergedBuffer;
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
+      await updateSkeletonInfoAfterMerge(mergedBuffer);
       setLoaderStep('merge', 'completed');
       hideLoading();
       showToast(`✓ Merged with preloaded animations! ${detectedAnimations.length} animations loaded.`);
@@ -811,6 +827,7 @@ async function applyPreloadedAnimations() {
 // ═══════════════════════════════════════════════════════════
 // ANIMATION BATCH LOADER (merge via server)
 // ═══════════════════════════════════════════════════════════
+//
 async function loadAnimationBatchFile(file) {
   if (!characterGlbBuffer) {
     showToast('Load a character mesh first!', true);
@@ -851,6 +868,7 @@ async function loadAnimationBatchFile(file) {
       console.log(`[batch-import] Merged result: ${(mergedBuffer.byteLength / 1024).toFixed(0)} KB`);
       characterGlbBuffer = mergedBuffer; // update stored char buffer to the merged one
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
+      await updateSkeletonInfoAfterMerge(mergedBuffer);
       console.log(`[batch-import] Detected animations after load: [${detectedAnimations.join(', ')}]`);
       setLoaderStep('merge', 'completed');
 
@@ -901,6 +919,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     activeCharacter = null;
   }
 
+  // Dispose all existing skeletons in the scene to prevent duplicates and memory leaks
+  if (scene && scene.skeletons) {
+    [...scene.skeletons].forEach(skel => skel.dispose());
+  }
+
   const blob = new Blob([arrayBuffer]);
   const blobUrl = URL.createObjectURL(blob);
 
@@ -936,7 +959,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   // Capsule
   const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsuleBuilder', { radius: 0.4, height: 1.8 }, scene);
-  playerCapsule.position.set(0, 4, 0);
+  playerCapsule.position.set(0, 2, 0);
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
   playerCapsule.checkCollisions = true;

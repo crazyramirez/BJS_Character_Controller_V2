@@ -509,7 +509,7 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
     if (len > 0.001) {
       const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
-      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, -1]);
+      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, 1]);
       applyCorrection(leftFoot, qAlignFoot);
     }
   }
@@ -523,7 +523,7 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
     if (len > 0.001) {
       const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
-      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, -1]);
+      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, 1]);
       applyCorrection(rightFoot, qAlignFoot);
     }
   }
@@ -727,6 +727,157 @@ async function main() {
   const charDoc = await io.read(charPath);
   const animDoc = await io.read(animPath);
 
+  // ── Unify skeleton structure and apply scale/pivot shift to match character_animated.glb ────────────────
+  for (const node of charDoc.getRoot().listNodes()) {
+    const name = node.getName();
+    if (name) {
+      const clean = stripBJSSuffix(name);
+      if (clean !== name) node.setName(clean);
+    }
+  }
+
+  let hipsNode = null;
+  for (const node of charDoc.getRoot().listNodes()) {
+    const name = (node.getName() || '').toLowerCase();
+    if (name === 'mixamorig:hips' || name === 'hips' || name === 'pelvis') {
+      hipsNode = node;
+      break;
+    }
+  }
+
+  if (hipsNode) {
+    const parentMap = buildParentMap(charDoc);
+    let originalRootScale = [1, 1, 1];
+    let curr = parentMap.get(hipsNode);
+    while (curr) {
+      const s = curr.getScale() || [1, 1, 1];
+      originalRootScale = [originalRootScale[0] * s[0], originalRootScale[1] * s[1], originalRootScale[2] * s[2]];
+      curr = parentMap.get(curr);
+    }
+
+    let rootNode = null;
+    for (const node of charDoc.getRoot().listNodes()) {
+      if (node.getName() === 'RootNode') {
+        rootNode = node;
+        break;
+      }
+    }
+    if (!rootNode) {
+      rootNode = charDoc.createNode('RootNode');
+    }
+
+    const finalScale = [
+      originalRootScale[0] * sx,
+      originalRootScale[1] * sy,
+      originalRootScale[2] * sz
+    ];
+    rootNode.setScale(finalScale);
+    rootNode.setTranslation([0, 0, 0]);
+    rootNode.setRotation([0, 0, 0, 1]);
+
+    for (const scene of charDoc.getRoot().listScenes()) {
+      scene.addChild(rootNode);
+    }
+
+    // Strip synthetic root joints from all skins
+    const SYNTHETIC_ROOTS = /^(gltf_created_\d+_rootjoint|armature|root|rig|deformationrig|_rootjoint)$/i;
+    for (const skin of charDoc.getRoot().listSkins()) {
+      const joints = skin.listJoints();
+      if (joints.length > 0 && SYNTHETIC_ROOTS.test(joints[0].getName())) {
+        const rootJointNode = joints[0];
+        console.log(`[merge] Stripping synthetic root joint: "${rootJointNode.getName()}" from skin: "${skin.getName()}"`);
+
+        skin.removeJoint(rootJointNode);
+        if (hipsNode) {
+          skin.setSkeleton(hipsNode);
+        }
+
+        for (const node of charDoc.getRoot().listNodes()) {
+          if (node.getSkin() === skin) {
+            const mesh = node.getMesh();
+            if (mesh) {
+              for (const primitive of mesh.listPrimitives()) {
+                const joints0 = primitive.getAttribute('JOINTS_0');
+                if (joints0) {
+                  const arr = joints0.getArray();
+                  if (arr) {
+                    const newArr = new Uint16Array(arr.length);
+                    for (let i = 0; i < arr.length; i++) {
+                      newArr[i] = Math.max(0, Math.round(arr[i]) - 1);
+                    }
+                    joints0.setArray(newArr);
+                  }
+                }
+                const joints1 = primitive.getAttribute('JOINTS_1');
+                if (joints1) {
+                  const arr = joints1.getArray();
+                  if (arr) {
+                    const newArr = new Uint16Array(arr.length);
+                    for (let i = 0; i < arr.length; i++) {
+                      newArr[i] = Math.max(0, Math.round(arr[i]) - 1);
+                    }
+                    joints1.setArray(newArr);
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        const ibmAcc = skin.getInverseBindMatrices();
+        if (ibmAcc) {
+          const arr = ibmAcc.getArray();
+          if (arr && arr.length >= 16) {
+            ibmAcc.setArray(arr.slice(16));
+          }
+        }
+
+        rootJointNode.dispose();
+      }
+    }
+
+    const hipsTrans = hipsNode.getTranslation() || [0, 0, 0];
+    hipsNode.setTranslation([
+      hipsTrans[0] - px / finalScale[0],
+      hipsTrans[1] - py / finalScale[1],
+      hipsTrans[2] - pz / finalScale[2]
+    ]);
+    rootNode.addChild(hipsNode);
+
+    const meshNodes = [];
+    for (const node of charDoc.getRoot().listNodes()) {
+      if (node.getMesh() && node !== rootNode) {
+        meshNodes.push(node);
+      }
+    }
+
+    for (const meshNode of meshNodes) {
+      const mTrans = meshNode.getTranslation() || [0, 0, 0];
+      meshNode.setTranslation([
+        mTrans[0] - px / finalScale[0],
+        mTrans[1] - py / finalScale[1],
+        mTrans[2] - pz / finalScale[2]
+      ]);
+      rootNode.addChild(meshNode);
+    }
+
+    const skeletonNodes = new Set();
+    const collectDesc = (n) => {
+      skeletonNodes.add(n);
+      for (const c of n.listChildren()) {
+        collectDesc(c);
+      }
+    };
+    collectDesc(hipsNode);
+
+    const keepNodes = new Set([rootNode, ...skeletonNodes, ...meshNodes]);
+    for (const node of [...charDoc.getRoot().listNodes()]) {
+      if (!keepNodes.has(node)) {
+        node.dispose();
+      }
+    }
+  }
+
   // Build character lookup tables early
   const charByName = new Map();
   const charByNorm = new Map();
@@ -755,31 +906,7 @@ async function main() {
   let virtualPose = null;
   console.log(`Generating virtual T-pose...`);
   virtualPose = adjustToVirtualTPose(charDoc, charByName, charByNorm, charWorldRots);
-  // Apply Scale & Pivot Shift to the character nodes!
-  if (sx !== 1.0 || sy !== 1.0 || sz !== 1.0 || px !== 0.0 || py !== 0.0 || pz !== 0.0) {
-    console.log(`Applying scale [${sx}, ${sy}, ${sz}] and pivot offset [${px}, ${py}, ${pz}] to character model...`);
-    for (const scene of charDoc.getRoot().listScenes()) {
-      for (const node of scene.listChildren()) {
-        // Scale the root node itself
-        const scale = node.getScale() || [1, 1, 1];
-        node.setScale([
-          scale[0] * sx,
-          scale[1] * sy,
-          scale[2] * sz
-        ]);
 
-        // Translate its children relative to the root node to shift the pivot point to [0, 0, 0]
-        for (const child of node.listChildren()) {
-          const trans = child.getTranslation() || [0, 0, 0];
-          child.setTranslation([
-            trans[0] - px,
-            trans[1] - py,
-            trans[2] - pz
-          ]);
-        }
-      }
-    }
-  }
   const charRestByName = new Map(); // lowercase → local quat
   const charWorldByName = new Map(); // lowercase → world quat
 
@@ -864,6 +991,7 @@ async function main() {
   // ── MODE: character ──────────────────────────────────────────────────────
   if (SKELETON_SOURCE === 'character') {
     console.log('Retargeting animation channels to character skeleton...');
+    const charParentMap = buildParentMap(charDoc);
     let bound = 0, disposed = 0, unmatched = 0;
 
     for (const anim of importedAnims) {
@@ -946,14 +1074,26 @@ async function main() {
         if (chPath === 'translation' && isRoot) {
           const animRest = animTransByName.get(srcName) || [0, 0, 0];
           const charRest = charTransByName.get(tgtName) || [0, 0, 0];
+          const charParent = charParentMap.get(target);
           const output = ch.getSampler()?.getOutput();
           const arr = output?.getArray();
           if (arr) {
+            let scaleP = [1, 1, 1];
+            let curr = charParent;
+            while (curr) {
+              const s = curr.getScale() || [1, 1, 1];
+              scaleP = [scaleP[0] * s[0], scaleP[1] * s[1], scaleP[2] * s[2]];
+              curr = charParentMap.get(curr);
+            }
+            const spX = Math.abs(scaleP[0]) > 1e-7 ? scaleP[0] : 1.0;
+            const spY = Math.abs(scaleP[1]) > 1e-7 ? scaleP[1] : 1.0;
+            const spZ = Math.abs(scaleP[2]) > 1e-7 ? scaleP[2] : 1.0;
+
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
-              out[j] = charRest[0] + (arr[j] - animRest[0]);
-              out[j + 1] = charRest[1] + (arr[j + 1] - animRest[1]);
-              out[j + 2] = charRest[2] + (arr[j + 2] - animRest[2]);
+              out[j] = charRest[0] + (arr[j] - animRest[0]) / spX;
+              out[j + 1] = charRest[1] + (arr[j + 1] - animRest[1]) / spY;
+              out[j + 2] = charRest[2] + (arr[j + 2] - animRest[2]) / spZ;
             }
             output.setArray(out);
           }
@@ -987,6 +1127,13 @@ async function main() {
   console.log('Consolidating buffers...');
   await charDoc.transform(unpartition());
 
+  // Dispose Draco extension to force recreation of Draco buffers on write/re-compress
+  const dracoExt = charDoc.getRoot().listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression');
+  if (dracoExt) {
+    console.log('Disposing KHR_draco_mesh_compression extension to clear cached Draco buffers.');
+    dracoExt.dispose();
+  }
+
   if (COMPRESS_OUTPUT) {
     console.log('Applying animation resampling and Draco mesh compression...');
     await charDoc.transform(
@@ -995,17 +1142,19 @@ async function main() {
     );
   }
 
-  // Flatten RootNode: promote children directly to scene
-  console.log('Flattening RootNode...');
-  for (const scene of charDoc.getRoot().listScenes()) {
-    for (const node of scene.listChildren()) {
-      if (node.getName() !== 'RootNode') continue;
-      for (const child of node.listChildren()) {
-        scene.addChild(child);
+  // Unify skeleton structure to match character_animated.glb
+  console.log('Unifying skeleton structure...');
+  for (const node of charDoc.getRoot().listNodes()) {
+    const name = node.getName();
+    if (name) {
+      const clean = stripBJSSuffix(name);
+      if (clean !== name) {
+        node.setName(clean);
       }
-      node.dispose();
     }
   }
+
+
 
   console.log(`Writing: ${outputPath}...`);
   const buf = await io.writeBinary(charDoc);
