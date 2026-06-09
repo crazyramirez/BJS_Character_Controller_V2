@@ -110,8 +110,6 @@ function loadPreferences() {
     if (physics) physicsConfig = Object.assign({}, DEFAULT_PHYSICS_CONFIG, JSON.parse(physics));
     const customs = localStorage.getItem('builder_custom_animations');
     if (customs) customAnimations = JSON.parse(customs);
-    const transforms = localStorage.getItem('builder_char_transform');
-    if (transforms) charTransformConfig = Object.assign({}, DEFAULT_CHAR_TRANSFORM, JSON.parse(transforms));
 
     const savedPlayParticles = localStorage.getItem('play-particles');
     if (savedPlayParticles !== null) {
@@ -126,7 +124,6 @@ function savePreferences() {
     localStorage.setItem('builder_key_bindings', JSON.stringify(keyBindings));
     localStorage.setItem('builder_physics_config', JSON.stringify(physicsConfig));
     localStorage.setItem('builder_custom_animations', JSON.stringify(customAnimations));
-    localStorage.setItem('builder_char_transform', JSON.stringify(charTransformConfig));
   } catch (e) { console.error('Failed to save preferences', e); }
 }
 
@@ -192,6 +189,37 @@ function syncCharTransformToUI() {
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
 }
 
+function resetCharacterTransform() {
+  charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
+  
+  // Reset slider min/max ranges to default
+  const sU = document.getElementById('slider-scale-uniform');
+  const sX = document.getElementById('slider-scale-x');
+  const sY = document.getElementById('slider-scale-y');
+  const sZ = document.getElementById('slider-scale-z');
+  if (sU) { sU.min = "0.1"; sU.max = "5.0"; }
+  if (sX) { sX.min = "0.1"; sX.max = "5.0"; }
+  if (sY) { sY.min = "0.1"; sY.max = "5.0"; }
+  if (sZ) { sZ.min = "0.1"; sZ.max = "5.0"; }
+
+  const pX = document.getElementById('slider-pivot-x');
+  const pY = document.getElementById('slider-pivot-y');
+  const pZ = document.getElementById('slider-pivot-z');
+  if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
+  if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
+  if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
+
+  const armS = document.getElementById('slider-arm-spread');
+  const legS = document.getElementById('slider-leg-spread');
+  if (armS) { armS.min = "-10"; armS.max = "10"; }
+  if (legS) { legS.min = "-10"; legS.max = "10"; }
+
+  syncCharTransformToUI();
+  applyLiveTransformations();
+  savePreferences();
+  updateExportCode();
+}
+
 function setupCharTransformControls() {
   const uniformToggle = document.getElementById('toggle-uniform-scale');
   const uniformSlider = document.getElementById('slider-scale-uniform');
@@ -249,25 +277,7 @@ function setupCharTransformControls() {
   legSpreadSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
-    charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
-    
-    // Reset slider min/max ranges to default
-    const pX = document.getElementById('slider-pivot-x');
-    const pY = document.getElementById('slider-pivot-y');
-    const pZ = document.getElementById('slider-pivot-z');
-    if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
-    if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
-    if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
-
-    const armS = document.getElementById('slider-arm-spread');
-    const legS = document.getElementById('slider-leg-spread');
-    if (armS) { armS.min = "-45"; armS.max = "45"; }
-    if (legS) { legS.min = "-45"; legS.max = "45"; }
-
-    syncCharTransformToUI();
-    applyLiveTransformations();
-    savePreferences();
-    updateExportCode();
+    resetCharacterTransform();
   });
 
   pivotGroundBtn?.addEventListener('click', () => {
@@ -708,6 +718,9 @@ async function loadDefaultCharacter() {
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
 async function loadCharacterMeshFile(file, preloadedBuffer = null) {
+  if (!preloadedBuffer) {
+    resetCharacterTransform();
+  }
   const readStep = document.getElementById('step-read');
   if (readStep && !readStep.classList.contains('completed')) {
     resetLoaderSteps();
@@ -1845,35 +1858,24 @@ function setupSidebarControls() {
       localStorage.removeItem('builder_key_bindings');
       localStorage.removeItem('builder_physics_config');
       localStorage.removeItem('builder_custom_animations');
-      localStorage.removeItem('builder_char_transform');
       
       savedAnimMappings = null;
       keyBindings = JSON.parse(JSON.stringify(DEFAULT_KEY_BINDINGS));
       physicsConfig = JSON.parse(JSON.stringify(DEFAULT_PHYSICS_CONFIG));
-      charTransformConfig = JSON.parse(JSON.stringify(DEFAULT_CHAR_TRANSFORM));
       customAnimations = [];
 
-      // Reset slider min/max ranges to default
-      const pX = document.getElementById('slider-pivot-x');
-      const pY = document.getElementById('slider-pivot-y');
-      const pZ = document.getElementById('slider-pivot-z');
-      if (pX) { pX.min = "-2.0"; pX.max = "2.0"; }
-      if (pY) { pY.min = "-2.0"; pY.max = "2.0"; }
-      if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
+      resetCharacterTransform();
 
       autoMapAnimations();
       renderAnimationsMappingTab();
       renderCustomAnimationsTab();
       renderKeyBindingsUI();
       syncPhysicsConfigToUI();
-      syncCharTransformToUI();
-      applyLiveTransformations();
 
       if (activeCharacter && activeCharacter.charCtrl) {
         activeCharacter.charCtrl.keyBindings = keyBindings;
         Object.keys(physicsConfig).forEach(key => { activeCharacter.charCtrl[key] = physicsConfig[key]; });
       }
-      updateExportCode();
       showToast('All configurations reset to defaults!');
     });
   }

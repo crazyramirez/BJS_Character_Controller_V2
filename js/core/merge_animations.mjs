@@ -500,31 +500,41 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 6. Left Foot (Foot -> Toe)
-  if (leftFoot && leftToe) {
+  // 6. Left Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  if (leftFoot) {
     const pFoot = getUpdatedWorldPos(leftFoot);
-    const pToe = getUpdatedWorldPos(leftToe);
-    const vFoot = vec3Subtract(pToe, pFoot);
-    const vFootHoriz = [vFoot[0], 0, vFoot[2]];
-    const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
-    if (len > 0.001) {
-      const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
-      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, 1]);
-      applyCorrection(leftFoot, qAlignFoot);
+    let pToePos = leftToe ? getUpdatedWorldPos(leftToe) : null;
+    if (!pToePos) {
+      const ch = leftFoot.listChildren();
+      if (ch.length > 0) pToePos = getUpdatedWorldPos(ch[0]);
+    }
+    if (pToePos) {
+      const vFoot = vec3Subtract(pToePos, pFoot);
+      const footLen = vec3Length(vFoot);
+      if (footLen > 0.001) {
+        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
+        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+        applyCorrection(leftFoot, qAlignFoot);
+      }
     }
   }
 
-  // 7. Right Foot (Foot -> Toe)
-  if (rightFoot && rightToe) {
+  // 7. Right Foot (Foot -> Toe) — full 3D alignment fixes both yaw and heel pitch
+  if (rightFoot) {
     const pFoot = getUpdatedWorldPos(rightFoot);
-    const pToe = getUpdatedWorldPos(rightToe);
-    const vFoot = vec3Subtract(pToe, pFoot);
-    const vFootHoriz = [vFoot[0], 0, vFoot[2]];
-    const len = Math.sqrt(vFootHoriz[0]*vFootHoriz[0] + vFootHoriz[2]*vFootHoriz[2]);
-    if (len > 0.001) {
-      const vFootHorizNorm = [vFootHoriz[0]/len, 0, vFootHoriz[2]/len];
-      const qAlignFoot = quatFromTwoVectors(vFootHorizNorm, [0, 0, 1]);
-      applyCorrection(rightFoot, qAlignFoot);
+    let pToePos = rightToe ? getUpdatedWorldPos(rightToe) : null;
+    if (!pToePos) {
+      const ch = rightFoot.listChildren();
+      if (ch.length > 0) pToePos = getUpdatedWorldPos(ch[0]);
+    }
+    if (pToePos) {
+      const vFoot = vec3Subtract(pToePos, pFoot);
+      const footLen = vec3Length(vFoot);
+      if (footLen > 0.001) {
+        const vFootNorm = [vFoot[0] / footLen, vFoot[1] / footLen, vFoot[2] / footLen];
+        const qAlignFoot = quatFromTwoVectors(vFootNorm, [0, 0, 1]);
+        applyCorrection(rightFoot, qAlignFoot);
+      }
     }
   }
 
