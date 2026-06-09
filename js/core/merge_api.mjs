@@ -1056,6 +1056,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     ];
     let curr = parentMap.get(hipsNode);
     while (curr) {
+      // Skip nodes named 'RootNode' — they are output from a previous merge pass by this app
+      // and already encode the baked scale/rotation. Re-accumulating them would double the transform.
+      const currName = (curr.getName() || '').toLowerCase();
+      if (currName === 'rootnode') { curr = parentMap.get(curr); continue; }
       const s = curr.getScale() || [1, 1, 1];
       // Use absolute scale — negative components are coordinate-system reflections
       // already baked into vertex data by tools like BJS Sandbox; don't flip skeleton.

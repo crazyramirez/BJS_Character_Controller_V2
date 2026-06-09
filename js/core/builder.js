@@ -752,6 +752,7 @@ async function loadDefaultCharacter() {
 async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   if (!preloadedBuffer) {
     resetCharacterTransform();
+    animationsGlbBuffer = null;
   }
   const readStep = document.getElementById('step-read');
   if (readStep && !readStep.classList.contains('completed')) {
