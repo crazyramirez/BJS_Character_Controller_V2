@@ -213,10 +213,18 @@
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
-                    <span>Arm Spread Angle</span>
+                    <span>Arm Spread (fwd/bck)</span>
                     <span class="control-value" id="val-arm-spread" style="color:var(--text-cyan);">0°</span>
                   </div>
-                  <input type="range" id="slider-arm-spread" min="-10" max="10" step="0.1" value="0">
+                  <input type="range" id="slider-arm-spread" min="-5" max="5" step="0.1" value="0">
+                </div>
+                <div class="control-group" style="margin-bottom:10px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span>Arm Splay (open/close)</span>
+                    <span class="control-value" id="val-arm-splay" style="color:var(--text-cyan);">0°</span>
+                  </div>
+                  <input type="range" id="slider-arm-splay" min="-5" max="5" step="0.1" value="0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
@@ -224,7 +232,15 @@
                     <span>Leg Spread Angle</span>
                     <span class="control-value" id="val-leg-spread" style="color:var(--text-cyan);">0°</span>
                   </div>
-                  <input type="range" id="slider-leg-spread" min="-10" max="10" step="0.1" value="0">
+                  <input type="range" id="slider-leg-spread" min="-5" max="5" step="0.1" value="0">
+                </div>
+                <div class="control-group" style="margin-bottom:10px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span>Spine Straighten</span>
+                    <span class="control-value" id="val-spine-straighten" style="color:var(--text-cyan);">0°</span>
+                  </div>
+                  <input type="range" id="slider-spine-straighten" min="-5" max="5" step="0.1" value="0">
                 </div>
               </div>
             </div>

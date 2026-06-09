@@ -93,7 +93,9 @@ let charTransformConfig = {
   UNIFORM_SCALE: true,
   SCALE_UNIFORM: 1.0,
   ARM_SPREAD_ANGLE: 0.0,
-  LEG_SPREAD_ANGLE: 0.0
+  ARM_SPLAY_ANGLE: 0.0,
+  LEG_SPREAD_ANGLE: 0.0,
+  SPINE_STRAIGHTEN_ANGLE: 0.0
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
 
@@ -186,7 +188,9 @@ function syncCharTransformToUI() {
   setSlider('slider-pivot-y', charTransformConfig.PIVOT_Y, 'm');
   setSlider('slider-pivot-z', charTransformConfig.PIVOT_Z, 'm');
   setSlider('slider-arm-spread', charTransformConfig.ARM_SPREAD_ANGLE, '°');
+  setSlider('slider-arm-splay', charTransformConfig.ARM_SPLAY_ANGLE, '°');
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
+  setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
 }
 
 function resetCharacterTransform() {
@@ -210,9 +214,13 @@ function resetCharacterTransform() {
   if (pZ) { pZ.min = "-2.0"; pZ.max = "2.0"; }
 
   const armS = document.getElementById('slider-arm-spread');
+  const armSplay = document.getElementById('slider-arm-splay');
   const legS = document.getElementById('slider-leg-spread');
+  const spineS = document.getElementById('slider-spine-straighten');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
+  if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
   if (legS) { legS.min = "-10"; legS.max = "10"; }
+  if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -230,7 +238,9 @@ function setupCharTransformControls() {
   const pivotYSlider = document.getElementById('slider-pivot-y');
   const pivotZSlider = document.getElementById('slider-pivot-z');
   const armSpreadSlider = document.getElementById('slider-arm-spread');
+  const armSplaySlider = document.getElementById('slider-arm-splay');
   const legSpreadSlider = document.getElementById('slider-leg-spread');
+  const spineStraightenSlider = document.getElementById('slider-spine-straighten');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -257,7 +267,9 @@ function setupCharTransformControls() {
     charTransformConfig.PIVOT_Y = pivotYSlider ? parseFloat(pivotYSlider.value) : 0.0;
     charTransformConfig.PIVOT_Z = pivotZSlider ? parseFloat(pivotZSlider.value) : 0.0;
     charTransformConfig.ARM_SPREAD_ANGLE = armSpreadSlider ? parseFloat(armSpreadSlider.value) : 0.0;
+    charTransformConfig.ARM_SPLAY_ANGLE = armSplaySlider ? parseFloat(armSplaySlider.value) : 0.0;
     charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
+    charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -274,7 +286,9 @@ function setupCharTransformControls() {
   pivotYSlider?.addEventListener('input', onSliderChange);
   pivotZSlider?.addEventListener('input', onSliderChange);
   armSpreadSlider?.addEventListener('input', onSliderChange);
+  armSplaySlider?.addEventListener('input', onSliderChange);
   legSpreadSlider?.addEventListener('input', onSliderChange);
+  spineStraightenSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -344,7 +358,9 @@ function getMergeOptions(extra = {}) {
     PIVOT_Y: charTransformConfig.PIVOT_Y,
     PIVOT_Z: charTransformConfig.PIVOT_Z,
     ARM_SPREAD_ANGLE: charTransformConfig.ARM_SPREAD_ANGLE,
+    ARM_SPLAY_ANGLE: charTransformConfig.ARM_SPLAY_ANGLE,
     LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
+    SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     removeExistingAnimations: true,
     ...extra
   };
@@ -1053,9 +1069,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     });
 
     const armAngle = charTransformConfig.ARM_SPREAD_ANGLE || 0;
+    const armSplay = charTransformConfig.ARM_SPLAY_ANGLE || 0;
     const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
+    const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
 
-    // 2. Loop through character bones and apply offsets (only if the bone matches arm/leg names)
+    // 2. Loop through character bones and apply offsets
     scene.skeletons.forEach(skel => {
       skel.bones.forEach(bone => {
         const node = bone.getTransformNode();
@@ -1064,6 +1082,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         const name = (bone.name || node.name || '').toLowerCase();
         let isArm = false;
         let isLeg = false;
+        let isSpine = false;
         let isLeft = false;
         let isRight = false;
 
@@ -1079,10 +1098,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         } else if (name.includes('rightupleg') || name.includes('rightthigh')) {
           isLeg = true;
           isRight = true;
+        } else if (name.includes('spine')) {
+          isSpine = true;
         }
 
-        if (isArm || isLeg) {
-          // If the bone is not actively animated in the current frame, reset it to its rest pose rotation
+        if (isArm || isLeg || isSpine) {
           if (!animatedNodes.has(node.uniqueId)) {
             const origRot = originalBoneRotations.get(node.uniqueId);
             if (origRot) {
@@ -1090,18 +1110,28 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             }
           }
 
-          // Compute custom offset (Roll/Z-axis for both arms and legs)
-          let angleDeg = 0;
           if (isArm) {
-            angleDeg = isLeft ? armAngle : -armAngle;
-          } else {
-            angleDeg = isLeft ? -legAngle : legAngle;
-          }
-
-          if (angleDeg !== 0) {
-            const angleRad = angleDeg * Math.PI / 180;
-            const offsetQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, angleRad);
-            node.rotationQuaternion.multiplyToRef(offsetQuat, node.rotationQuaternion);
+            // Z-axis: forward/backward spread
+            if (armAngle !== 0) {
+              const zDeg = isLeft ? armAngle : -armAngle;
+              const zQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, zDeg * Math.PI / 180);
+              node.rotationQuaternion.multiplyToRef(zQuat, node.rotationQuaternion);
+            }
+            // Y-axis: open/close arms laterally (splay)
+            if (armSplay !== 0) {
+              const yDeg = isLeft ? -armSplay : armSplay;
+              const yQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, yDeg * Math.PI / 180);
+              node.rotationQuaternion.multiplyToRef(yQuat, node.rotationQuaternion);
+            }
+          } else if (isLeg) {
+            if (legAngle !== 0) {
+              const zDeg = isLeft ? -legAngle : legAngle;
+              const zQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, zDeg * Math.PI / 180);
+              node.rotationQuaternion.multiplyToRef(zQuat, node.rotationQuaternion);
+            }
+          } else if (isSpine && spineAngle !== 0) {
+            const xQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.X, spineAngle * Math.PI / 180);
+            node.rotationQuaternion.multiplyToRef(xQuat, node.rotationQuaternion);
           }
         }
       });
