@@ -1507,6 +1507,45 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const importedAnims = charDoc.getRoot().listAnimations().filter(a => !origAnims.has(a));
   // console.log(`[merge] importedAnims (${importedAnims.length}): ${importedAnims.map(a => a.getName()).join(', ')}`);
 
+  // ── De-share sampler outputs before retargeting ───────────────────────────
+  // Exporters dedupe identical keyframe accessors ACROSS channels and clips
+  // (e.g. Punch_Cross and Punch_Jab sharing one RightShoulder track). Retarget
+  // mutates output arrays in place, so a shared accessor would be transformed
+  // once per referencing channel. With C ≈ identity (same-convention rigs) the
+  // double-application is nearly harmless and goes unnoticed, but with a large
+  // C (e.g. auto-rigged identity-bind skeletons) it corrupts the track. Give
+  // every rotation/translation channel a private sampler + output accessor.
+  {
+    const seenOutputs = new Set();
+    const buf = charDoc.getRoot().listBuffers()[0];
+    for (const anim of importedAnims) {
+      for (const ch of anim.listChannels()) {
+        const path = ch.getTargetPath();
+        if (path !== 'rotation' && path !== 'translation') continue;
+        const sampler = ch.getSampler();
+        const output = sampler?.getOutput();
+        if (!output) continue;
+        if (seenOutputs.has(output)) {
+          const arr = output.getArray();
+          if (!arr) continue;
+          const clone = charDoc.createAccessor(output.getName() || '')
+            .setType(output.getType())
+            .setArray(arr.slice())
+            .setBuffer(output.getBuffer() || buf);
+          const newSampler = charDoc.createAnimationSampler()
+            .setInput(sampler.getInput())
+            .setOutput(clone)
+            .setInterpolation(sampler.getInterpolation());
+          ch.setSampler(newSampler);
+          anim.addSampler(newSampler);
+          seenOutputs.add(clone);
+        } else {
+          seenOutputs.add(output);
+        }
+      }
+    }
+  }
+
   // Retarget
   if (cfg.SKELETON_SOURCE === 'character') {
     const charParentMap = buildParentMap(charDoc);

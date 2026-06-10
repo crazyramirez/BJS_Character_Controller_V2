@@ -385,6 +385,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   syncPhysicsConfigToUI();
   setupCharTransformControls();
   syncCharTransformToUI();
+  setupAutoRigControls();
   setupDragAndDrop();
 
   // Await server ping BEFORE loading default character so isServerAvailable is set
@@ -398,7 +399,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const isTyping = activeEl && (
         activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT' || activeEl.tagName === 'TEXTAREA'
       );
-      if (isTyping || activeCatcherAction !== null) return false;
+      if (isTyping || activeCatcherAction !== null || autoRigState) return false;
       return originalIsPressed.call(this, action);
     };
 
@@ -409,7 +410,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       const isTyping = activeEl && (
         activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT' || activeEl.tagName === 'TEXTAREA'
       );
-      if (isTyping || activeCatcherAction !== null) { this.keys = {}; return; }
+      // Rig adjust mode: ignore all controller keys — skeleton must stay in T-pose
+      if (isTyping || activeCatcherAction !== null || autoRigState) { this.keys = {}; return; }
 
       const inAction = window.ACTION_STATES && window.ACTION_STATES.has(this.state);
       if (!inAction && !this.sitting) {
@@ -967,6 +969,10 @@ async function addSingleAnimationFile(file) {
 // CORE GLB LOADER → BABYLON SCENE
 // ═══════════════════════════════════════════════════════════
 async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly = false) {
+  // Leave auto-rig adjust mode (restores hidden scene meshes, disposes markers/gizmo)
+  // before the character the markers are parented to gets disposed.
+  cancelAutoRigAdjust();
+
   // Dispose existing character
   if (activeCharacter) {
     if (activeCharacter.charCtrl._updateObserver) {
@@ -1285,9 +1291,11 @@ function renderSkeletonSection(info) {
 
   if (!info.hasSkin || info.boneCount === 0) {
     if (noticEl) noticEl.style.display = 'flex';
+    showAutoRigControls(true, false);
     return;
   }
   if (noticEl) noticEl.style.display = 'none';
+  showAutoRigControls(true, true); // allow re-rigging an existing skeleton
 
   // Build tree sorted by depth
   const sorted = [...info.bones].sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name));
@@ -1326,10 +1334,12 @@ function renderSkeletonSectionFromBJS() {
   if (!skeletons || skeletons.length === 0) {
     if (noticEl) noticEl.style.display = 'flex';
     if (countBadge) countBadge.textContent = '0 bones';
+    showAutoRigControls(true, false);
     return;
   }
 
   if (noticEl) noticEl.style.display = 'none';
+  showAutoRigControls(true, true); // allow re-rigging an existing skeleton
 
   let totalBones = 0;
   skeletons.forEach((skel, si) => {
@@ -1366,6 +1376,338 @@ function renderSkeletonSectionFromBJS() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// AUTO-RIG (skeleton generation for skinless meshes)
+// ═══════════════════════════════════════════════════════════
+let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
+
+function showAutoRigControls(show, hasExistingSkin = false) {
+  const wrap = document.getElementById('autorig-controls');
+  if (!wrap) return;
+  wrap.style.display = (show && isServerAvailable && characterGlbBuffer) ? 'block' : 'none';
+  const startBtn = document.getElementById('btn-autorig-start');
+  if (startBtn) {
+    startBtn.textContent = hasExistingSkin
+      ? '💀 Re-Rig / Adjust Skeleton'
+      : '💀 Generate Skeleton (Auto-Rig)';
+  }
+  if (!show) cancelAutoRigAdjust();
+}
+
+function setupAutoRigControls() {
+  document.getElementById('btn-autorig-start')?.addEventListener('click', startAutoRigAdjust);
+  document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
+  document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
+  document.getElementById('btn-autorig-apply-vp')?.addEventListener('click', applyAutoRig);
+  document.getElementById('btn-autorig-cancel-vp')?.addEventListener('click', cancelAutoRigAdjust);
+  document.querySelectorAll('.autorig-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => setRigView(btn.dataset.view));
+  });
+  // Keyboard shortcuts 1/2/3 for views while in rig mode
+  window.addEventListener('keydown', (e) => {
+    if (!autoRigState) return;
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
+    if (e.code === 'Digit1') setRigView('front');
+    else if (e.code === 'Digit2') setRigView('side');
+    else if (e.code === 'Digit3') setRigView('top');
+  });
+}
+
+// ── Rig viewport mode: isolate the character, studio backdrop, camera presets ─
+function enterRigViewportMode() {
+  if (!activeCharacter || !autoRigState) return;
+
+  const charMeshSet = new Set(activeCharacter.rawMeshes);
+  const hiddenMeshes = [];
+  scene.meshes.forEach(m => {
+    if (charMeshSet.has(m)) return;
+    if (m === activeCharacter.playerCapsule) return;
+    if (m.name.startsWith('autorig_')) return;
+    if (m.isEnabled()) {
+      hiddenMeshes.push(m);
+      m.setEnabled(false);
+    }
+  });
+
+  const prevClearColor = scene.clearColor.clone();
+  scene.clearColor = new BABYLON.Color4(0.025, 0.025, 0.05, 1);
+
+  const hud = document.querySelector('.hud-overlay');
+  const prevHudDisplay = hud ? hud.style.display : null;
+  if (hud) hud.style.display = 'none';
+
+  const ui = document.getElementById('autorig-viewport-ui');
+  if (ui) ui.style.display = 'flex';
+
+  // Hand camera control back to the user the moment they grab the viewport
+  const pointerObserver = scene.onPointerObservable.add((pi) => {
+    if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) scene.stopAnimation(camera);
+  });
+
+  autoRigState.viewportMode = { hiddenMeshes, prevClearColor, hud, prevHudDisplay, pointerObserver };
+  setRigView('front');
+}
+
+function exitRigViewportMode(state) {
+  const vm = state?.viewportMode;
+  if (!vm) return;
+  vm.hiddenMeshes.forEach(m => m.setEnabled(true));
+  if (vm.pointerObserver) scene.onPointerObservable.remove(vm.pointerObserver);
+  scene.stopAnimation(camera);
+  scene.clearColor = vm.prevClearColor;
+  if (vm.hud) vm.hud.style.display = vm.prevHudDisplay || '';
+  const ui = document.getElementById('autorig-viewport-ui');
+  if (ui) ui.style.display = 'none';
+}
+
+function setRigView(view) {
+  if (!autoRigState) return;
+  const h = autoRigState.sceneHeight || 1.8; // scene units, not GLB units
+  const radius = Math.min(Math.max(h * 2.1, 2.5), 18);
+
+  let alpha, beta;
+  if (view === 'side') { alpha = 0; beta = 1.42; }
+  else if (view === 'top') { alpha = -Math.PI / 2; beta = 0.06; }
+  else { alpha = -Math.PI / 2; beta = 1.42; } // front
+
+  // Shortest rotation path — avoid full spins
+  alpha += Math.round((camera.alpha - alpha) / (2 * Math.PI)) * 2 * Math.PI;
+
+  document.querySelectorAll('.autorig-view-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === view));
+
+  // Direct snap — no Animation objects. Animated transitions kept re-looping
+  // and fought camera inertia, so the camera never settled.
+  scene.stopAnimation(camera);
+  camera.inertialAlphaOffset = 0;
+  camera.inertialBetaOffset = 0;
+  camera.inertialRadiusOffset = 0;
+  camera.alpha = alpha;
+  camera.beta = beta;
+  camera.radius = radius;
+}
+
+// Left/right counterpart name, or null for center bones
+function mirrorJointName(name) {
+  if (name.startsWith('Left')) return 'Right' + name.slice(4);
+  if (name.startsWith('Right')) return 'Left' + name.slice(5);
+  return null;
+}
+
+async function startAutoRigAdjust() {
+  if (!characterGlbBuffer || !activeCharacter) {
+    showToast('Load a character mesh first!', true);
+    return;
+  }
+  if (!isServerAvailable) {
+    showToast('Server offline — auto-rig unavailable.', true);
+    return;
+  }
+
+  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  showLoading('Analyzing mesh proportions…');
+  let guess;
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Joint analysis failed');
+    }
+    guess = await res.json();
+  } catch (err) {
+    hideLoading();
+    showToast('Auto-rig failed: ' + err.message, true);
+    return;
+  }
+  hideLoading();
+
+  cancelAutoRigAdjust();
+
+  // Freeze character in bind pose (T-pose) so markers line up with the mesh:
+  // pause the controller update loop, stop animations, return skeleton to rest.
+  const ctrlObserver = activeCharacter.charCtrl?._updateObserver;
+  if (ctrlObserver) {
+    scene.onBeforeRenderObservable.remove(ctrlObserver);
+  }
+  // Camera follow-lock observer forces pitch/yaw every frame (CAM_FOLLOW_LOCK)
+  // and would override the Front/Side/Top presets — pause it too.
+  const camLockObserver = activeCharacter.charCtrl?._cameraLockObserver;
+  if (camLockObserver) {
+    scene.onBeforeCameraRenderObservable.remove(camLockObserver);
+  }
+  scene.animationGroups.forEach(ag => ag.stop());
+  scene.skeletons.forEach(skel => skel.returnToRest());
+
+  // Marker parent must be the node whose LOCAL space matches the server's joint
+  // space. For skinned characters that is the skeleton root's parent (it carries
+  // any armature scale, e.g. ×100 cm exports); for static meshes, charRoot.
+  let markerParent = activeCharacter.charRoot;
+  if (scene.skeletons && scene.skeletons.length > 0) {
+    const rootBone = scene.skeletons[0].bones.find(b => !b.getParent());
+    const rootNode = rootBone?.getTransformNode();
+    if (rootNode?.parent) markerParent = rootNode.parent;
+  }
+
+  // Scene-space character height (for camera framing — guess.height is in the
+  // GLB's own units and can be ×100 off)
+  let sceneMinY = Infinity, sceneMaxY = -Infinity;
+  activeCharacter.rawMeshes.forEach(m => {
+    if (!m.getBoundingInfo || !m.geometry) return;
+    m.computeWorldMatrix(true);
+    const bb = m.getBoundingInfo().boundingBox;
+    sceneMinY = Math.min(sceneMinY, bb.minimumWorld.y);
+    sceneMaxY = Math.max(sceneMaxY, bb.maximumWorld.y);
+  });
+  const sceneHeight = (Number.isFinite(sceneMaxY - sceneMinY) && sceneMaxY - sceneMinY > 0.01)
+    ? sceneMaxY - sceneMinY
+    : 1.8;
+
+  const markers = new Map();
+  const markerMat = new BABYLON.StandardMaterial('autorigMarkerMat', scene);
+  markerMat.emissiveColor = new BABYLON.Color3(1, 0.85, 0.1);
+  markerMat.disableLighting = true;
+
+  const diameter = Math.max(0.03 * guess.height, 0.02);
+  Object.entries(guess.joints).forEach(([name, pos]) => {
+    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
+    m.material = markerMat;
+    m.isPickable = true;
+    m.renderingGroupId = 1; // draw on top of the character mesh
+    m.parent = markerParent;
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.metadata = { autorigJoint: name };
+    markers.set(name, m);
+  });
+
+  const gizmoManager = new BABYLON.GizmoManager(scene);
+  gizmoManager.positionGizmoEnabled = true;
+  gizmoManager.usePointerToAttachGizmos = true;
+  gizmoManager.attachableMeshes = [...markers.values()];
+
+  // Mirror drag onto the contralateral marker when symmetry is on
+  const posGizmo = gizmoManager.gizmos.positionGizmo;
+  if (posGizmo) {
+    const syncMirror = () => {
+      const symmetric = document.getElementById('autorig-symmetry')?.checked;
+      if (!symmetric) return;
+      const attached = gizmoManager.attachedMesh;
+      if (!attached?.metadata?.autorigJoint) return;
+      const twinName = mirrorJointName(attached.metadata.autorigJoint);
+      if (!twinName) return;
+      const twin = markers.get(twinName);
+      if (twin) twin.position.set(-attached.position.x, attached.position.y, attached.position.z);
+    };
+    [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
+      g?.dragBehavior?.onDragObservable.add(syncMirror);
+    });
+  }
+
+  autoRigState = {
+    markers, gizmoManager, height: guess.height, sceneHeight,
+    pausedCtrlCallback: ctrlObserver?.callback || null,
+    pausedCamLockCallback: camLockObserver?.callback || null,
+  };
+  enterRigViewportMode();
+
+  const startBtn = document.getElementById('btn-autorig-start');
+  const adjustPanel = document.getElementById('autorig-adjust');
+  const hint = document.getElementById('autorig-adjust-hint');
+  if (startBtn) startBtn.style.display = 'none';
+  if (adjustPanel) adjustPanel.style.display = 'block';
+  if (hint) {
+    hint.textContent = guess.reRig
+      ? 'Markers placed from the current skeleton bind pose. Drag them to correct joint placement — applying will REPLACE the existing skeleton and skin weights, and animations will be re-merged.'
+      : "Drag the yellow joint markers in the viewport to match your character's anatomy (click a marker to attach the move gizmo), then apply.";
+  }
+
+  showToast('Adjust the joint markers, then Apply Rig.');
+}
+
+function cancelAutoRigAdjust() {
+  if (autoRigState) {
+    exitRigViewportMode(autoRigState);
+    autoRigState.gizmoManager?.dispose();
+    autoRigState.markers.forEach(m => {
+      m.material?.dispose();
+      m.dispose();
+    });
+    // Resume the paused controller update loop (no-op after apply: reload replaces it)
+    if (autoRigState.pausedCtrlCallback && activeCharacter?.charCtrl) {
+      activeCharacter.charCtrl._updateObserver =
+        scene.onBeforeRenderObservable.add(autoRigState.pausedCtrlCallback);
+    }
+    if (autoRigState.pausedCamLockCallback && activeCharacter?.charCtrl) {
+      activeCharacter.charCtrl._cameraLockObserver =
+        scene.onBeforeCameraRenderObservable.add(autoRigState.pausedCamLockCallback);
+    }
+    // Restart idle: rig mode stopped every animation group and froze the
+    // skeleton in rest pose. AnimCtrl.play() short-circuits when the requested
+    // group is already `cur` (it only re-weights, never restarts a stopped
+    // group), so clear `cur` first to force a real transition/start.
+    if (activeCharacter?.charCtrl) {
+      const ctrl = activeCharacter.charCtrl;
+      const anim = activeCharacter.animCtrl;
+      ctrl._previewAnim = null;
+      if (anim) {
+        anim.cur = null;
+        anim.curName = '';
+        anim.activeTransitions = [];
+      }
+      ctrl._setState?.(window.S ? window.S.IDLE : 'IDLE');
+      if (ctrl._returnToLoco) ctrl._returnToLoco(0.2);
+      else anim?.play('Idle_Loop', true, 0.2);
+    }
+    autoRigState = null;
+  }
+  const startBtn = document.getElementById('btn-autorig-start');
+  const adjustPanel = document.getElementById('autorig-adjust');
+  if (startBtn) startBtn.style.display = '';
+  if (adjustPanel) adjustPanel.style.display = 'none';
+}
+
+async function applyAutoRig() {
+  if (!autoRigState || !characterGlbBuffer) return;
+
+  // Collect adjusted joint positions (local to charRoot = glTF space)
+  const joints = {};
+  autoRigState.markers.forEach((m, name) => {
+    joints[name] = [m.position.x, m.position.y, m.position.z];
+  });
+
+  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  cancelAutoRigAdjust();
+
+  showLoading('Generating skeleton & skin weights…');
+  showMergeProgress(true, 'Auto-rigging on server…');
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    formData.append('options', JSON.stringify({ joints }));
+
+    const res = await fetch('/api/autorig', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Auto-rig failed');
+    }
+    const riggedBuffer = await res.arrayBuffer();
+    completeMergeProgress();
+
+    // Reload through the normal character pipeline: re-analyze, then merge
+    // default/preloaded animations against the freshly rigged skeleton.
+    const file = new File([riggedBuffer], 'rigged.glb');
+    await loadCharacterMeshFile(file, riggedBuffer);
+    showToast('✓ Skeleton generated and assigned!');
+  } catch (err) {
+    completeMergeProgress();
+    hideLoading();
+    console.error('[autorig] failed:', err);
+    showToast('Auto-rig failed: ' + err.message, true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // CHARACTER STATUS BAR
 // ═══════════════════════════════════════════════════════════
 function updateCharStatusBar(filename) {
@@ -1379,6 +1721,8 @@ function updateCharStatusBar(filename) {
 }
 
 function clearCharacter() {
+  cancelAutoRigAdjust();
+
   const bar = document.getElementById('char-status');
   if (bar) bar.style.display = 'none';
 
@@ -1453,6 +1797,10 @@ function renderAnimationLibrary() {
       // If clicking the delete button, ignore play trigger
       if (e.target.closest('.btn-anim-delete')) return;
 
+      if (autoRigState) {
+        showToast('Finish rig adjustment first — character is locked in T-pose.', true);
+        return;
+      }
       const animName = row.dataset.anim;
       if (activeCharacter && activeCharacter.charCtrl) {
         activeCharacter.charCtrl.state = window.S ? window.S.IDLE : 'IDLE';

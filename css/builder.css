@@ -514,6 +514,237 @@ input[type="range"]::-moz-range-thumb {
   filter: grayscale(0.6) !important;
 }
 
+/* ============================================================
+   AUTO-RIG CONTROLS
+   ============================================================ */
+#autorig-controls {
+  margin-top: 12px;
+}
+
+#autorig-adjust {
+  margin-top: 10px;
+  padding: 12px;
+  background: rgba(250, 204, 21, 0.05);
+  border: 1px solid rgba(250, 204, 21, 0.22);
+  border-radius: var(--r-md);
+}
+
+#autorig-adjust p {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+#autorig-adjust .autorig-symmetry-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#autorig-adjust .autorig-symmetry-row input {
+  accent-color: var(--accent);
+}
+
+.autorig-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.autorig-btn-row .btn-action {
+  margin-top: 0;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+}
+
+.btn-autorig-apply {
+  background: linear-gradient(135deg, #059669 0%, #10b981 55%, #047857 100%);
+  background-size: 200% 100%;
+  box-shadow:
+    0 4px 20px rgba(16, 185, 129, 0.32),
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.btn-autorig-apply:hover {
+  box-shadow:
+    0 10px 30px rgba(16, 185, 129, 0.5),
+    0 0 50px rgba(16, 185, 129, 0.16);
+}
+
+/* ── Auto-rig viewport overlay ─────────────────────────────── */
+#autorig-viewport-ui {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+  z-index: 30;
+  animation: autorigFadeIn 0.45s var(--ease-expo);
+}
+
+@keyframes autorigFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.autorig-mode-badge {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  background: rgba(15, 12, 4, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 999px;
+  color: #fbbf24;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.autorig-badge-icon {
+  font-size: 0.95rem;
+  animation: autorigPulse 2.2s ease-in-out infinite;
+}
+
+@keyframes autorigPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.75; }
+}
+
+.autorig-badge-sub {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-secondary);
+  border-left: 1px solid rgba(250, 204, 21, 0.25);
+  padding-left: 9px;
+}
+
+.autorig-view-bar {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  background: rgba(10, 10, 18, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  pointer-events: auto;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.autorig-view-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s var(--ease-expo);
+}
+
+.autorig-view-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.autorig-view-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.autorig-view-btn.active {
+  background: linear-gradient(135deg, rgba(250, 204, 21, 0.18), rgba(250, 204, 21, 0.10));
+  color: #fbbf24;
+  box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.35);
+}
+
+.autorig-action-bar {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.autorig-vp-apply,
+.autorig-vp-cancel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 28px;
+  border-radius: 999px;
+  font-family: var(--font);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.3s var(--ease-expo);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.autorig-vp-apply {
+  background: linear-gradient(135deg, #059669 0%, #10b981 55%, #047857 100%);
+  border: none;
+  color: #fff;
+  box-shadow:
+    0 6px 26px rgba(16, 185, 129, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.autorig-vp-apply:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 12px 34px rgba(16, 185, 129, 0.55),
+    0 0 50px rgba(16, 185, 129, 0.18);
+}
+
+.autorig-vp-apply:active {
+  transform: translateY(0);
+}
+
+.autorig-vp-cancel {
+  background: rgba(10, 10, 18, 0.55);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.autorig-vp-cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-2px);
+}
+
 .viewport-offline-notice {
   position: absolute;
   top: 14px;

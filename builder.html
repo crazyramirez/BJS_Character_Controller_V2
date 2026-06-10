@@ -145,7 +145,7 @@
                   <span>Uniform Scale</span>
                   <span class="control-value" id="val-scale-uniform" style="color:var(--text-cyan);">1.00x</span>
                 </div>
-                <input type="range" id="slider-scale-uniform" min="0.1" max="5.0" step="0.01" value="1.0">
+                <input type="range" id="slider-scale-uniform" min="0.01" max="5.0" step="0.01" value="1.0">
               </div>
 
               <!-- Scale X, Y, Z sliders (hidden by default when uniform scaling is checked) -->
@@ -156,7 +156,7 @@
                     <span>Scale X</span>
                     <span class="control-value" id="val-scale-x" style="color:var(--text-cyan);">1.00x</span>
                   </div>
-                  <input type="range" id="slider-scale-x" min="0.1" max="5.0" step="0.01" value="1.0">
+                  <input type="range" id="slider-scale-x" min="0.01" max="5.0" step="0.01" value="1.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
@@ -164,7 +164,7 @@
                     <span>Scale Y</span>
                     <span class="control-value" id="val-scale-y" style="color:var(--text-cyan);">1.00x</span>
                   </div>
-                  <input type="range" id="slider-scale-y" min="0.1" max="5.0" step="0.01" value="1.0">
+                  <input type="range" id="slider-scale-y" min="0.01" max="5.0" step="0.01" value="1.0">
                 </div>
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
@@ -172,7 +172,7 @@
                     <span>Scale Z</span>
                     <span class="control-value" id="val-scale-z" style="color:var(--text-cyan);">1.00x</span>
                   </div>
-                  <input type="range" id="slider-scale-z" min="0.1" max="5.0" step="0.01" value="1.0">
+                  <input type="range" id="slider-scale-z" min="0.01" max="5.0" step="0.01" value="1.0">
                 </div>
               </div>
 
@@ -265,6 +265,22 @@
                   <strong>No skeleton detected</strong>
                   <p>This GLB has no rigged skeleton (skin). It will render as a static mesh. Animations may not work
                     unless a skeleton is present.</p>
+                </div>
+              </div>
+              <div id="autorig-controls" style="display:none;">
+                <button id="btn-autorig-start" class="btn-action">💀 Generate Skeleton (Auto-Rig)</button>
+                <div id="autorig-adjust" style="display:none;">
+                  <p id="autorig-adjust-hint">
+                    Drag the yellow joint markers in the viewport to match your character's anatomy
+                    (click a marker to attach the move gizmo), then apply.
+                  </p>
+                  <label class="autorig-symmetry-row">
+                    <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
+                  </label>
+                  <div class="autorig-btn-row">
+                    <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>
+                    <button id="btn-autorig-cancel" class="btn-action btn-secondary">✕ Cancel</button>
+                  </div>
                 </div>
               </div>
               <div id="skeleton-tree" class="skeleton-tree"></div>
@@ -630,6 +646,42 @@
             d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z" />
         </svg>
         <span>Server offline — import disabled &nbsp;·&nbsp; <code>npm start</code> to enable</span>
+      </div>
+
+      <!-- Auto-rig mode viewport UI -->
+      <div id="autorig-viewport-ui" style="display:none;">
+        <div class="autorig-mode-badge">
+          <span class="autorig-badge-icon">💀</span>
+          <span>AUTO-RIG MODE</span>
+          <span class="autorig-badge-sub">drag the markers onto the joints</span>
+        </div>
+        <div class="autorig-view-bar">
+          <button class="autorig-view-btn active" data-view="front" title="Front view (1)">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="6" r="3" />
+              <path d="M12 10v8M8 13h8M9 22l3-4 3 4" />
+            </svg>
+            Front
+          </button>
+          <button class="autorig-view-btn" data-view="side" title="Side view (2)">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="6" r="3" />
+              <path d="M12 10v8M12 13h4M12 22l2-4" />
+            </svg>
+            Side
+          </button>
+          <button class="autorig-view-btn" data-view="top" title="Top view (3)">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 4v3M12 17v3M4 12h3M17 12h3" />
+            </svg>
+            Top
+          </button>
+        </div>
+        <div class="autorig-action-bar">
+          <button id="btn-autorig-apply-vp" class="autorig-vp-apply">✓ Apply Rig</button>
+          <button id="btn-autorig-cancel-vp" class="autorig-vp-cancel">✕ Cancel</button>
+        </div>
       </div>
 
       <!-- HUD -->

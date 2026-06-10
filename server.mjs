@@ -19,6 +19,7 @@ const require = createRequire(import.meta.url);
 const multer = require('multer');
 
 import { mergeGLBs, analyzeGLB } from './js/core/merge_api.mjs';
+import { autoRigGLB, guessJoints } from './js/core/autorig_api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -91,6 +92,50 @@ app.post('/api/merge', upload.fields([
     console.log(`[merge] Done. Output: ${(merged.length / 1024 / 1024).toFixed(2)} MB`);
   } catch (err) {
     console.error('[merge] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Auto-rig: propose default joint positions ───────────────────────────────
+// POST /api/autorig-joints
+// Body: multipart with field "file" (skinless GLB)
+// Response: JSON { joints: {Hips:[x,y,z], ...}, height, bounds }
+app.post('/api/autorig-joints', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
+    console.log(`[autorig-joints] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB)`);
+    const result = await guessJoints(req.file.buffer);
+    res.json(result);
+  } catch (err) {
+    console.error('[autorig-joints] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Auto-rig: generate skeleton + skin weights ───────────────────────────────
+// POST /api/autorig
+// Body: multipart with field "file" (skinless GLB)
+// Optional "options" (JSON string): { joints: {Hips:[x,y,z], ...} } world-space overrides
+// Response: binary rigged .glb
+app.post('/api/autorig', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
+
+    let options = {};
+    if (req.body?.options) {
+      try { options = JSON.parse(req.body.options); } catch (_) { /* ignore */ }
+    }
+
+    console.log(`[autorig] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB), custom joints: ${options.joints ? Object.keys(options.joints).length : 0}`);
+    const rigged = await autoRigGLB(req.file.buffer, options);
+
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Disposition', 'attachment; filename="rigged.glb"');
+    res.setHeader('Content-Length', rigged.length);
+    res.end(rigged);
+    console.log(`[autorig] Done. Output: ${(rigged.length / 1024).toFixed(0)} KB`);
+  } catch (err) {
+    console.error('[autorig] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
