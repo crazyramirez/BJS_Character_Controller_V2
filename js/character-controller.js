@@ -287,7 +287,70 @@ class AnimCtrl {
     this.locoGroup = new LocoBlendGroup(this);
     this.g.set('Locomotion', this.locoGroup);
 
+    // ── Animation events ──────────────────────────────────────
+    // animationEvents: { [animName]: [{ type, frame, label }] }
+    // onAnimationEvent: (evt, animName) => {} fired when playback crosses evt.frame
+    this.animationEvents = {};
+    this.onAnimationEvent = null;
+    this._evtLastFrame = new Map(); // animName -> last seen frame
+    this._eventObserver = scene.onBeforeRenderObservable.add(() => this._updateAnimationEvents());
+
     this.resetInactiveWeights();
+  }
+
+  // Fire markers whose frame was crossed since the previous render tick.
+  // Handles loop wrap-around (frame jumps back below the last seen frame).
+  _updateAnimationEvents() {
+    const events = this.animationEvents;
+    if (!events || !this.cur) { this._evtLastFrame.clear(); return; }
+
+    // Groups to watch: the current group, plus the loco loops when the
+    // Locomotion blend tree is active (footsteps on Walk/Sprint).
+    const watch = [];
+    if (this.curName === 'Locomotion') {
+      for (const n of ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop']) {
+        const ag = this.g.get(n);
+        const a = ag?.animatables?.[0];
+        if (a && a.weight > 0.3) watch.push([n, ag]);
+      }
+    } else {
+      watch.push([this.curName, this.cur]);
+    }
+
+    const seen = new Set();
+    for (const [name, ag] of watch) {
+      seen.add(name);
+      const list = events[name];
+      const a = ag.animatables?.[0];
+      if (!list || !list.length || !a) continue;
+      const frame = a.masterFrame;
+      if (!Number.isFinite(frame)) continue;
+      if (!this._evtLastFrame.has(name)) { this._evtLastFrame.set(name, frame); continue; }
+      const last = this._evtLastFrame.get(name);
+      this._evtLastFrame.set(name, frame);
+      if (frame === last) continue;
+      for (const evt of list) {
+        const f = Number(evt.frame);
+        const crossed = frame >= last
+          ? (f > last && f <= frame)            // normal advance
+          : (f > last || f <= frame);           // loop wrapped
+        if (crossed) this._fireAnimationEvent(evt, name);
+      }
+    }
+    // Drop stale frame tracking for groups no longer playing
+    for (const key of this._evtLastFrame.keys()) {
+      if (!seen.has(key)) this._evtLastFrame.delete(key);
+    }
+  }
+
+  _fireAnimationEvent(evt, animName) {
+    try {
+      if (this.onAnimationEvent) this.onAnimationEvent(evt, animName);
+      if (this.charCtrl?.onAnimationEvent) this.charCtrl.onAnimationEvent(evt, animName);
+      window.dispatchEvent(new CustomEvent('charanimevent', { detail: { ...evt, animName } }));
+    } catch (e) {
+      console.error('[AnimCtrl] animation event handler failed:', e);
+    }
   }
 
   resetInactiveWeights() {
@@ -612,6 +675,11 @@ class AnimCtrl {
 
   destroy() {
     this.forceStop();
+    if (this._eventObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._eventObserver);
+      this._eventObserver = null;
+    }
+    this._evtLastFrame.clear();
   }
 }
 
@@ -1201,6 +1269,12 @@ class CharCtrl {
     this._touchListeners.push({ element: document, type: 'touchend', listener: onTouchEnd });
     this._touchListeners.push({ element: document, type: 'gesturestart', listener: onGestureStart });
   }
+
+  // Gameplay animation markers — stored on the AnimCtrl, which drives playback.
+  // Usage: charCtrl.animationEvents = { Punch: [{ type:'hit', frame: 12 }] };
+  //        charCtrl.onAnimationEvent = (evt, animName) => { ... };
+  get animationEvents() { return this.anim.animationEvents; }
+  set animationEvents(v) { this.anim.animationEvents = v || {}; }
 
   destroy() {
     // 1. Remove window keyboard and focus/blur event listeners

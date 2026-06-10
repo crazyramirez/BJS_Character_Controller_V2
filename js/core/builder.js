@@ -5,6 +5,8 @@
 // ═══════════════════════════════════════════════════════════
 let engine, scene, camera, shadowGenerator;
 let activeCharacter = null; // { playerCapsule, animCtrl, charCtrl, rawAnimationGroups, rawMeshes, charRoot }
+let testLabObserver = null;
+let activeTestScenario = 'studio';
 
 // Animation library: array of string names currently loaded in the scene
 let detectedAnimations = [];
@@ -78,10 +80,67 @@ let physicsConfig = {
 };
 
 let customAnimations = [];
+let animationEvents = {};
 
 const DEFAULT_KEY_BINDINGS = JSON.parse(JSON.stringify(keyBindings));
 const DEFAULT_PHYSICS_CONFIG = JSON.parse(JSON.stringify(physicsConfig));
 let savedAnimMappings = null;
+let activeControllerPreset = localStorage.getItem('builder_controller_preset') || 'balanced';
+
+const CONTROLLER_PRESETS = [
+  {
+    id: 'balanced',
+    name: 'Balanced Adventure',
+    description: 'Readable third-person movement for exploration, combat tests and general demos.',
+    tags: ['default', 'third person'],
+    config: {
+      GRAV: 22, JUMP_PWR: 9.5, SPD_WALK: 2.5, SPD_JOG: 3.0, SPD_SPRINT: 5.0,
+      ACCEL: 14, DECEL: 16, ROT_SPD: 40, AIR_CONTROL: false,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.10, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 1.047, CAM_FOLLOW_DIST: 8.0, DOUBLE_JUMP_ENABLED: true,
+      SPEED_MULTIPLIER: 1.0
+    }
+  },
+  {
+    id: 'action',
+    name: 'Action Combat',
+    description: 'Tighter acceleration, shorter camera distance and heavier landings for responsive fights.',
+    tags: ['combat', 'snappy'],
+    config: {
+      GRAV: 28, JUMP_PWR: 9.0, SPD_WALK: 2.7, SPD_JOG: 3.2, SPD_SPRINT: 5.8,
+      ACCEL: 24, DECEL: 26, ROT_SPD: 70, AIR_CONTROL: false,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.08, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 0.96, CAM_FOLLOW_DIST: 6.2, DOUBLE_JUMP_ENABLED: false,
+      SPEED_MULTIPLIER: 1.0
+    }
+  },
+  {
+    id: 'platformer',
+    name: 'Arcade Platformer',
+    description: 'Higher jump, stronger air steering and brighter motion feedback for traversal-heavy games.',
+    tags: ['jump', 'air control'],
+    config: {
+      GRAV: 24, JUMP_PWR: 13.5, SPD_WALK: 3.0, SPD_JOG: 3.8, SPD_SPRINT: 6.6,
+      ACCEL: 20, DECEL: 18, ROT_SPD: 58, AIR_CONTROL: true,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.16, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 1.02, CAM_FOLLOW_DIST: 7.0, DOUBLE_JUMP_ENABLED: true,
+      SPEED_MULTIPLIER: 1.0
+    }
+  },
+  {
+    id: 'cinematic',
+    name: 'Cinematic Walkthrough',
+    description: 'Slower motion, softer turns and wider camera framing for showcases and inspection.',
+    tags: ['showcase', 'smooth'],
+    config: {
+      GRAV: 20, JUMP_PWR: 7.5, SPD_WALK: 1.6, SPD_JOG: 2.2, SPD_SPRINT: 3.8,
+      ACCEL: 8, DECEL: 10, ROT_SPD: 26, AIR_CONTROL: false,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.04, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 1.12, CAM_FOLLOW_DIST: 9.5, DOUBLE_JUMP_ENABLED: false,
+      SPEED_MULTIPLIER: 1.0
+    }
+  }
+];
 
 let charTransformConfig = {
   SCALE_X: 1.0,
@@ -112,6 +171,8 @@ function loadPreferences() {
     if (physics) physicsConfig = Object.assign({}, DEFAULT_PHYSICS_CONFIG, JSON.parse(physics));
     const customs = localStorage.getItem('builder_custom_animations');
     if (customs) customAnimations = JSON.parse(customs);
+    const events = localStorage.getItem('builder_animation_events');
+    if (events) animationEvents = JSON.parse(events);
 
     const savedPlayParticles = localStorage.getItem('play-particles');
     if (savedPlayParticles !== null) {
@@ -126,6 +187,8 @@ function savePreferences() {
     localStorage.setItem('builder_key_bindings', JSON.stringify(keyBindings));
     localStorage.setItem('builder_physics_config', JSON.stringify(physicsConfig));
     localStorage.setItem('builder_custom_animations', JSON.stringify(customAnimations));
+    localStorage.setItem('builder_animation_events', JSON.stringify(animationEvents));
+    localStorage.setItem('builder_controller_preset', activeControllerPreset);
   } catch (e) { console.error('Failed to save preferences', e); }
 }
 
@@ -157,7 +220,11 @@ function syncCharTransformToUI() {
     if (el) {
       const min = parseFloat(el.min);
       const max = parseFloat(el.max);
-      if (val < min) el.min = (Math.floor(val * 2) / 2).toString();
+      if (val < min) {
+        el.min = id.includes('scale')
+          ? Math.max(0.001, Math.floor(val * 1000) / 1000).toString()
+          : (Math.floor(val * 2) / 2).toString();
+      }
       if (val > max) el.max = (Math.ceil(val * 2) / 2).toString();
       el.value = val;
     }
@@ -406,6 +473,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const originalKeyDown = CharCtrl.prototype._keyDown;
     CharCtrl.prototype._keyDown = function (code) {
       this._previewAnim = null; // Clear active animation preview
+      this._previewLocoSpeed = null;
       const activeEl = document.activeElement;
       const isTyping = activeEl && (
         activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT' || activeEl.tagName === 'TEXTAREA'
@@ -433,6 +501,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     CharCtrl.prototype._updateLocoAnim = function (hasMove, sprint, backward, blend = 0.35) {
       if (hasMove) {
         this._previewAnim = null;
+        this._previewLocoSpeed = null;
+      }
+      // Locomotion preview (test lab Idle/Walk/Sprint): drive the real blend
+      // tree with a pinned speed. Playing the loop clips directly while the
+      // blend tree also weights them double-drives the skeleton and deforms it.
+      if (this._previewLocoSpeed != null) {
+        this.anim.play('Locomotion', true, 0.25);
+        this.anim.g.get('Locomotion')?.updateSpeed(this._previewLocoSpeed);
+        return;
       }
       if (this._previewAnim) {
         this.anim.play(this._previewAnim, true, 0.15);
@@ -514,6 +591,211 @@ function syncPhysicsConfigToUI() {
 // ═══════════════════════════════════════════════════════════
 // SERVER HEALTH CHECK
 // ═══════════════════════════════════════════════════════════
+function applyPhysicsConfigToActiveController() {
+  if (!activeCharacter?.charCtrl) return;
+  Object.keys(physicsConfig).forEach(key => {
+    if (key === 'PLAY_PARTICLES') activeCharacter.charCtrl.playParticles(physicsConfig.PLAY_PARTICLES);
+    else activeCharacter.charCtrl[key] = physicsConfig[key];
+  });
+}
+
+function renderControllerPresets() {
+  const grid = document.getElementById('controller-presets');
+  if (!grid) return;
+  grid.innerHTML = CONTROLLER_PRESETS.map(preset => `
+    <button class="preset-card ${preset.id === activeControllerPreset ? 'active' : ''}" data-preset="${escapeHtml(preset.id)}">
+      <strong>${escapeHtml(preset.name)}</strong>
+      <p>${escapeHtml(preset.description)}</p>
+      <span class="preset-tags">
+        ${preset.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
+      </span>
+    </button>
+  `).join('');
+
+  grid.querySelectorAll('.preset-card').forEach(card => {
+    card.addEventListener('click', () => applyControllerPreset(card.dataset.preset));
+  });
+}
+
+function applyControllerPreset(presetId) {
+  const preset = CONTROLLER_PRESETS.find(p => p.id === presetId);
+  if (!preset) return;
+  physicsConfig = { ...physicsConfig, ...preset.config };
+  activeControllerPreset = preset.id;
+  syncPhysicsConfigToUI();
+  applyPhysicsConfigToActiveController();
+  renderControllerPresets();
+  updateExportCode();
+  updateTestLabMetrics();
+  showToast(`Applied preset: ${preset.name}`);
+}
+
+function activateBuilderTab(tabName) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
+  if (btn) btn.click();
+}
+
+function previewMappedAnimation(key, fallbackState = null) {
+  if (!activeCharacter?.charCtrl) {
+    showToast('Load a character first.', true);
+    return;
+  }
+  const mapping = animMappings[key];
+  const ctrl = activeCharacter.charCtrl;
+  if (mapping?.animName && mapping.animName !== 'None') {
+    ctrl.state = fallbackState || (window.S ? window.S.IDLE : 'IDLE');
+    ctrl._previewLocoSpeed = null;
+    // Play the mapped KEY (its own clone with the mapped frame range), not the
+    // raw clip — the raw group can be shared with the blend tree loops.
+    ctrl._previewAnim = ctrl.anim?.has(key) ? key : mapping.animName;
+    showToast(`Preview: ${key}`);
+    return;
+  }
+  if (fallbackState && ctrl._setState) {
+    ctrl._previewAnim = null;
+    ctrl._previewLocoSpeed = null;
+    ctrl._setState(fallbackState);
+    showToast(`Preview state: ${fallbackState}`);
+  } else {
+    showToast(`No mapped animation for ${key}.`, true);
+  }
+}
+
+function runControllerTestAction(action) {
+  if (!activeCharacter?.charCtrl) {
+    showToast('Load a character first.', true);
+    return;
+  }
+  const ctrl = activeCharacter.charCtrl;
+  const Sx = window.S || {};
+  ctrl._previewAnim = null;
+  ctrl._previewLocoSpeed = null;
+
+  // Idle/Walk/Sprint drive the real Locomotion blend tree with a pinned speed
+  // (exactly what the game does) instead of playing the loop clips directly.
+  if (action === 'idle') {
+    ctrl.speed = 0;
+    ctrl.crouching = false;
+    ctrl._previewLocoSpeed = 0;
+    ctrl._setState?.(Sx.IDLE || 'IDLE');
+    showToast('Preview: Idle (blend tree)');
+  } else if (action === 'walk') {
+    ctrl.crouching = false;
+    ctrl._previewLocoSpeed = ctrl.SPD_WALK || physicsConfig.SPD_WALK;
+    ctrl._setState?.(Sx.WALK || 'WALK');
+    showToast('Preview: Walk (blend tree)');
+  } else if (action === 'sprint') {
+    ctrl.crouching = false;
+    ctrl._previewLocoSpeed = ctrl.SPD_SPRINT || physicsConfig.SPD_SPRINT;
+    ctrl._setState?.(Sx.SPRINT || 'SPRINT');
+    showToast('Preview: Sprint (blend tree)');
+  } else if (action === 'jump') {
+    if (typeof ctrl._jump === 'function') ctrl._jump();
+    else previewMappedAnimation('Jump_Start', Sx.JUMP_START || 'JUMP_START');
+  } else if (action === 'roll') {
+    if (typeof ctrl._roll === 'function') ctrl._roll();
+    else previewMappedAnimation('Roll', Sx.ROLL || 'ROLL');
+  } else if (action === 'crouch') {
+    ctrl.crouching = !ctrl.crouching;
+    previewMappedAnimation(ctrl.crouching ? 'Crouch_Idle_Loop' : 'Idle_Loop', ctrl.crouching ? (Sx.CROUCH_IDLE || 'CROUCH_IDLE') : (Sx.IDLE || 'IDLE'));
+  }
+  updateTestLabMetrics();
+}
+
+function applyTestScenario(scenario) {
+  activeTestScenario = scenario;
+  document.querySelectorAll('.scenario-chip').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.testScenario === scenario);
+  });
+
+  const ctrl = activeCharacter?.charCtrl;
+  if (!camera) {
+    updateTestLabMetrics();
+    return;
+  }
+
+  if (scenario === 'studio') {
+    if (ctrl) ctrl.CAM_FOLLOW_DIST = physicsConfig.CAM_FOLLOW_DIST;
+    camera.radius = 6.5;
+    camera.beta = 1.25;
+    camera.alpha = -Math.PI / 2;
+    runControllerTestAction('idle');
+  } else if (scenario === 'motion') {
+    if (ctrl) ctrl.CAM_FOLLOW_DIST = 7.5;
+    camera.radius = 7.5;
+    camera.beta = 1.08;
+    runControllerTestAction('sprint');
+  } else if (scenario === 'air') {
+    if (ctrl) ctrl.CAM_FOLLOW_DIST = 7.0;
+    camera.radius = 7.0;
+    camera.beta = 1.15;
+    runControllerTestAction('jump');
+  } else if (scenario === 'close') {
+    if (ctrl) ctrl.CAM_FOLLOW_DIST = 3.4;
+    camera.radius = 3.4;
+    camera.beta = 1.18;
+    runControllerTestAction('idle');
+  }
+  updateTestLabMetrics();
+}
+
+function updateTestLabMetrics() {
+  const ctrl = activeCharacter?.charCtrl;
+  const stateEl = document.getElementById('metric-state');
+  const speedEl = document.getElementById('metric-speed');
+  const groundedEl = document.getElementById('metric-grounded');
+  const presetEl = document.getElementById('metric-preset');
+  const animEl = document.getElementById('metric-animation');
+  const crouchEl = document.getElementById('metric-crouch');
+  const rollEl = document.getElementById('metric-roll');
+  const cameraEl = document.getElementById('metric-camera');
+  if (stateEl) stateEl.textContent = ctrl?.state || '-';
+  if (speedEl) speedEl.textContent = Number(ctrl?.speed || 0).toFixed(2);
+  if (groundedEl) groundedEl.textContent = ctrl ? (ctrl.grounded ? 'yes' : 'no') : '-';
+  if (presetEl) {
+    const preset = CONTROLLER_PRESETS.find(p => p.id === activeControllerPreset);
+    presetEl.textContent = preset?.name || activeControllerPreset || '-';
+  }
+  if (animEl) animEl.textContent = activeCharacter?.animCtrl?.curName || ctrl?._previewAnim || '-';
+  if (crouchEl) crouchEl.textContent = ctrl ? (ctrl.crouching ? 'on' : 'off') : '-';
+  if (rollEl) rollEl.textContent = ctrl ? (ctrl._rollActive ? 'active' : 'ready') : '-';
+  if (cameraEl) cameraEl.textContent = camera ? `${camera.radius.toFixed(1)}m / ${Math.round(camera.beta * 180 / Math.PI)}deg` : '-';
+}
+
+function startTestLabMetrics() {
+  if (!scene || testLabObserver) return;
+  testLabObserver = scene.onBeforeRenderObservable.add(updateTestLabMetrics);
+}
+
+function autoFitCharacterScaleFromHealth() {
+  const height = Number(skeletonInfo?.health?.metrics?.height);
+  if (!Number.isFinite(height) || height <= 0) {
+    showToast('No reliable height metric available.', true);
+    return;
+  }
+  const targetHeight = 1.8;
+  const scale = Math.max(0.001, Math.min(20, targetHeight / height));
+  charTransformConfig.UNIFORM_SCALE = true;
+  charTransformConfig.SCALE_UNIFORM = scale;
+  charTransformConfig.SCALE_X = scale;
+  charTransformConfig.SCALE_Y = scale;
+  charTransformConfig.SCALE_Z = scale;
+  syncCharTransformToUI();
+  applyLiveTransformations();
+  updateExportCode();
+  showToast(`Visual scale fitted to ${targetHeight.toFixed(1)} units.`);
+}
+
+function handleHealthAction(action) {
+  if (action === 'autorig') startAutoRigAdjust();
+  else if (action === 'animations') activateBuilderTab('animations');
+  else if (action === 'physics') activateBuilderTab('physics');
+  else if (action === 'scale') {
+    activateBuilderTab('model');
+    autoFitCharacterScaleFromHealth();
+  }
+}
+
 async function pingServer() {
   const badge = document.getElementById('server-badge');
   const badgeLabel = document.getElementById('server-badge-label');
@@ -1248,9 +1530,98 @@ function deleteAnimation(animName) {
 // ═══════════════════════════════════════════════════════════
 // SKELETON UI
 // ═══════════════════════════════════════════════════════════
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderSkeletonHealth(health) {
+  const el = document.getElementById('skeleton-health');
+  if (!el) return;
+  if (!health) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+
+  const labels = {
+    excellent: 'Excellent',
+    good: 'Good',
+    'needs-review': 'Needs Review',
+    blocked: 'Blocked'
+  };
+  const m = health.metrics || {};
+  const height = Number.isFinite(Number(m.height)) ? Number(m.height).toFixed(2) : 'n/a';
+  const bounds = Array.isArray(m.boundsSize)
+    ? m.boundsSize.map(v => Number(v).toFixed(2)).join(' x ')
+    : 'n/a';
+  const checks = (health.checks || []).slice(0, 6);
+  const issueCount = (health.checks || []).filter(c => c.severity === 'warn' || c.severity === 'error').length;
+  const summary = issueCount
+    ? `${issueCount} issue${issueCount !== 1 ? 's' : ''} found. Review the notes before exporting or retargeting.`
+    : 'Ready for controller mapping, retargeting and export.';
+  const actions = [];
+  if (!skeletonInfo?.hasSkin || (health.missingBones || []).some(b => b.critical)) {
+    actions.push({ action: 'autorig', label: skeletonInfo?.hasSkin ? 'Adjust Rig' : 'Start Auto-Rig' });
+  }
+  if (Number(m.height) > 5 || (Number(m.height) > 0 && Number(m.height) < 0.5)) {
+    actions.push({ action: 'scale', label: 'Auto-Fit Scale' });
+  }
+  if (!m.animationCount) actions.push({ action: 'animations', label: 'Map Animations' });
+  actions.push({ action: 'physics', label: 'Tune Controller' });
+
+  el.innerHTML = `
+    <div class="health-head">
+      <div class="health-score ${escapeHtml(health.status)}">${Math.round(health.score || 0)}</div>
+      <div>
+        <div class="health-title">
+          <strong>Rig Health Check</strong>
+          <span class="health-status">${escapeHtml(labels[health.status] || health.status || 'Unknown')}</span>
+        </div>
+        <div class="health-summary">${escapeHtml(summary)} Humanoid coverage: ${Math.round(health.coverage || 0)}%.</div>
+      </div>
+    </div>
+    <div class="health-metrics">
+      <div class="health-metric"><span>Height</span><strong>${escapeHtml(height)} u</strong></div>
+      <div class="health-metric"><span>Bounds</span><strong>${escapeHtml(bounds)}</strong></div>
+      <div class="health-metric"><span>Geometry</span><strong>${escapeHtml(m.meshCount || 0)} mesh / ${escapeHtml(m.vertexCount || 0)} verts</strong></div>
+      <div class="health-metric"><span>Animations</span><strong>${escapeHtml(m.animationCount || 0)} clips</strong></div>
+    </div>
+    <div class="health-checks">
+      ${checks.map(check => `
+        <div class="health-check ${escapeHtml(check.severity)}">
+          <span class="health-dot"></span>
+          <div>
+            <strong>${escapeHtml(check.title)}</strong>
+            <p>${escapeHtml(check.detail)}</p>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="health-actions">
+      ${actions.map(item => `<button class="health-action" data-health-action="${escapeHtml(item.action)}">${escapeHtml(item.label)}</button>`).join('')}
+    </div>
+  `;
+  el.style.display = 'block';
+}
+
+function expandCollapsible(targetId) {
+  const content = document.getElementById(targetId);
+  if (!content) return;
+  content.classList.remove('collapsed');
+  const header = document.querySelector(`[data-target="${targetId}"]`);
+  const chevron = header?.querySelector('.chevron');
+  if (chevron) chevron.textContent = 'â–¾';
+}
+
 function renderSkeletonSection(info) {
   const section = document.getElementById('section-skeleton');
   if (section) section.style.display = 'block';
+  expandCollapsible('skeleton-content');
 
   const noticEl = document.getElementById('skeleton-notice');
   const treeEl = document.getElementById('skeleton-tree');
@@ -1260,6 +1631,7 @@ function renderSkeletonSection(info) {
   if (!treeEl) return;
 
   treeEl.innerHTML = '';
+  renderSkeletonHealth(info.health);
   if (countBadge) countBadge.textContent = `${info.boneCount} bone${info.boneCount !== 1 ? 's' : ''}`;
 
   if (typeBadge) {
@@ -1322,12 +1694,14 @@ function renderSkeletonSectionFromBJS() {
   const skeletons = scene.skeletons;
   const section = document.getElementById('section-skeleton');
   if (section) section.style.display = 'block';
+  expandCollapsible('skeleton-content');
 
   const noticEl = document.getElementById('skeleton-notice');
   const treeEl = document.getElementById('skeleton-tree');
   const countBadge = document.getElementById('bone-count-badge');
   const typeBadge = document.getElementById('skeleton-type-badge');
   const poseBadge = document.getElementById('skeleton-pose-badge');
+  renderSkeletonHealth(null);
   if (typeBadge) typeBadge.style.display = 'none';
   if (poseBadge) poseBadge.style.display = 'none';
   if (!treeEl) return;
@@ -1653,6 +2027,7 @@ function cancelAutoRigAdjust() {
       const ctrl = activeCharacter.charCtrl;
       const anim = activeCharacter.animCtrl;
       ctrl._previewAnim = null;
+      ctrl._previewLocoSpeed = null;
       if (anim) {
         anim.cur = null;
         anim.curName = '';
@@ -1752,6 +2127,8 @@ function clearCharacter() {
   animationsGlbBuffer = null;
   detectedAnimations = [];
   skeletonInfo = null;
+  animationEvents = {};
+  updateTestLabMetrics();
 
   const section = document.getElementById('section-skeleton');
   if (section) section.style.display = 'none';
@@ -1761,6 +2138,7 @@ function clearCharacter() {
   renderAnimationLibrary();
   renderAnimationsMappingTab();
   renderCustomAnimationsTab();
+  renderAnimationEventsTab();
   updateExportCode();
 }
 
@@ -1968,6 +2346,7 @@ function renderAnimationsMappingTab() {
   container.querySelectorAll('.btn-reset-single[data-anim-key]').forEach(btn => {
     btn.addEventListener('click', () => resetSingleAnimMapping(btn.dataset.animKey));
   });
+  renderAnimationEventsTab();
 }
 
 function resetSingleAnimMapping(key) {
@@ -1986,12 +2365,175 @@ function resetSingleAnimMapping(key) {
   animMappings[key] = { animName: bestMatch, from, to };
   applyAnimationsToController();
   renderAnimationsMappingTab();
+  renderAnimationEventsTab();
   updateExportCode();
 }
 
 // ═══════════════════════════════════════════════════════════
 // CUSTOM ANIMATIONS TAB
 // ═══════════════════════════════════════════════════════════
+function getAnimationEventTargets() {
+  const standardTargets = STANDARD_ANIM_KEYS
+    .map(stdKey => {
+      const mapping = animMappings[stdKey.key];
+      if (!mapping || mapping.animName === 'None') return null;
+      return {
+        key: stdKey.key,
+        label: stdKey.label,
+        animName: mapping.animName,
+        from: Number(mapping.from || 0),
+        to: Number(mapping.to || 100),
+      };
+    })
+    .filter(Boolean);
+
+  const customTargets = customAnimations
+    .filter(cust => cust.name && cust.animName && cust.animName !== 'None')
+    .map(cust => ({
+      key: cust.name,
+      label: cust.name,
+      animName: cust.animName,
+      from: 0,
+      to: 100,
+    }));
+
+  return [...standardTargets, ...customTargets];
+}
+
+function pruneAnimationEvents() {
+  const valid = new Set(getAnimationEventTargets().map(t => t.key));
+  Object.keys(animationEvents).forEach(key => {
+    if (!valid.has(key)) delete animationEvents[key];
+    else animationEvents[key] = (animationEvents[key] || []).filter(evt => evt && Number.isFinite(Number(evt.frame)));
+  });
+}
+
+function addAnimationEvent() {
+  const targetEl = document.getElementById('event-target-select');
+  const typeEl = document.getElementById('event-type-select');
+  const frameEl = document.getElementById('event-frame-input');
+  const labelEl = document.getElementById('event-label-input');
+  if (!targetEl || !typeEl || !frameEl) return;
+
+  const key = targetEl.value;
+  if (!key) {
+    showToast('Map an animation before adding events.', true);
+    return;
+  }
+  const target = getAnimationEventTargets().find(t => t.key === key);
+  const fallbackFrame = target ? Math.round((target.from + target.to) / 2) : 0;
+  const parsedFrame = parseInt(frameEl.value, 10);
+  const evt = {
+    type: typeEl.value,
+    frame: Number.isFinite(parsedFrame) ? parsedFrame : fallbackFrame,
+    label: (labelEl?.value || '').trim(),
+  };
+  if (!animationEvents[key]) animationEvents[key] = [];
+  animationEvents[key].push(evt);
+  animationEvents[key].sort((a, b) => a.frame - b.frame);
+  if (labelEl) labelEl.value = '';
+  renderAnimationEventsTab();
+  updateExportCode();
+  showToast(`Added ${evt.type} marker to ${key}.`);
+}
+
+function deleteAnimationEvent(key, index) {
+  if (!animationEvents[key]) return;
+  animationEvents[key].splice(index, 1);
+  if (animationEvents[key].length === 0) delete animationEvents[key];
+  renderAnimationEventsTab();
+  updateExportCode();
+}
+
+// Push the editor's markers into the live controller so they fire in the
+// viewport while testing (toast + console). Export emits the same object.
+function syncAnimationEventsToController() {
+  const ctrl = activeCharacter?.charCtrl;
+  if (!ctrl) return;
+  ctrl.animationEvents = animationEvents;
+  ctrl.onAnimationEvent = (evt, animName) => {
+    showToast(`🎯 ${evt.type}${evt.label ? ' · ' + evt.label : ''} — ${animName} f${evt.frame}`);
+    console.log('[anim-event]', animName, evt);
+  };
+}
+
+function renderAnimationEventsTab() {
+  const container = document.getElementById('animation-events-editor');
+  if (!container) return;
+  pruneAnimationEvents();
+  syncAnimationEventsToController();
+  const targets = getAnimationEventTargets();
+
+  if (targets.length === 0) {
+    container.innerHTML = `<div class="events-empty">Map at least one animation to add gameplay markers.</div>`;
+    return;
+  }
+
+  const first = targets[0];
+  const currentTarget = targets.find(t => animationEvents[t.key]?.length) || first;
+  const defaultFrame = Math.round((currentTarget.from + currentTarget.to) / 2);
+  const eventTypes = ['footstep', 'hit', 'cast', 'sound', 'particle', 'camera', 'custom'];
+
+  container.innerHTML = `
+    <div class="event-composer">
+      <select id="event-target-select">
+        ${targets.map(t => `<option value="${escapeHtml(t.key)}">${escapeHtml(t.label)} · ${escapeHtml(t.animName)}</option>`).join('')}
+      </select>
+      <select id="event-type-select">
+        ${eventTypes.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}
+      </select>
+      <input id="event-frame-input" type="number" min="0" step="1" value="${defaultFrame}" aria-label="Event frame">
+      <input id="event-label-input" type="text" placeholder="Label / payload">
+      <button id="btn-add-animation-event" class="btn-add-event">Add Marker</button>
+    </div>
+    <div class="event-targets">
+      ${targets.map(target => {
+        const events = animationEvents[target.key] || [];
+        return `
+          <div class="event-target-card">
+            <div class="event-target-head">
+              <strong>${escapeHtml(target.label)}</strong>
+              <span>${escapeHtml(target.from)}-${escapeHtml(target.to)}f</span>
+            </div>
+            ${events.length ? `
+              <div class="event-marker-list">
+                ${events.map((evt, index) => `
+                  <div class="event-marker">
+                    <span class="event-marker-type">${escapeHtml(evt.type)}</span>
+                    <span class="event-marker-frame">f${escapeHtml(evt.frame)}</span>
+                    <span class="event-marker-label">${escapeHtml(evt.label || target.animName)}</span>
+                    <button class="btn-event-delete" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" title="Remove marker">×</button>
+                  </div>
+                `).join('')}
+              </div>
+            ` : `<div class="event-marker-empty">No markers yet</div>`}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  const targetSelect = document.getElementById('event-target-select');
+  const frameInput = document.getElementById('event-frame-input');
+  targetSelect?.addEventListener('change', () => {
+    const target = targets.find(t => t.key === targetSelect.value);
+    if (target && frameInput) frameInput.value = Math.round((target.from + target.to) / 2);
+  });
+  document.getElementById('btn-add-animation-event')?.addEventListener('click', addAnimationEvent);
+  container.querySelectorAll('.btn-event-delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteAnimationEvent(btn.dataset.eventKey, parseInt(btn.dataset.eventIndex, 10)));
+  });
+}
+
+function formatAnimationEventsForExport(indent = '      ') {
+  const activeEvents = Object.fromEntries(
+    Object.entries(animationEvents).filter(([, events]) => Array.isArray(events) && events.length > 0)
+  );
+  if (Object.keys(activeEvents).length === 0) return '';
+  return `${indent}// Gameplay animation markers exported from Builder\n` +
+    `${indent}charCtrl.animationEvents = ${JSON.stringify(activeEvents, null, 8).replace(/\n/g, '\n' + indent)};\n\n`;
+}
+
 function renderCustomAnimationsTab() {
   const container = document.getElementById('custom-animations-list');
   container.innerHTML = '';
@@ -2032,25 +2574,26 @@ function renderCustomAnimationsTab() {
       const index = parseInt(e.target.dataset.index);
       customAnimations[index].name = e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '');
       e.target.value = customAnimations[index].name;
-      applyAnimationsToController(); updateExportCode();
+      renderAnimationEventsTab(); applyAnimationsToController(); updateExportCode();
     });
   });
   container.querySelectorAll('.custom-select-anim').forEach(sel => {
     sel.addEventListener('change', (e) => {
       const index = parseInt(e.target.dataset.index);
       customAnimations[index].animName = e.target.value;
-      applyAnimationsToController(); updateExportCode();
+      renderAnimationEventsTab(); applyAnimationsToController(); updateExportCode();
     });
   });
   container.querySelectorAll('.btn-delete').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const index = parseInt(e.target.dataset.index);
       customAnimations.splice(index, 1);
-      renderCustomAnimationsTab(); applyAnimationsToController(); updateExportCode();
+      renderCustomAnimationsTab(); renderAnimationEventsTab(); applyAnimationsToController(); updateExportCode();
     });
   });
 
   bindKeyCatcherEvents();
+  renderAnimationEventsTab();
 }
 
 /**
@@ -2108,6 +2651,7 @@ function clearAllAnimations() {
         animMappings[key] = { animName: 'None', from: 0, to: 100 };
       });
       customAnimations = [];
+      animationEvents = {};
 
       // Remove from BJS animCtrl
       if (activeCharacter) {
@@ -2131,6 +2675,7 @@ function clearAllAnimations() {
       renderAnimationLibrary();
       renderAnimationsMappingTab();
       renderCustomAnimationsTab();
+      renderAnimationEventsTab();
       applyAnimationsToController();
       updateExportCode();
       showToast('All animations cleared.');
@@ -2219,6 +2764,7 @@ function setupSidebarControls() {
   document.getElementById('btn-add-custom-anim').addEventListener('click', () => {
     customAnimations.push({ name: 'CUSTOM_ACTION_' + (customAnimations.length + 1), animName: detectedAnimations[0] || 'None', keyTrigger: [] });
     renderCustomAnimationsTab();
+    renderAnimationEventsTab();
   });
 
   // Single animation add button
@@ -2248,12 +2794,42 @@ function setupSidebarControls() {
     clearAllAnimations();
   });
 
+  document.querySelectorAll('.test-action[data-test-action]').forEach(btn => {
+    btn.addEventListener('click', () => runControllerTestAction(btn.dataset.testAction));
+  });
+  document.querySelectorAll('.scenario-chip[data-test-scenario]').forEach(btn => {
+    btn.addEventListener('click', () => applyTestScenario(btn.dataset.testScenario));
+  });
+  startTestLabMetrics();
+
+  const healthPanel = document.getElementById('skeleton-health');
+  if (healthPanel) {
+    healthPanel.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-health-action]');
+      if (!btn) return;
+      handleHealthAction(btn.dataset.healthAction);
+    });
+  }
+
   // Download
   document.getElementById('btn-download').addEventListener('click', downloadControllerFile);
 
   // Download GLB
   const btnDownloadGlb = document.getElementById('btn-download-glb');
   if (btnDownloadGlb) btnDownloadGlb.addEventListener('click', downloadCharacterGlbFile);
+
+  const btnDownloadConfig = document.getElementById('btn-download-config');
+  if (btnDownloadConfig) btnDownloadConfig.addEventListener('click', downloadBuilderConfigFile);
+  const btnImportConfig = document.getElementById('btn-import-config');
+  const configInput = document.getElementById('builder-config-input');
+  if (btnImportConfig && configInput) {
+    btnImportConfig.addEventListener('click', () => configInput.click());
+    configInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (file) await importBuilderConfigFile(file);
+      configInput.value = '';
+    });
+  }
 
   // Copy Code
   const btnCopy = document.getElementById('btn-copy-code');
@@ -2276,19 +2852,25 @@ function setupSidebarControls() {
       localStorage.removeItem('builder_key_bindings');
       localStorage.removeItem('builder_physics_config');
       localStorage.removeItem('builder_custom_animations');
+      localStorage.removeItem('builder_animation_events');
+      localStorage.removeItem('builder_controller_preset');
 
       savedAnimMappings = null;
+      activeControllerPreset = 'balanced';
       keyBindings = JSON.parse(JSON.stringify(DEFAULT_KEY_BINDINGS));
       physicsConfig = JSON.parse(JSON.stringify(DEFAULT_PHYSICS_CONFIG));
       customAnimations = [];
+      animationEvents = {};
 
       resetCharacterTransform();
 
       autoMapAnimations();
       renderAnimationsMappingTab();
       renderCustomAnimationsTab();
+      renderAnimationEventsTab();
       renderKeyBindingsUI();
       syncPhysicsConfigToUI();
+      renderControllerPresets();
 
       if (activeCharacter && activeCharacter.charCtrl) {
         activeCharacter.charCtrl.keyBindings = keyBindings;
@@ -2299,6 +2881,7 @@ function setupSidebarControls() {
   }
 
   renderKeyBindingsUI();
+  renderControllerPresets();
   injectPhysicsResetButtons();
 }
 
@@ -2561,7 +3144,7 @@ function updateExportCode() {
     }
   });
 
-  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: 'character_animated.glb',\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}    }\n  });\n}`;
+  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: 'character_animated.glb',\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
   savePreferences();
@@ -2623,6 +3206,146 @@ async function downloadCharacterGlbFile() {
   }
 }
 
+function downloadBuilderConfigFile() {
+  const config = {
+    schema: 'bjs-character-controller-builder/v1',
+    exportedAt: new Date().toISOString(),
+    controllerPreset: activeControllerPreset,
+    character: {
+      hasCharacter: !!characterGlbBuffer,
+      skeleton: skeletonInfo ? {
+        hasSkin: skeletonInfo.hasSkin,
+        boneCount: skeletonInfo.boneCount,
+        rootBones: skeletonInfo.rootBones,
+        skeletonType: skeletonInfo.skeletonType,
+        poseStyle: skeletonInfo.poseStyle,
+        health: skeletonInfo.health ? {
+          score: skeletonInfo.health.score,
+          status: skeletonInfo.health.status,
+          coverage: skeletonInfo.health.coverage,
+          metrics: skeletonInfo.health.metrics,
+          missingBones: skeletonInfo.health.missingBones,
+        } : null,
+      } : null,
+    },
+    transforms: charTransformConfig,
+    keys: keyBindings,
+    physics: physicsConfig,
+    animations: {
+      detected: detectedAnimations,
+      standardMappings: animMappings,
+      customActions: customAnimations,
+      events: animationEvents,
+    },
+  };
+
+  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'builder-config.json';
+  link.click();
+  showToast('Downloaded builder-config.json!');
+}
+
+function normalizeImportedAnimationMappings(value) {
+  const result = {};
+  if (!value || typeof value !== 'object') return result;
+  STANDARD_ANIM_KEYS.forEach(stdKey => {
+    const incoming = value[stdKey.key];
+    const animName = incoming?.animName && (incoming.animName === 'None' || detectedAnimations.length === 0 || detectedAnimations.includes(incoming.animName))
+      ? incoming.animName
+      : 'None';
+    result[stdKey.key] = {
+      animName,
+      from: Number.isFinite(Number(incoming?.from)) ? Number(incoming.from) : 0,
+      to: Number.isFinite(Number(incoming?.to)) ? Number(incoming.to) : 100,
+    };
+  });
+  return result;
+}
+
+function normalizeImportedCustomActions(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => item && typeof item === 'object')
+    .map((item, index) => ({
+      name: String(item.name || `CUSTOM_ACTION_${index + 1}`).toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+      animName: item.animName && (item.animName === 'None' || detectedAnimations.length === 0 || detectedAnimations.includes(item.animName)) ? item.animName : 'None',
+      keyTrigger: Array.isArray(item.keyTrigger) ? item.keyTrigger.map(String) : [],
+    }));
+}
+
+function normalizeImportedAnimationEvents(value) {
+  if (!value || typeof value !== 'object') return {};
+  const validKeys = new Set([
+    ...STANDARD_ANIM_KEYS.map(k => k.key),
+    ...customAnimations.map(c => c.name),
+  ]);
+  const result = {};
+  Object.entries(value).forEach(([key, events]) => {
+    if (!validKeys.has(key) || !Array.isArray(events)) return;
+    const cleaned = events
+      .filter(evt => evt && typeof evt === 'object' && Number.isFinite(Number(evt.frame)))
+      .map(evt => ({
+        type: String(evt.type || 'custom'),
+        frame: Number(evt.frame),
+        label: String(evt.label || ''),
+      }))
+      .sort((a, b) => a.frame - b.frame);
+    if (cleaned.length) result[key] = cleaned;
+  });
+  return result;
+}
+
+function refreshBuilderAfterConfigImport() {
+  syncCharTransformToUI();
+  applyLiveTransformations();
+  syncPhysicsConfigToUI();
+  applyPhysicsConfigToActiveController();
+  renderControllerPresets();
+  renderAnimationsMappingTab();
+  renderCustomAnimationsTab();
+  renderAnimationEventsTab();
+  renderKeyBindingsUI();
+  applyAnimationsToController();
+  updateExportCode();
+}
+
+async function importBuilderConfigFile(file) {
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON object.');
+    if (parsed.schema && parsed.schema !== 'bjs-character-controller-builder/v1') {
+      throw new Error(`Unsupported config schema: ${parsed.schema}`);
+    }
+
+    if (parsed.controllerPreset && CONTROLLER_PRESETS.some(p => p.id === parsed.controllerPreset)) {
+      activeControllerPreset = parsed.controllerPreset;
+    }
+    if (parsed.physics && typeof parsed.physics === 'object') {
+      physicsConfig = { ...DEFAULT_PHYSICS_CONFIG, ...parsed.physics };
+    }
+    if (parsed.keys && typeof parsed.keys === 'object') {
+      keyBindings = { ...DEFAULT_KEY_BINDINGS, ...parsed.keys };
+    }
+    if (parsed.transforms && typeof parsed.transforms === 'object') {
+      charTransformConfig = { ...DEFAULT_CHAR_TRANSFORM, ...parsed.transforms };
+    }
+
+    const importedAnimations = parsed.animations || {};
+    animMappings = normalizeImportedAnimationMappings(importedAnimations.standardMappings);
+    savedAnimMappings = animMappings;
+    customAnimations = normalizeImportedCustomActions(importedAnimations.customActions);
+    animationEvents = normalizeImportedAnimationEvents(importedAnimations.events);
+
+    refreshBuilderAfterConfigImport();
+    showToast(`Imported ${file.name}`);
+  } catch (err) {
+    console.error('[builder-config] import failed:', err);
+    showToast('Config import failed: ' + err.message, true);
+  }
+}
+
 async function downloadControllerFile() {
   showLoading('Generating custom character-controller.js…');
   try {
@@ -2662,6 +3385,7 @@ async function downloadControllerFile() {
           if (cust.keyTrigger.length > 0) mappingInjection += `  charCtrl.keyBindings['${cust.name}'] = ${JSON.stringify(cust.keyTrigger)};\n`;
         }
       });
+      mappingInjection += formatAnimationEventsForExport('  ');
       sourceText = sourceText.replace(setupHookMatch[0], mappingInjection + `\n  ` + setupHookMatch[0]);
     }
 

@@ -388,6 +388,14 @@ function rotateVec3([x, y, z], [qx, qy, qz, qw]) {
     iz * qw + iw * -qz + ix * -qy - iy * -qx,
   ];
 }
+function transformPoint(m, [x, y, z]) {
+  return [
+    m[0] * x + m[4] * y + m[8] * z + m[12],
+    m[1] * x + m[5] * y + m[9] * z + m[13],
+    m[2] * x + m[6] * y + m[10] * z + m[14],
+  ];
+}
+const MAT4_IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function vec3Cross(a, b) {
   return [
     a[1] * b[2] - a[2] * b[1],
@@ -703,6 +711,61 @@ function mat4Mul(a, b) {
   return out;
 }
 
+function worldMatrixOf(node, parentMap, cache) {
+  if (cache.has(node)) return cache.get(node);
+  const local = node.getMatrix();
+  const parent = parentMap.get(node);
+  const world = parent ? mat4Mul(worldMatrixOf(parent, parentMap, cache), local) : local;
+  cache.set(node, world);
+  return world;
+}
+
+function computeMeshStats(doc) {
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  const skinnedMeshes = new Set();
+  for (const node of doc.getRoot().listNodes()) {
+    if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
+  }
+
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const meshSet = new Set();
+  let primitiveCount = 0;
+  let vertexCount = 0;
+
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    meshSet.add(mesh);
+    const world = skinnedMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    for (const prim of mesh.listPrimitives()) {
+      primitiveCount++;
+      const pos = prim.getAttribute('POSITION');
+      if (!pos) continue;
+      const arr = pos.getArray();
+      vertexCount += arr.length / 3;
+      for (let i = 0; i < arr.length; i += 3) {
+        const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
+        for (let k = 0; k < 3; k++) {
+          if (p[k] < min[k]) min[k] = p[k];
+          if (p[k] > max[k]) max[k] = p[k];
+        }
+      }
+    }
+  }
+
+  const hasBounds = Number.isFinite(min[0]);
+  const size = hasBounds ? [max[0] - min[0], max[1] - min[1], max[2] - min[2]] : [0, 0, 0];
+  return {
+    meshCount: meshSet.size,
+    primitiveCount,
+    vertexCount,
+    bounds: hasBounds ? { min, max, size } : null,
+    height: size[1] || 0,
+  };
+}
+
 // Invert an affine (rotation + translation + scale) column-major 4x4 matrix.
 // Handles scaled IBMs (e.g. ×100 from Sketchfab/Blender armature scale) where a
 // rigid transpose-based inverse would corrupt both rotation and translation.
@@ -962,6 +1025,136 @@ async function getIO() {
 // Synthetic root joints injected by GLTF exporters/BJS — skip from display
 const SYNTHETIC_ROOTS = /^(gltf_created_\d+_rootjoint|armature|root|rig|deformationrig|_rootjoint)$/i;
 
+const HEALTH_REQUIRED_BONES = [
+  { key: 'pelvis', label: 'Hips / Pelvis', critical: true },
+  { key: 'spine_01', label: 'Lower Spine', critical: true },
+  { key: 'spine_02', label: 'Chest', critical: false },
+  { key: 'head', label: 'Head', critical: true },
+  { key: 'upperarm_l', label: 'Left Upper Arm', critical: true },
+  { key: 'lowerarm_l', label: 'Left Forearm', critical: true },
+  { key: 'hand_l', label: 'Left Hand', critical: true },
+  { key: 'upperarm_r', label: 'Right Upper Arm', critical: true },
+  { key: 'lowerarm_r', label: 'Right Forearm', critical: true },
+  { key: 'hand_r', label: 'Right Hand', critical: true },
+  { key: 'thigh_l', label: 'Left Thigh', critical: true },
+  { key: 'calf_l', label: 'Left Shin', critical: true },
+  { key: 'foot_l', label: 'Left Foot', critical: true },
+  { key: 'thigh_r', label: 'Right Thigh', critical: true },
+  { key: 'calf_r', label: 'Right Shin', critical: true },
+  { key: 'foot_r', label: 'Right Foot', critical: true },
+];
+
+function hasCanonicalBone(canonKey, charByName, charByNorm) {
+  const candidates = [canonKey, ...(BONE_MAP[canonKey] || [])];
+  for (const cand of candidates) {
+    if (charByName.has(cand) || charByName.has(cand.toLowerCase())) return true;
+    const n = aliasNorm(cand);
+    if (n && charByNorm.has(n)) return true;
+  }
+  return false;
+}
+
+function scoreStatus(score) {
+  if (score >= 88) return 'excellent';
+  if (score >= 72) return 'good';
+  if (score >= 50) return 'needs-review';
+  return 'blocked';
+}
+
+function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, skeletonType, poseStyle, charByName, charByNorm }) {
+  const mesh = computeMeshStats(doc);
+  const skinCount = doc.getRoot().listSkins().length;
+  const missingBones = hasSkin
+    ? HEALTH_REQUIRED_BONES.filter(b => !hasCanonicalBone(b.key, charByName, charByNorm))
+    : HEALTH_REQUIRED_BONES;
+  const criticalMissing = missingBones.filter(b => b.critical);
+  const coverageTotal = HEALTH_REQUIRED_BONES.length;
+  const coverageFound = coverageTotal - missingBones.length;
+  const coverage = coverageTotal ? Math.round((coverageFound / coverageTotal) * 100) : 0;
+
+  const checks = [];
+  let score = 100;
+  const addCheck = (severity, title, detail, impact = 0) => {
+    checks.push({ severity, title, detail });
+    score -= impact;
+  };
+
+  if (!mesh.meshCount || !mesh.vertexCount) {
+    addCheck('error', 'No renderable geometry found', 'The GLB does not expose POSITION vertices for the Builder to inspect.', 45);
+  } else {
+    checks.push({
+      severity: 'pass',
+      title: 'Geometry detected',
+      detail: `${mesh.meshCount} mesh${mesh.meshCount !== 1 ? 'es' : ''}, ${mesh.primitiveCount} primitive${mesh.primitiveCount !== 1 ? 's' : ''}, ${Math.round(mesh.vertexCount).toLocaleString('en-US')} vertices.`,
+    });
+  }
+
+  if (!hasSkin) {
+    addCheck('warn', 'No skin/skeleton assigned', 'This character can be previewed as a mesh, but controller animations need Auto-Rig or a skinned rig.', 32);
+  } else if (boneCount < 15) {
+    addCheck('warn', 'Very small skeleton', `${boneCount} bones detected. Humanoid retargeting usually needs at least hips, spine, head, arms and legs.`, 16);
+  } else {
+    checks.push({ severity: 'pass', title: 'Skeleton detected', detail: `${boneCount} display bones across ${skinCount} skin${skinCount !== 1 ? 's' : ''}.` });
+  }
+
+  if (hasSkin) {
+    if (criticalMissing.length) {
+      addCheck('error', 'Missing controller-critical bones', `${criticalMissing.map(b => b.label).slice(0, 6).join(', ')}${criticalMissing.length > 6 ? '...' : ''}.`, Math.min(34, 7 * criticalMissing.length));
+    } else if (missingBones.length) {
+      addCheck('warn', 'Optional humanoid bones missing', `${missingBones.map(b => b.label).join(', ')}. Retargeting can still work, but feature coverage is reduced.`, Math.min(12, 3 * missingBones.length));
+    } else {
+      checks.push({ severity: 'pass', title: 'Humanoid bone coverage complete', detail: 'All controller-critical limbs, spine and head targets were matched.' });
+    }
+  }
+
+  if (hasSkin && rootBones.length > 1) {
+    addCheck('warn', 'Multiple root bones', `${rootBones.length} skeleton roots detected. This can be valid, but it often means exporter helper nodes leaked into the rig.`, 8);
+  }
+
+  if (mesh.height > 0) {
+    if (mesh.height < 0.5) {
+      addCheck('warn', 'Character appears very small', `Measured height is ${mesh.height.toFixed(2)} units. Check scale before tuning capsule and physics.`, 8);
+    } else if (mesh.height > 5) {
+      addCheck('warn', 'Character appears very large', `Measured height is ${mesh.height.toFixed(2)} units. This often means the file was exported in centimeters.`, 8);
+    } else {
+      checks.push({ severity: 'pass', title: 'Scale looks controller-friendly', detail: `Measured height is ${mesh.height.toFixed(2)} units.` });
+    }
+  }
+
+  if (hasSkin) {
+    if (poseStyle === 'UNKNOWN') addCheck('warn', 'Bind pose could not be classified', 'The Builder could not confidently detect T-pose or A-pose from arm bones.', 6);
+    else if (poseStyle === 'CUSTOM') addCheck('warn', 'Custom bind pose', 'Retargeting may need manual pose offsets if arms, feet or torso twist after merge.', 8);
+    else checks.push({ severity: 'pass', title: `${poseStyle} detected`, detail: 'Pose detection can guide retargeting and autorig adjustments.' });
+  }
+
+  if (!animations.length) {
+    addCheck('info', 'No animations in current GLB', 'Load an animation batch or merge a separate animation GLB when you are ready to map controller states.', 4);
+  } else {
+    checks.push({ severity: 'pass', title: 'Animations available', detail: `${animations.length} animation${animations.length !== 1 ? 's' : ''} detected after filtering utility T-pose clips.` });
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  return {
+    score,
+    status: scoreStatus(score),
+    coverage,
+    missingBones: missingBones.map(b => ({ key: b.key, label: b.label, critical: b.critical })),
+    metrics: {
+      meshCount: mesh.meshCount,
+      primitiveCount: mesh.primitiveCount,
+      vertexCount: Math.round(mesh.vertexCount),
+      skinCount,
+      rootBoneCount: rootBones.length,
+      animationCount: animations.length,
+      height: Number(mesh.height.toFixed(3)),
+      boundsSize: mesh.bounds ? mesh.bounds.size.map(v => Number(v.toFixed(3))) : null,
+      skeletonType: skeletonType?.label || 'Unknown',
+      poseStyle: poseStyle || 'UNKNOWN',
+    },
+    checks,
+  };
+}
+
 /**
  * Analyze a GLB binary and return its skeleton bones, skeleton type, and animation names.
  * Handles all major skeleton conventions: Mixamo, Unreal, Unity, VRM, RPM, Rigify, Biped.
@@ -1073,15 +1266,28 @@ export async function analyzeGLB(buffer) {
 
   // Filter out synthetic root joint bones from display list
   const displayBones = bones.filter(b => !SYNTHETIC_ROOTS.test(b.cleanName));
+  const displayRootBones = rootBones.map(b => b.cleanName);
+  const health = buildHealthReport({
+    doc,
+    hasSkin,
+    boneCount: displayBones.length,
+    rootBones: displayRootBones,
+    animations,
+    skeletonType,
+    poseStyle,
+    charByName,
+    charByNorm,
+  });
 
   return {
     bones: displayBones,
-    rootBones: rootBones.map(b => b.cleanName),
+    rootBones: displayRootBones,
     animations,
     hasSkin,
     boneCount: displayBones.length,
     skeletonType,
     poseStyle,
+    health,
   };
 }
 

@@ -283,6 +283,7 @@
                   </div>
                 </div>
               </div>
+              <div id="skeleton-health" class="skeleton-health" style="display:none;"></div>
               <div id="skeleton-tree" class="skeleton-tree"></div>
             </div>
           </div>
@@ -360,6 +361,20 @@
           </div>
 
           <div class="settings-section">
+            <h3>Animation Events</h3>
+            <p style="margin-bottom:10px;">
+              Add gameplay markers for footsteps, hits, casts, sounds and particles.
+              A marker fires when playback crosses its frame — preview an animation in the
+              viewport to see markers fire live (toast + console). In your game, listen with
+              <code>charCtrl.onAnimationEvent = (evt, anim) =&gt; {...}</code> or
+              <code>window.addEventListener('charanimevent', ...)</code>.
+            </p>
+            <div id="animation-events-editor" class="animation-events-editor">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <div class="settings-section">
             <h3>Custom Animations</h3>
             <p style="margin-bottom:10px;">
               Add custom action animations and map triggers to them.
@@ -390,6 +405,41 @@
              4. PHYSICS TAB
         ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-physics">
+          <div class="settings-section">
+            <h3>Controller Presets</h3>
+            <div class="preset-grid" id="controller-presets"></div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Controller Test Lab</h3>
+            <div class="test-lab">
+              <div class="test-scenarios">
+                <button class="scenario-chip active" data-test-scenario="studio">Studio</button>
+                <button class="scenario-chip" data-test-scenario="motion">Motion</button>
+                <button class="scenario-chip" data-test-scenario="air">Air</button>
+                <button class="scenario-chip" data-test-scenario="close">Close Cam</button>
+              </div>
+              <div class="test-lab-actions">
+                <button class="test-action" data-test-action="idle">Idle</button>
+                <button class="test-action" data-test-action="walk">Walk</button>
+                <button class="test-action" data-test-action="sprint">Sprint</button>
+                <button class="test-action" data-test-action="jump">Jump</button>
+                <button class="test-action" data-test-action="roll">Roll</button>
+                <button class="test-action" data-test-action="crouch">Crouch</button>
+              </div>
+              <div class="test-lab-metrics" id="test-lab-metrics">
+                <div><span>State</span><strong id="metric-state">-</strong></div>
+                <div><span>Speed</span><strong id="metric-speed">0.00</strong></div>
+                <div><span>Grounded</span><strong id="metric-grounded">-</strong></div>
+                <div><span>Preset</span><strong id="metric-preset">-</strong></div>
+                <div><span>Animation</span><strong id="metric-animation">-</strong></div>
+                <div><span>Crouch</span><strong id="metric-crouch">-</strong></div>
+                <div><span>Roll</span><strong id="metric-roll">-</strong></div>
+                <div><span>Camera</span><strong id="metric-camera">-</strong></div>
+              </div>
+            </div>
+          </div>
+
           <div class="settings-section">
             <h3>Physics Engine Defaults</h3>
 
@@ -594,6 +644,28 @@
               </svg>
               Download character_animated.glb
             </button>
+          </div>
+
+          <div class="settings-section">
+            <h3>Download Builder Config</h3>
+            <p style="margin-bottom:12px;">
+              Save or restore the full Builder setup as a reusable <code>builder-config.json</code> preset for this character.
+            </p>
+            <div class="config-actions">
+              <button class="btn-action btn-secondary" id="btn-download-config">
+                <svg style="width:20px;height:20px;fill:currentColor;" viewBox="0 0 24 24">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm0 2.5L17.5 8H14V4.5zM8 13h8v2H8v-2zm0 4h8v2H8v-2zm0-8h4v2H8V9z" />
+                </svg>
+                Download builder-config.json
+              </button>
+              <button class="btn-action btn-secondary" id="btn-import-config">
+                <svg style="width:20px;height:20px;fill:currentColor;" viewBox="0 0 24 24">
+                  <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" />
+                </svg>
+                Import builder-config.json
+              </button>
+              <input type="file" id="builder-config-input" accept=".json,application/json" style="display:none;">
+            </div>
           </div>
 
           <div class="settings-section">

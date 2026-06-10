@@ -206,6 +206,186 @@ export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
   return { joints, height: H, bounds: { min, max } };
 }
 
+// ── Vertex-based joint refinement ────────────────────────────────────────────
+// The bounds guess assumes ideal T-pose proportions. Real meshes vary: A-poses,
+// wide stances, hunched spines, big heads. Analyze the actual vertex cloud and
+// override the bounds guess where the measurement is reliable.
+function collectWorldVertices(doc, identityMeshes = new Set(), maxVerts = 200000) {
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  const pts = [];
+  let total = 0;
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    for (const prim of mesh.listPrimitives()) {
+      total += (prim.getAttribute('POSITION')?.getCount()) || 0;
+    }
+  }
+  const stride = Math.max(1, Math.ceil(total / maxVerts));
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    for (const prim of mesh.listPrimitives()) {
+      const arr = prim.getAttribute('POSITION')?.getArray();
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i += 3 * stride) {
+        pts.push(transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]));
+      }
+    }
+  }
+  return pts;
+}
+
+function median(values) {
+  if (!values.length) return NaN;
+  const s = [...values].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function centroidOf(pts) {
+  if (!pts.length) return null;
+  const c = [0, 0, 0];
+  for (const p of pts) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }
+  return [c[0] / pts.length, c[1] / pts.length, c[2] / pts.length];
+}
+
+/**
+ * Refine the bounds-based guess using the vertex cloud.
+ * Detects: body centerline, crotch height (leg/torso split), per-leg X offset,
+ * shoulder height, hand positions (works for T- and A-poses), head centroid.
+ * Falls back to the bounds guess for anything that can't be measured reliably.
+ */
+export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
+  const base = guessJointsFromBounds(bounds, forwardZ);
+  if (!verts || verts.length < 300) return base;
+  const { min, max } = bounds;
+  const H = max[1] - min[1];
+  const groundY = min[1];
+  const joints = base.joints;
+
+  // Body centerline from medians — robust against asymmetric props/capes
+  const cx = median(verts.map(p => p[0]));
+  const cz = median(verts.map(p => p[2]));
+  const yf = p => (p[1] - groundY) / H; // normalized height of a vertex
+
+  // ── Crotch: highest band where the body splits into two legs ──────────────
+  // A bin is "split" when both sides are occupied but the centerline is empty.
+  const BINS = 80;
+  const binOf = p => Math.min(BINS - 1, Math.max(0, Math.floor(yf(p) * BINS)));
+  const bins = Array.from({ length: BINS }, () => ({ n: 0, center: 0, left: [], right: [], sumZ: 0 }));
+  for (const p of verts) {
+    const b = bins[binOf(p)];
+    b.n++; b.sumZ += p[2];
+    const dx = p[0] - cx;
+    if (Math.abs(dx) < 0.025 * H) b.center++;
+    else if (dx > 0) b.left.push(dx);
+    else b.right.push(-dx);
+  }
+  let crotchY = null;
+  const lo = Math.floor(0.15 * BINS), hi = Math.floor(0.62 * BINS);
+  for (let b = lo; b <= hi; b++) {
+    const bin = bins[b];
+    if (bin.n < 8) continue;
+    const split = bin.center === 0 && bin.left.length >= 3 && bin.right.length >= 3;
+    if (split) crotchY = groundY + ((b + 1) / BINS) * H; // top of the split band
+  }
+
+  if (crotchY !== null) {
+    const hipsY = Math.min(crotchY + 0.05 * H, groundY + 0.62 * H);
+    const upLegY = Math.min(crotchY + 0.015 * H, hipsY - 0.02 * H);
+    const ankleY = joints.LeftFoot[1];
+    const kneeY = (upLegY + ankleY) / 2;
+
+    // Per-leg X offset measured halfway down the legs
+    const midLegBin = bins[Math.max(0, Math.floor(((crotchY - groundY) / H) * BINS * 0.5))];
+    let legDX = 0.06 * H;
+    if (midLegBin && midLegBin.left.length >= 3 && midLegBin.right.length >= 3) {
+      const l = median(midLegBin.left), r = median(midLegBin.right);
+      const m = (l + r) / 2;
+      if (Number.isFinite(m)) legDX = Math.min(Math.max(m, 0.03 * H), 0.15 * H);
+    }
+
+    for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+      joints[side + 'UpLeg'] = [cx + sgn * legDX, upLegY, cz];
+      joints[side + 'Leg'] = [cx + sgn * legDX, kneeY, cz];
+      joints[side + 'Foot'] = [cx + sgn * legDX, ankleY, cz];
+      joints[side + 'ToeBase'] = [cx + sgn * legDX, joints[side + 'ToeBase'][1], cz + 0.10 * H * forwardZ];
+    }
+    joints.Hips = [cx, hipsY, cz];
+  }
+
+  // ── Arms: lateral extremes above the waist (T-pose and A-pose) ────────────
+  const upperVerts = verts.filter(p => yf(p) > 0.45);
+  let spanL = 0, spanR = 0;
+  for (const p of upperVerts) {
+    const dx = p[0] - cx;
+    if (dx > spanL) spanL = dx;
+    else if (-dx > spanR) spanR = -dx;
+  }
+  // Torso half width: capped fraction of arm span so armpit estimates stay sane
+  const tw = Math.min(0.16 * H, 0.45 * Math.min(spanL, spanR));
+  const armsDetected = spanL > 0.20 * H && spanR > 0.20 * H && tw > 0.05 * H;
+
+  let shoulderY = joints.LeftArm[1];
+  if (armsDetected) {
+    // Shoulder height: vertices just outside the torso = upper-arm root
+    const rootYs = upperVerts
+      .filter(p => { const a = Math.abs(p[0] - cx); return a > 1.05 * tw && a < 1.6 * tw && yf(p) > 0.55; })
+      .map(p => p[1]);
+    if (rootYs.length >= 10) {
+      shoulderY = Math.min(Math.max(median(rootYs), groundY + 0.70 * H), groundY + 0.88 * H);
+    }
+
+    // Hands: centroid of the outermost 8% of each arm span (any arm angle)
+    const handL = centroidOf(upperVerts.filter(p => (p[0] - cx) > 0.92 * spanL));
+    const handR = centroidOf(upperVerts.filter(p => (cx - p[0]) > 0.92 * spanR));
+    if (handL && handR) {
+      // Symmetrize so the skeleton stays mirrored even on asymmetric meshes
+      const hx = ((handL[0] - cx) + (cx - handR[0])) / 2;
+      const hy = (handL[1] + handR[1]) / 2;
+      const hz = ((handL[2] + handR[2]) / 2 + cz) / 2;
+      for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+        const shoulder = [cx + sgn * 0.4 * tw, shoulderY, cz];
+        const arm = [cx + sgn * tw, shoulderY, cz];
+        const hand = [cx + sgn * hx, hy, hz];
+        const fore = [(arm[0] + hand[0]) / 2, (arm[1] + hand[1]) / 2, (arm[2] + hand[2]) / 2];
+        joints[side + 'Shoulder'] = shoulder;
+        joints[side + 'Arm'] = arm;
+        joints[side + 'ForeArm'] = fore;
+        joints[side + 'Hand'] = hand;
+      }
+    }
+  }
+
+  // ── Spine / neck / head anchored to measured hips & shoulders ─────────────
+  const hipsY2 = joints.Hips[1];
+  const neckY = Math.min(shoulderY + 0.05 * H, groundY + 0.90 * H);
+  const spineZ = f => {
+    const b = bins[Math.min(BINS - 1, Math.max(0, Math.floor(((f - groundY) / H) * BINS)))];
+    return b && b.n >= 8 ? b.sumZ / b.n : cz; // follow hunched spines
+  };
+  const lerpY = t => hipsY2 + (neckY - hipsY2) * t;
+  joints.Spine = [cx, lerpY(0.28), spineZ(lerpY(0.28))];
+  joints.Spine1 = [cx, lerpY(0.55), spineZ(lerpY(0.55))];
+  joints.Spine2 = [cx, lerpY(0.82), spineZ(lerpY(0.82))];
+  joints.Neck = [cx, neckY, spineZ(neckY)];
+
+  const headPts = verts.filter(p => yf(p) > 0.92);
+  const headC = centroidOf(headPts);
+  const headY = Math.min(neckY + 0.045 * H, groundY + 0.95 * H);
+  joints.Head = [cx, headY, headC ? (headC[2] + cz) / 2 : cz];
+
+  // Re-anchor shoulders to Spine2 height sanity (clavicles sit below the neck)
+  for (const side of ['Left', 'Right']) {
+    joints[side + 'Shoulder'][1] = Math.min(joints[side + 'Shoulder'][1], neckY - 0.01 * H);
+  }
+
+  return { joints, height: H, bounds };
+}
+
 // ── Seed markers from an existing skeleton ───────────────────────────────────
 // Aliases per canonical Mixamo joint, in normalized form (lowercase, no prefix,
 // no separators, no trailing _N). Covers Mixamo/Unity/UE5/generic conventions.
@@ -278,7 +458,9 @@ export async function guessJoints(buffer) {
     if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
   }
   const bounds = computeWorldBounds(doc, skinnedMeshes);
-  const guess = guessJointsFromBounds(bounds, detectForwardZ(doc, bounds, skinnedMeshes));
+  const fwd = detectForwardZ(doc, bounds, skinnedMeshes);
+  const verts = collectWorldVertices(doc, skinnedMeshes);
+  const guess = guessJointsFromMesh(verts, bounds, fwd);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
@@ -530,7 +712,7 @@ export async function autoRigGLB(buffer, options = {}) {
 
   const bounds = computeWorldBounds(doc, previouslySkinned);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned);
-  const guess = guessJointsFromBounds(bounds, forwardZ);
+  const guess = guessJointsFromMesh(collectWorldVertices(doc, previouslySkinned), bounds, forwardZ);
   const joints = { ...guess.joints, ...(options.joints || {}) };
   const H = guess.height;
 
