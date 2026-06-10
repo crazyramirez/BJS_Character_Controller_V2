@@ -383,7 +383,464 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     joints[side + 'Shoulder'][1] = Math.min(joints[side + 'Shoulder'][1], neckY - 0.01 * H);
   }
 
-  return { joints, height: H, bounds };
+  // Quality flags: when these fail the mesh is likely NOT in an upright
+  // T/A-pose and the caller should try the pose-independent topology pass.
+  return { joints, height: H, bounds, flags: { crotch: crotchY !== null, arms: armsDetected } };
+}
+
+// ── Pose-independent topology pass (voxel curve-skeleton) ───────────────────
+// For meshes NOT in an upright T/A-pose the height-slicing heuristics above
+// fail. Body topology, however, is pose-invariant: five extremities (head,
+// hands, feet) joined to a torso. This pass voxelizes the mesh, builds a
+// geodesic graph over the solid voxels, finds the extremities by farthest-
+// point sampling, classifies limbs by centerline thickness, and places the
+// Mixamo joints along the limb centerlines.
+
+function voxelizeSolid(doc, identityMeshes, bounds, N = 64) {
+  const { min, max } = bounds;
+  const extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+  const cell = Math.max(...extent) / N;
+  if (!(cell > 0)) return null;
+  const nx = Math.ceil(extent[0] / cell) + 4;
+  const ny = Math.ceil(extent[1] / cell) + 4;
+  const nz = Math.ceil(extent[2] / cell) + 4;
+  const origin = [min[0] - 2 * cell, min[1] - 2 * cell, min[2] - 2 * cell];
+  const grid = new Uint8Array(nx * ny * nz); // 0 empty, 1 solid, 2 outside
+  const idxOf = (x, y, z) => x + nx * (y + ny * z);
+  const mark = (p) => {
+    const x = Math.floor((p[0] - origin[0]) / cell);
+    const y = Math.floor((p[1] - origin[1]) / cell);
+    const z = Math.floor((p[2] - origin[2]) / cell);
+    if (x >= 0 && y >= 0 && z >= 0 && x < nx && y < ny && z < nz) grid[idxOf(x, y, z)] = 1;
+  };
+
+  // Rasterize triangle surfaces (subdivide until edges fit inside a voxel)
+  const parentMap = buildParentMap(doc);
+  const matCache = new Map();
+  const limit = cell * 0.85;
+  let budget = 4_000_000;
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, matCache);
+    for (const prim of mesh.listPrimitives()) {
+      const pos = prim.getAttribute('POSITION')?.getArray();
+      if (!pos) continue;
+      const ind = prim.getIndices()?.getArray();
+      const triCount = ind ? ind.length / 3 : pos.length / 9;
+      const vtx = (i) => transformPoint(world, [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]);
+      for (let t = 0; t < triCount && budget > 0; t++) {
+        const a = vtx(ind ? ind[t * 3] : t * 3);
+        const b = vtx(ind ? ind[t * 3 + 1] : t * 3 + 1);
+        const c = vtx(ind ? ind[t * 3 + 2] : t * 3 + 2);
+        const stack = [[a, b, c]];
+        while (stack.length && budget-- > 0) {
+          const [p, q, r] = stack.pop();
+          mark(p); mark(q); mark(r);
+          const e0 = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+          const e1 = Math.hypot(r[0] - q[0], r[1] - q[1], r[2] - q[2]);
+          const e2 = Math.hypot(p[0] - r[0], p[1] - r[1], p[2] - r[2]);
+          if (Math.max(e0, e1, e2) > limit) {
+            const mpq = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+            const mqr = [(q[0] + r[0]) / 2, (q[1] + r[1]) / 2, (q[2] + r[2]) / 2];
+            const mrp = [(r[0] + p[0]) / 2, (r[1] + p[1]) / 2, (r[2] + p[2]) / 2];
+            stack.push([p, mpq, mrp], [mpq, q, mqr], [mrp, mqr, r], [mpq, mqr, mrp]);
+          }
+        }
+      }
+    }
+  }
+
+  // Interior fill with morphological closing: real-world meshes are rarely
+  // watertight (open necks, eye sockets), so a naive outside flood leaks in
+  // and the body stays hollow — killing the depth field and inflating all
+  // geodesics onto the surface. Dilate the shell 2 voxels, flood the outside
+  // over the dilated grid, then take interior = unreached ∧ not part of the
+  // dilated ring (so the silhouette is not fattened).
+  // Conservative dilation: only fill cells with ≥2 solid 6-neighbours. The
+  // rim of a hole (neck, eye socket) is curved and qualifies; the flat 1–2
+  // cell gap between two parallel surfaces (feet, legs, arm/torso) has only
+  // one solid neighbour per cell and is preserved.
+  const dil = Uint8Array.from(grid);
+  for (let pass = 0; pass < 2; pass++) {
+    const src = Uint8Array.from(dil);
+    for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+      const i = idxOf(x, y, z);
+      if (src[i]) continue;
+      const n = src[i - 1] + src[i + 1] + src[i - nx] + src[i + nx] + src[i - nx * ny] + src[i + nx * ny];
+      if (n >= 2) dil[i] = 1;
+    }
+  }
+  const outside = new Uint8Array(grid.length);
+  const queue = new Int32Array(nx * ny * nz);
+  let qh = 0, qt = 0;
+  const pushOut = (i) => { if (!dil[i] && !outside[i]) { outside[i] = 1; queue[qt++] = i; } };
+  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) { pushOut(idxOf(0, y, z)); pushOut(idxOf(nx - 1, y, z)); }
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) { pushOut(idxOf(x, 0, z)); pushOut(idxOf(x, ny - 1, z)); }
+  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) { pushOut(idxOf(x, y, 0)); pushOut(idxOf(x, y, nz - 1)); }
+  while (qh < qt) {
+    const i = queue[qh++];
+    const x = i % nx, y = ((i / nx) | 0) % ny, z = (i / (nx * ny)) | 0;
+    if (x > 0) pushOut(i - 1);
+    if (x < nx - 1) pushOut(i + 1);
+    if (y > 0) pushOut(i - nx);
+    if (y < ny - 1) pushOut(i + nx);
+    if (z > 0) pushOut(i - nx * ny);
+    if (z < nz - 1) pushOut(i + nx * ny);
+  }
+  let solid = 0;
+  for (let i = 0; i < grid.length; i++) {
+    if (grid[i] === 1) { solid++; continue; } // original shell
+    if (outside[i]) { grid[i] = 0; continue; }
+    // Unreached cell: true interior — but drop the OUTER dilated ring (cells
+    // touching the outside) so the silhouette is not fattened by the closing.
+    if (dil[i]) {
+      const x = i % nx, y = ((i / nx) | 0) % ny, z = (i / (nx * ny)) | 0;
+      const touchesOut =
+        (x > 0 && outside[i - 1]) || (x < nx - 1 && outside[i + 1]) ||
+        (y > 0 && outside[i - nx]) || (y < ny - 1 && outside[i + nx]) ||
+        (z > 0 && outside[i - nx * ny]) || (z < nz - 1 && outside[i + nx * ny]);
+      if (touchesOut) { grid[i] = 0; continue; }
+    }
+    grid[i] = 1; solid++;
+  }
+  return { grid, nx, ny, nz, origin, cell, solid, idxOf };
+}
+
+// Multi-source BFS over solid voxels (26-conn); returns Int32 distances (-1
+// unreachable) and parent pointers for path reconstruction.
+function voxelBFS(vox, sources) {
+  const { grid, nx, ny, nz } = vox;
+  const dist = new Int32Array(grid.length).fill(-1);
+  const parent = new Int32Array(grid.length).fill(-1);
+  const queue = new Int32Array(vox.solid + 1);
+  let qh = 0, qt = 0;
+  for (const s of sources) if (grid[s] === 1 && dist[s] < 0) { dist[s] = 0; queue[qt++] = s; }
+  while (qh < qt) {
+    const i = queue[qh++];
+    const x = i % nx, y = ((i / nx) | 0) % ny, z = (i / (nx * ny)) | 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy && !dz) continue;
+      const X = x + dx, Y = y + dy, Z = z + dz;
+      if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+      const j = X + nx * (Y + ny * Z);
+      if (grid[j] === 1 && dist[j] < 0) { dist[j] = dist[i] + 1; parent[j] = i; queue[qt++] = j; }
+    }
+  }
+  return { dist, parent };
+}
+
+/**
+ * Pose-independent joint guess. Returns { joints, height, bounds, confidence,
+ * method:'topology' } or null when the topology cannot be resolved.
+ */
+export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 1) {
+  // 96³: fine enough that touching thighs/arms don't fuse prematurely
+  const vox = voxelizeSolid(doc, identityMeshes, bounds, 96);
+  if (!vox || vox.solid < 500) return null;
+  const { grid, nx, ny, origin, cell } = vox;
+  const worldOf = (i) => {
+    const x = i % nx, y = ((i / nx) | 0) % ny, z = (i / (nx * ny)) | 0;
+    return [origin[0] + (x + 0.5) * cell, origin[1] + (y + 0.5) * cell, origin[2] + (z + 0.5) * cell];
+  };
+
+  // Depth field: geodesic distance to the surface — thickness of the body
+  const shell = [];
+  for (let i = 0; i < grid.length; i++) {
+    if (grid[i] !== 1) continue;
+    const x = i % nx, y = ((i / nx) | 0) % ny, z = (i / (nx * ny)) | 0;
+    const nbr = [i - 1, i + 1, i - nx, i + nx, i - nx * ny, i + nx * ny];
+    const edge = x === 0 || y === 0 || z === 0 || x === nx - 1 || y === ny - 1 || z === (grid.length / (nx * ny)) - 1 ||
+      nbr.some(j => grid[j] !== 1);
+    if (edge) shell.push(i);
+  }
+  const depth = voxelBFS(vox, shell).dist;
+
+  // Tree root must sit in the torso. The deepest voxel is NOT safe (a big
+  // skull can out-thicken the belly). Instead: take the graph diameter
+  // (always extremity↔extremity, e.g. hand↔hand or foot↔head) — its geodesic
+  // midpoint always lies in the torso.
+  let seed = -1, bestD = -1;
+  for (let i = 0; i < grid.length; i++) if (grid[i] === 1 && depth[i] > bestD) { bestD = depth[i]; seed = i; }
+  if (seed < 0) return null;
+  const argmaxDist = (d) => { let e = -1, b = -1; for (let i = 0; i < d.length; i++) if (d[i] > b) { b = d[i]; e = i; } return e; };
+  const a = argmaxDist(voxelBFS(vox, [seed]).dist);
+  const fromA = voxelBFS(vox, [a]);
+  const bEnd = argmaxDist(fromA.dist);
+  const diamPath = [];
+  for (let i = bEnd; i >= 0; i = fromA.parent[i]) diamPath.push(i);
+  const root = diamPath[Math.floor(diamPath.length / 2)];
+  const fromRoot = voxelBFS(vox, [root]);
+
+  // Extremities: farthest-point sampling on geodesic distance
+  const picks = [];
+  let minDist = Int32Array.from(fromRoot.dist);
+  for (let k = 0; k < 6; k++) {
+    let e = -1, dBest = -1;
+    for (let i = 0; i < grid.length; i++) if (grid[i] === 1 && minDist[i] > dBest) { dBest = minDist[i]; e = i; }
+    // Real extremities sit at least a limb's length apart geodesically;
+    // closer peaks are spurs on the same blob (ears, hair, fingers).
+    if (e < 0 || dBest < Math.max(8, diamPath.length * 0.18)) break;
+    picks.push(e);
+    const de = voxelBFS(vox, [e]).dist;
+    for (let i = 0; i < grid.length; i++) if (de[i] >= 0 && de[i] < minDist[i]) minDist[i] = de[i];
+  }
+  if (process.env.AUTORIG_DEBUG) console.log('picks:', picks.map(p => worldOf(p).map(v => v.toFixed(2)).join(',')).join(' | '));
+  if (process.env.AUTORIG_PROBE) {
+    for (const probe of process.env.AUTORIG_PROBE.split(';')) {
+      const [px, py, pz] = probe.split(',').map(Number);
+      const x = Math.round((px - origin[0]) / cell - 0.5), y = Math.round((py - origin[1]) / cell - 0.5), z = Math.round((pz - origin[2]) / cell - 0.5);
+      // nearest solid within radius 3
+      let bi = -1, bd = Infinity;
+      for (let dz = -3; dz <= 3; dz++) for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+        const i = (x + dx) + nx * ((y + dy) + ny * (z + dz));
+        if (grid[i] === 1 && dx * dx + dy * dy + dz * dz < bd) { bd = dx * dx + dy * dy + dz * dz; bi = i; }
+      }
+      console.log(`probe ${probe}: solidNear=${bi >= 0} fromRoot=${bi >= 0 ? fromRoot.dist[bi] : '-'} minDistFinal=${bi >= 0 ? minDist[bi] : '-'}`);
+    }
+  }
+  if (picks.length < 5) return null;
+
+  // Path tip→root per extremity + mean centerline thickness
+  const paths = picks.map(e => {
+    const path = [];
+    for (let i = e; i >= 0; i = fromRoot.parent[i]) path.push(i);
+    const span = Math.max(1, Math.floor(path.length * 0.7));
+    let th = 0;
+    for (let i = 0; i < span; i++) th += depth[path[i]];
+    return { tip: e, path, len: path.length, thickness: th / span };
+  }).filter(p => p.len >= 6);
+  if (paths.length < 5) return null;
+
+  // Merge points: first voxel a path shares with its sibling
+  const mergeOf = (pa, pb) => {
+    const set = new Set(pa.path);
+    for (let i = 0; i < pb.path.length; i++) if (set.has(pb.path[i])) return pb.path[i];
+    return root;
+  };
+
+  // ── Classification by pair matching ────────────────────────────────────────
+  // True pairs stay together far from the torso core: feet merge at the
+  // crotch, hands at the chest, while the head pairs with nothing deeply.
+  // Choose 5 leaves + the matching (2 pairs + 1 head) maximizing the summed
+  // merge depth. Tip thickness is NOT used (boots/gloves break it).
+  let cands = paths.slice(0, 6).sort((a, b) => b.len - a.len);
+
+  // Deduplicate blob spurs first: two leaves on the SAME body part (top of
+  // head vs hair tail, fingers of one hand) are geodesically close
+  // tip-to-tip; real extremities sit at least two limb lengths apart.
+  // Keep the longest leaf per cluster.
+  const minSep = diamPath.length * 0.25;
+  const used = new Array(cands.length).fill(false);
+  const dedup = [];
+  for (let i = 0; i < cands.length; i++) {
+    if (used[i]) continue;
+    const dTip = voxelBFS(vox, [cands[i].tip]).dist;
+    for (let j = i + 1; j < cands.length; j++) {
+      const d = dTip[cands[j].tip];
+      if (process.env.AUTORIG_DEBUG) console.log(`dedup ${i}-${j}: tipDist=${d} minSep=${minSep.toFixed(0)}`);
+      if (d >= 0 && d < minSep) used[j] = true; // sorted by len → keep i
+    }
+    dedup.push(cands[i]);
+  }
+  if (process.env.AUTORIG_DEBUG) {
+    let maxDepth = 0;
+    for (let i = 0; i < grid.length; i++) if (grid[i] === 1 && depth[i] > maxDepth) maxDepth = depth[i];
+    console.log(`solid=${vox.solid} maxDepth=${maxDepth} diam=${diamPath.length} rootW=${worldOf(root).map(v => v.toFixed(2))}`);
+  }
+  cands = dedup;
+  if (cands.length < 5) return null;
+
+  // Pair score: deep merge (limbs stay together away from the core) MINUS a
+  // strong symmetry penalty — real pairs (two feet, two hands) have
+  // near-equal limb segments, while head+hand pairings are very asymmetric.
+  const minLimbLen = Math.max(6, diamPath.length * 0.12);
+  const pairScore = (pa, pb) => {
+    const m = mergeOf(pa, pb);
+    const la = Math.max(1, pa.path.indexOf(m));
+    const lb = Math.max(1, pb.path.indexOf(m));
+    if (Math.min(la, lb) < minLimbLen) return -1000;
+    return fromRoot.dist[m] - 2 * Math.abs(la - lb);
+  };
+  if (process.env.AUTORIG_DEBUG) {
+    for (let i = 0; i < cands.length; i++) for (let j = i + 1; j < cands.length; j++) {
+      const m = mergeOf(cands[i], cands[j]);
+      console.log(`pair ${i}-${j}: tipI=${worldOf(cands[i].tip).map(v => v.toFixed(2))} tipJ=${worldOf(cands[j].tip).map(v => v.toFixed(2))} mergeDist=${fromRoot.dist[m]} la=${cands[i].path.indexOf(m)} lb=${cands[j].path.indexOf(m)} minLimbLen=${minLimbLen.toFixed(0)} score=${pairScore(cands[i], cands[j]).toFixed(1)}`);
+    }
+  }
+  const MATCHINGS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
+  let bestSel = null, bestScore = -Infinity;
+  const subsets = cands.length <= 5 ? [cands] : cands.map((_, drop) => cands.filter((_, i) => i !== drop));
+  for (const sub of subsets) {
+    if (sub.length < 5) continue;
+    for (let h = 0; h < 5; h++) {
+      const rest = sub.filter((_, i) => i !== h);
+      for (const m of MATCHINGS) {
+        const score = pairScore(rest[m[0][0]], rest[m[0][1]]) + pairScore(rest[m[1][0]], rest[m[1][1]])
+          + 0.05 * sub[h].len; // tie-break: prefer the longer leaf as head
+        if (score > bestScore) {
+          bestScore = score;
+          bestSel = { head: sub[h], pairA: [rest[m[0][0]], rest[m[0][1]]], pairB: [rest[m[1][0]], rest[m[1][1]]] };
+        }
+      }
+    }
+  }
+  if (!bestSel) return null;
+  const head = bestSel.head;
+
+  // Legs vs arms: pose-invariant anatomy — the arm pair merges NEAR the head
+  // (chest/shoulders), the leg pair merges FAR from it (crotch). Thickness is
+  // unreliable (touching calves merge early into a thin bridge).
+  const mA = mergeOf(bestSel.pairA[0], bestSel.pairA[1]);
+  const mB = mergeOf(bestSel.pairB[0], bestSel.pairB[1]);
+  const fromHead = voxelBFS(vox, [head.tip]).dist;
+  const dA = fromHead[mA] >= 0 ? fromHead[mA] : Infinity;
+  const dB = fromHead[mB] >= 0 ? fromHead[mB] : Infinity;
+  const [legs, arms, crotchVox, chestVox] = dA >= dB
+    ? [bestSel.pairA, bestSel.pairB, mA, mB]
+    : [bestSel.pairB, bestSel.pairA, mB, mA];
+  const legArmSeparation = Number.isFinite(dA) && Number.isFinite(dB)
+    ? Math.abs(dA - dB) / Math.max(1, diamPath.length) : 0;
+  // ── Thickness-refined limb ends ─────────────────────────────────────────
+  // The raw merge voxel can sit too early (touching calves/arms fuse the
+  // paths below the real joint). Walk past the merge toward the root until
+  // the centerline thickness reaches torso scale — that is the true limb end
+  // (crotch for legs, shoulder/chest for arms).
+  const limbEndIdx = (limb, mergeVox, thrDepth) => {
+    let i = limb.path.indexOf(mergeVox);
+    if (i < 1) i = Math.max(1, Math.floor(limb.path.length * 0.6));
+    while (i < limb.path.length - 1 && depth[limb.path[i]] < thrDepth) i++;
+    return i;
+  };
+  // Per-limb thickness over the segment up to the merge (for end thresholds)
+  const segThickness = (p, mVox) => {
+    let end = p.path.indexOf(mVox);
+    if (end < 2) end = Math.max(2, Math.floor(p.path.length * 0.5));
+    const span = Math.max(2, Math.floor(end * 0.6));
+    let s = 0;
+    for (let i = 0; i < span; i++) s += depth[p.path[i]];
+    return s / span;
+  };
+  // Threshold anchored to BOTH limb thickness and torso-core depth: knees and
+  // calf-contact bridges stay below it, pelvis/chest reach it.
+  const coreDepth = depth[root];
+  const legEnd = new Map(legs.map(l => [l, limbEndIdx(l, crotchVox, Math.max(1.7 * segThickness(l, crotchVox), 0.7 * coreDepth))]));
+  const armEnd = new Map(arms.map(a => [a, limbEndIdx(a, chestVox, Math.max(1.5 * segThickness(a, chestVox), 0.55 * coreDepth))]));
+  const midOf = (pa, ea, pb, eb) => {
+    const A = worldOf(pa.path[ea]), B = worldOf(pb.path[eb]);
+    return [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2];
+  };
+  const crotch = midOf(legs[0], legEnd.get(legs[0]), legs[1], legEnd.get(legs[1]));
+  const chest = midOf(arms[0], armEnd.get(arms[0]), arms[1], armEnd.get(arms[1]));
+  const headTip = worldOf(head.tip);
+
+  // Body frame: up = crotch→head, left = up × forward
+  const H = Math.max(...[0, 1, 2].map(k => bounds.max[k] - bounds.min[k]));
+  const norm = (v) => { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+  const up = norm([headTip[0] - crotch[0], headTip[1] - crotch[1], headTip[2] - crotch[2]]);
+  let fwd = [0, 0, forwardZ];
+  if (Math.abs(up[0] * fwd[0] + up[1] * fwd[1] + up[2] * fwd[2]) > 0.9) fwd = [0, 0, 1];
+  const left = norm([up[1] * fwd[2] - up[2] * fwd[1], up[2] * fwd[0] - up[0] * fwd[2], up[0] * fwd[1] - up[1] * fwd[0]]);
+  const sideOf = (p, ref) => (p[0] - ref[0]) * left[0] + (p[1] - ref[1]) * left[1] + (p[2] - ref[2]) * left[2];
+
+  // Point at fraction t (0 = tip) along a limb centerline up to end index
+  const limbPoint = (limb, end, t) =>
+    worldOf(limb.path[Math.max(0, Math.min(end, Math.round(t * end)))]);
+
+  const [legL, legR] = sideOf(worldOf(legs[0].tip), crotch) >= sideOf(worldOf(legs[1].tip), crotch)
+    ? [legs[0], legs[1]] : [legs[1], legs[0]];
+  const [armL, armR] = sideOf(worldOf(arms[0].tip), chest) >= sideOf(worldOf(arms[1].tip), chest)
+    ? [arms[0], arms[1]] : [arms[1], arms[0]];
+
+  const joints = {};
+  const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  for (const [side, leg, arm] of [['Left', legL, armL], ['Right', legR, armR]]) {
+    const le = legEnd.get(leg), ae = armEnd.get(arm);
+    joints[side + 'ToeBase'] = limbPoint(leg, le, 0);
+    joints[side + 'Foot'] = limbPoint(leg, le, 0.12);
+    joints[side + 'Leg'] = limbPoint(leg, le, 0.52);   // knee
+    joints[side + 'UpLeg'] = limbPoint(leg, le, 0.94);
+    joints[side + 'Hand'] = limbPoint(arm, ae, 0.04);
+    joints[side + 'ForeArm'] = limbPoint(arm, ae, 0.45); // elbow
+    joints[side + 'Arm'] = limbPoint(arm, ae, 0.85);     // shoulder head
+    joints[side + 'Shoulder'] = limbPoint(arm, ae, 0.96);
+  }
+  joints.Hips = lerp3(crotch, chest, 0.12);
+  joints.Spine = lerp3(crotch, chest, 0.35);
+  joints.Spine1 = lerp3(crotch, chest, 0.6);
+  joints.Spine2 = lerp3(crotch, chest, 0.85);
+
+  // Head chain: the neck is the thickness local minimum of the head path
+  // (skull blob → thin neck → thick chest), searched over the first 70%.
+  const headSearch = Math.max(3, Math.floor(head.path.length * 0.7));
+  let neckIdx = Math.floor(head.path.length * 0.4);
+  let neckDepth = Infinity;
+  for (let i = Math.floor(head.path.length * 0.1); i < headSearch; i++) {
+    if (depth[head.path[i]] < neckDepth) { neckDepth = depth[head.path[i]]; neckIdx = i; }
+  }
+  joints.Neck = worldOf(head.path[neckIdx]);
+  joints.Head = limbPoint(head, neckIdx, 0.5); // mid-skull, above the neck
+
+  // Confidence: a clean pair matching (no same-blob pairs forced), clear
+  // geodesic separation of the REFINED crotch/chest from the head, and the
+  // leg merge sitting below the arm merge along the body axis.
+  let confidence = 0.5;
+  if (bestScore > -100) confidence += 0.2; // both pairs were real limb pairs
+  const crotchGeo = fromHead[legs[0].path[legEnd.get(legs[0])]];
+  const chestGeo = fromHead[arms[0].path[armEnd.get(arms[0])]];
+  const refinedSep = (crotchGeo >= 0 && chestGeo >= 0)
+    ? Math.abs(crotchGeo - chestGeo) / Math.max(1, diamPath.length)
+    : legArmSeparation;
+  if (refinedSep > 0.08) confidence += 0.2;
+  const crotchBelowChest = (crotch[0] - chest[0]) * up[0] + (crotch[1] - chest[1]) * up[1] + (crotch[2] - chest[2]) * up[2] < 0;
+  if (crotchBelowChest) confidence += 0.1;
+  else confidence -= 0.3;
+
+  return {
+    joints, height: H, bounds, confidence, method: 'topology',
+    debug: { extremities: picks.map(worldOf), headTip: worldOf(head.tip) },
+  };
+}
+
+// Run BOTH detectors and cross-validate. The slicing pass is more precise but
+// only valid for upright T/A-poses; the topology pass is pose-independent.
+// They agree on standard poses — strong disagreement on hands/feet means the
+// pose is non-standard and topology wins.
+function guessJointsAuto(doc, identityMeshes, bounds, forwardZ) {
+  const verts = collectWorldVertices(doc, identityMeshes);
+  const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
+  sliced.method = 'slicing';
+
+  let topo = null;
+  try {
+    topo = guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ);
+  } catch (e) {
+    console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
+  }
+  if (!topo) return sliced;
+
+  const standardPose = sliced.flags?.crotch && sliced.flags?.arms;
+  if (process.env.AUTORIG_DEBUG) console.log(`[autorig] standardPose=${standardPose} (crotch=${sliced.flags?.crotch} arms=${sliced.flags?.arms}) topoConf=${topo.confidence.toFixed(2)}`);
+  if (!standardPose && topo.confidence >= 0.6) {
+    console.log(`[autorig] Non-standard pose detected — using topology skeleton (confidence ${topo.confidence.toFixed(2)}).`);
+    return topo;
+  }
+  if (standardPose && topo.confidence >= 0.7) {
+    // Cross-check: average hand/foot disagreement between the two detectors
+    const H = sliced.height;
+    let disagree = 0;
+    for (const n of ['LeftHand', 'RightHand', 'LeftFoot', 'RightFoot']) {
+      const a = sliced.joints[n], b = topo.joints[n];
+      disagree += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    }
+    disagree /= 4 * H;
+    if (process.env.AUTORIG_DEBUG) console.log(`[autorig] cross-check: topoConf=${topo.confidence.toFixed(2)} disagree=${(disagree * 100).toFixed(0)}%`);
+    if (disagree > 0.22) {
+      console.log(`[autorig] Detectors disagree (${(disagree * 100).toFixed(0)}% of height) — pose is non-standard, using topology skeleton.`);
+      return topo;
+    }
+  }
+  return sliced;
 }
 
 // ── Seed markers from an existing skeleton ───────────────────────────────────
@@ -459,8 +916,7 @@ export async function guessJoints(buffer) {
   }
   const bounds = computeWorldBounds(doc, skinnedMeshes);
   const fwd = detectForwardZ(doc, bounds, skinnedMeshes);
-  const verts = collectWorldVertices(doc, skinnedMeshes);
-  const guess = guessJointsFromMesh(verts, bounds, fwd);
+  const guess = guessJointsAuto(doc, skinnedMeshes, bounds, fwd);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
@@ -712,7 +1168,7 @@ export async function autoRigGLB(buffer, options = {}) {
 
   const bounds = computeWorldBounds(doc, previouslySkinned);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned);
-  const guess = guessJointsFromMesh(collectWorldVertices(doc, previouslySkinned), bounds, forwardZ);
+  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ);
   const joints = { ...guess.joints, ...(options.joints || {}) };
   const H = guess.height;
 
@@ -726,7 +1182,9 @@ export async function autoRigGLB(buffer, options = {}) {
     (joints.RightToeBase[2] - joints.RightFoot[2])) / 2;
   const fwdSign = toeFwd !== 0 ? Math.sign(toeFwd) : forwardZ;
   const leftSide = Math.sign(joints.LeftArm[0] - joints.RightArm[0]) || 1;
-  if (leftSide !== fwdSign) {
+  // Topology guesses assign Left/Right from the detected body frame — the
+  // toe-direction heuristic is meaningless in arbitrary poses, skip the swap.
+  if (guess.method !== 'topology' && leftSide !== fwdSign) {
     for (const name of Object.keys(joints)) {
       if (!name.startsWith('Left')) continue;
       const twin = 'Right' + name.slice(4);

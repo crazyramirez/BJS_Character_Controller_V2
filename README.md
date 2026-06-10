@@ -227,6 +227,7 @@ All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wip
 If you import a mesh-only GLB (no skeleton/skin), the **Model → Skeleton** section offers **Generate Skeleton (Auto-Rig)**:
 
 1. The server analyzes the actual vertex cloud — not just the bounding box — to propose Mixamo-named joint positions: it detects the crotch (where the body splits into legs), shoulder height, hand positions (works for both **T-pose and A-pose** meshes), per-leg offsets, and follows hunched spines.
+   For meshes in **non-standard poses** (crouching, sitting, action poses) a pose-independent topology pass kicks in automatically: the mesh is voxelized, the interior is filled (works on non-watertight meshes), and the five extremities (head, hands, feet) are found on the geodesic graph and classified by body topology — legs merge far from the head, arms merge near it. Joints are placed along the detected limb centerlines.
 2. The builder enters a dedicated **rig viewport mode**: the character is isolated, draggable yellow joint markers appear, with Front/Side/Top camera presets (keys `1`/`2`/`3`) and optional **symmetric editing** (left ↔ right mirroring).
 3. **Apply Rig** builds the skeleton, computes proximity-based skin weights server-side, and re-merges your animation set against the fresh rig automatically.
 
