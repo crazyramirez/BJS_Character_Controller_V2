@@ -783,10 +783,13 @@ class CharCtrl {
 
     // Initialize Havok Physics Body if enabled
     if (this.usePhysics) {
-      const startPoint = new BABYLON.Vector3(0, -0.55, 0);
-      const endPoint = new BABYLON.Vector3(0, 0.55, 0);
-      this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.35, scene);
-      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.55, 0), new BABYLON.Vector3(0, 0.35, 0), 0.35, scene);
+      // Derive physics capsule size from the collision ellipsoid so a scaled character gets a matching body
+      const physScaleY = this.root.ellipsoid ? this.root.ellipsoid.y / 0.96 : 1;
+      const physScaleW = this.root.ellipsoid ? this.root.ellipsoid.x / 0.35 : 1;
+      const startPoint = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
+      const endPoint = new BABYLON.Vector3(0, 0.55 * physScaleY, 0);
+      this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.35 * physScaleW, scene);
+      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.55 * physScaleY, 0), new BABYLON.Vector3(0, -0.15 * physScaleY, 0), 0.35 * physScaleW, scene);
 
       this._standShape.material = { friction: 0, restitution: 0 };
       this._crouchShape.material = { friction: 0, restitution: 0 };
@@ -860,7 +863,10 @@ class CharCtrl {
     this._standEllipsoidY = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
     this._standEllipsoidWidth = this.root.ellipsoid ? this.root.ellipsoid.x : 0.35;
     this._standMeshY = this.visualMesh.position.y;
-    this._crouchEllipsoidY = 0.75;
+    this._crouchEllipsoidY = 0.55 * (this._standEllipsoidY / 0.96);
+    // Capsule scale factors relative to the default 1.8m capsule — drive scale-aware ray distances
+    this._capScaleY = this._standEllipsoidY / 0.96;
+    this._capScaleW = this._standEllipsoidWidth / 0.35;
     this._lastY = this.root.position.y;
     this._highestAirborneY = this.root.position.y;
 
@@ -1849,7 +1855,7 @@ class CharCtrl {
     if (this.usePhysics) {
       // For Havok the shape switches instantly; use the assigned shape bottom.
       const usingCrouchShape = this._crouchShape && this.physicsBody && this.physicsBody.shape === this._crouchShape;
-      originYOffset = usingCrouchShape ? -0.62 : -0.82;
+      originYOffset = (usingCrouchShape ? -0.62 : -0.82) * this._capScaleY;
     } else {
       // For kinematic, read the LIVE ellipsoid.y so the offset tracks the smooth lerp transition.
       // ellipsoid.y is the half-height; capsule bottom = -ellipsoid.y + ellipsoidOffset.y
@@ -1864,12 +1870,12 @@ class CharCtrl {
     // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
     // Add a small extra buffer (0.12m) while crouching is active to absorb the transition frames where
     // the ellipsoid hasn't fully settled yet and the ray might otherwise just miss the ground.
-    const baseRayLen = this.usePhysics ? 0.36 : 0.28;
-    const crouchBuffer = this.crouching ? 0.12 : 0;
-    const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 : (baseRayLen + crouchBuffer);
+    const baseRayLen = (this.usePhysics ? 0.36 : 0.28) * this._capScaleY;
+    const crouchBuffer = this.crouching ? 0.12 * this._capScaleY : 0;
+    const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 * this._capScaleY : (baseRayLen + crouchBuffer);
     const downDir = new BABYLON.Vector3(0, -1, 0);
 
-    const radius = 0.22; // Slightly inset from capsule width of 0.35
+    const radius = 0.22 * this._capScaleW; // Slightly inset from capsule width
     const offsets = [
       new BABYLON.Vector3(0, originYOffset, 0),         // Center
       new BABYLON.Vector3(0, originYOffset, radius),    // Forward
@@ -1922,13 +1928,13 @@ class CharCtrl {
     let rayStart, rayLen;
     if (this.usePhysics) {
       // Start raycast just below the top of the crouched head (0.60m above capsule center)
-      rayStart = this.root.position.add(new BABYLON.Vector3(0, 0.60, 0));
-      // Ray length needs to reach the standing height (1.80m) plus clearance margin
-      rayLen = 0.65;
+      rayStart = this.root.position.add(new BABYLON.Vector3(0, 0.60 * this._capScaleY, 0));
+      // Ray length needs to reach the standing height plus clearance margin
+      rayLen = 0.65 * this._capScaleY;
     } else {
       // Start raycast at the bottom of the feet (ground level) instead of the capsule center
       // to avoid starting the ray inside/above a low ceiling, which would fail to detect it.
-      rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.9, 0));
+      rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.9 * this._capScaleY, 0));
       // Ray length needs to reach the full standing height (2 * ellipsoidY = 1.92m) plus clearance margin
       rayLen = (this._standEllipsoidY * 2.0) + 0.1;
     }
@@ -2388,8 +2394,8 @@ class CharCtrl {
       // Wall detection: check if there is an obstacle directly in front at an unclimbable height
       let wallNormal = null;
       if (hasMove && dir.length() > 0.01) {
-        // Ray starts 0.45m above feet (feet is at -0.96 relative to capsule center, so -0.51 relative to center)
-        const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.51, 0));
+        // Ray starts ~0.45 above feet (feet at -0.96 relative to capsule center, so -0.51 relative to center, scaled)
+        const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.51 * this._capScaleY, 0));
         const rayDist = this._standEllipsoidWidth + 0.15; // slightly ahead of capsule edge
         const ray = new BABYLON.Ray(rayStart, dir, rayDist);
         const pick = this.scene.pickWithRay(ray, (mesh) => {
@@ -2419,17 +2425,17 @@ class CharCtrl {
         // Step climbing detection
         let stepClimbVelY = 0;
         if ((this.grounded || this._wasClimbingStep) && hasMove && dir.length() > 0.01) {
-          // Ray starting 0.05m above feet (bottom of capsule is -0.9, so -0.85 relative to center)
-          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85, 0));
-          const rayDist = 0.7; // slightly ahead of capsule edge (radius 0.35 + margin 0.35)
+          // Ray starting just above feet (bottom of capsule is -0.9, so -0.85 relative to center, scaled)
+          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85 * this._capScaleY, 0));
+          const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, dir, rayDist);
           const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
             return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
           });
 
           if (lowPick && lowPick.hit) {
-            // Check high ray at step limit height (0.50m above bottom, so -0.40 relative to center)
-            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40, 0));
+            // Check high ray at step limit height (0.50 above bottom, so -0.40 relative to center, scaled)
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, dir, rayDist);
             const highPick = this.scene.pickWithRay(highRay, (mesh) => {
               return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
@@ -2490,15 +2496,15 @@ class CharCtrl {
         // Step climbing detection during roll
         let stepClimbVelY = 0;
         if (this._rollMoving && (this.grounded || this._wasClimbingStep)) {
-          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85, 0));
-          const rayDist = 0.7; // slightly ahead of capsule edge (radius 0.35 + margin 0.35)
+          const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85 * this._capScaleY, 0));
+          const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, this._rollDir, rayDist);
           const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
             return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
           });
 
           if (lowPick && lowPick.hit) {
-            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40, 0));
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, this._rollDir, rayDist);
             const highPick = this.scene.pickWithRay(highRay, (mesh) => {
               return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
@@ -2720,8 +2726,8 @@ class CharCtrl {
     // Clamp to prevent visual separating too far from capsule boundaries.
     // Extremely important: clamp the lower bound tightly (targetLocalY - 0.02) to prevent clipping into stairs/slopes,
     // while keeping a flexible upper bound (targetLocalY + 0.35 on flat ground, but restricted to targetLocalY + 0.16 on ramps for compliance without floating)!
-    const maxUpperSuspension = this.onScalable ? 0.16 : 0.35;
-    this.visualLocalY = Math.max(this.targetLocalY - 0.02, Math.min(this.targetLocalY + maxUpperSuspension, this.visualLocalY));
+    const maxUpperSuspension = (this.onScalable ? 0.16 : 0.35) * this._capScaleY;
+    this.visualLocalY = Math.max(this.targetLocalY - 0.02 * this._capScaleY, Math.min(this.targetLocalY + maxUpperSuspension, this.visualLocalY));
     this.visualMesh.position.y = this.visualLocalY;
 
     // 1b. Kinetic Locomotion Bobbing
@@ -2899,7 +2905,7 @@ class CharCtrl {
       // Sinks 8 cm relative to rest pose for a smooth visual crouch down.
       // Physics mode: capsule bottom is fixed; targetLocalY already set by the shape-switch path.
       if (!this.usePhysics) {
-        this.targetLocalY = this._standMeshY - 0.08;
+        this.targetLocalY = this._standMeshY - 0.08 * this._capScaleY;
       }
 
       let speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
@@ -3070,18 +3076,22 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   scene.animationGroups.forEach(ag => ag.stop());
 
   // Capsule Collider Structure
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4, height: 1.8 }, scene);
+  // capsuleScale: number or {x,y,z} — matches a visual scale baked into the exported GLB
+  const capScale = options.capsuleScale || 1;
+  const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
+  const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4 * capW, height: 1.8 * capY }, scene);
   playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
 
   playerCapsule.checkCollisions = !usePhysics;
-  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35, 0.96, 0.35);
+  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35 * capW, 0.96 * capY, 0.35 * capW);
   playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
 
   // Parent visual mesh to capsule
   charRoot.setParent(playerCapsule);
-  charRoot.position.set(0, usePhysics ? -0.90 : -0.97, 0);
+  charRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
   charRoot.rotation.set(0, 0, 0);
 
   setLoad(90, 'Building controllers...');

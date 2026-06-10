@@ -206,11 +206,59 @@ function applyLiveTransformations() {
   const py = charTransformConfig.PIVOT_Y;
   const pz = charTransformConfig.PIVOT_Z;
 
-  // Apply scale to wrapper
-  activeCharacter.charTransformWrapper.scaling.set(sx, sy, sz);
+  // Scale the capsule mesh itself; the wrapper (child of the capsule) is counter-scaled
+  // so the character's final world scale stays (sx, sy, sz)
+  const capsule = activeCharacter.playerCapsule;
+  const widthScale = Math.max(sx, sz);
+  capsule.scaling.set(widthScale, sy, widthScale);
 
-  // Apply visual root offset (feet position relative to capsule center, shifting opposite of pivot, accounting for scaling and baseline capsule height)
-  activeCharacter.charTransformWrapper.position.set(-px * sx, -0.97 * (1 - sy) - py * sy, -pz * sz);
+  activeCharacter.charTransformWrapper.scaling.set(sx / widthScale, 1, sz / widthScale);
+
+  // Visual root offset in capsule-local space (capsule scaling multiplies it back to world units)
+  activeCharacter.charTransformWrapper.position.set(-px * sx / widthScale, -py, -pz * sz / widthScale);
+
+  // Collision ellipsoid is in absolute units — not affected by mesh scaling, set explicitly
+  if (capsule.ellipsoid) {
+    capsule.ellipsoid.set(0.35 * widthScale, 0.96 * sy, 0.35 * widthScale);
+  }
+  // Keep controller stand/crouch heights in sync so its per-frame ellipsoid lerp targets the scaled size
+  const ctrl = activeCharacter.charCtrl;
+  if (ctrl) {
+    ctrl._standEllipsoidY = 0.96 * sy;
+    ctrl._standEllipsoidWidth = 0.35 * widthScale;
+    ctrl._crouchEllipsoidY = 0.55 * sy;
+    ctrl._capScaleY = sy;
+    ctrl._capScaleW = widthScale;
+
+    // Update Havok physics shapes dynamically if enabled
+    if (ctrl.usePhysics && ctrl.physicsBody) {
+      if (ctrl._standShape) ctrl._standShape.dispose();
+      if (ctrl._crouchShape) ctrl._crouchShape.dispose();
+
+      const physScaleY = sy;
+      const physScaleW = widthScale;
+
+      const standStart = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
+      const standEnd = new BABYLON.Vector3(0, 0.55 * physScaleY, 0);
+      ctrl._standShape = new BABYLON.PhysicsShapeCapsule(standStart, standEnd, 0.35 * physScaleW, scene);
+
+      const crouchStart = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
+      const crouchEnd = new BABYLON.Vector3(0, -0.15 * physScaleY, 0);
+      ctrl._crouchShape = new BABYLON.PhysicsShapeCapsule(crouchStart, crouchEnd, 0.35 * physScaleW, scene);
+
+      ctrl._standShape.material = { friction: 0, restitution: 0 };
+      ctrl._crouchShape.material = { friction: 0, restitution: 0 };
+
+      const isTempStandingAction = ctrl._isInAction() && (ctrl.state === 'SPELL_ENTER' || ctrl.state === 'SPELL_SHOOT' || ctrl.state === 'SPELL_EXIT' || ctrl.state === 'INTERACT');
+      const useCrouchHeight = (ctrl.crouching && !isTempStandingAction) || ctrl.state === 'ROLL';
+      ctrl.physicsBody.shape = useCrouchHeight ? ctrl._crouchShape : ctrl._standShape;
+
+      ctrl.physicsBody.setMassProperties({
+        mass: 1,
+        inertia: new BABYLON.Vector3(0, 0, 0)
+      });
+    }
+  }
 }
 
 function syncCharTransformToUI() {
@@ -1034,9 +1082,44 @@ async function loadDefaultCharacter() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// FBX → GLB CONVERSION (server-side via fbx2gltf)
+// ═══════════════════════════════════════════════════════════
+function isFbxFile(file) {
+  return /\.fbx$/i.test(file.name);
+}
+
+// Converts an FBX File to a GLB File via /api/convert-fbx.
+// Returns the original file untouched if it isn't FBX.
+async function maybeConvertFbxFile(file) {
+  if (!isFbxFile(file)) return file;
+  if (!isServerAvailable) {
+    throw new Error('FBX import requires the server. Start it first (npm start).');
+  }
+  showLoading(`Converting ${file.name} to GLB…`);
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  const res = await fetch('/api/convert-fbx', { method: 'POST', body: formData });
+  if (!res.ok) {
+    const errJson = await res.json().catch(() => ({}));
+    throw new Error(errJson.error || 'FBX conversion failed on server');
+  }
+  const glbBuffer = await res.arrayBuffer();
+  return new File([glbBuffer], file.name.replace(/\.fbx$/i, '.glb'), { type: 'model/gltf-binary' });
+}
+
+// ═══════════════════════════════════════════════════════════
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
 async function loadCharacterMeshFile(file, preloadedBuffer = null) {
+  if (!preloadedBuffer && isFbxFile(file)) {
+    try {
+      file = await maybeConvertFbxFile(file);
+    } catch (err) {
+      hideLoading();
+      showToast(err.message, true);
+      return;
+    }
+  }
   if (!preloadedBuffer) {
     resetCharacterTransform();
     animationsGlbBuffer = null;
@@ -1183,6 +1266,16 @@ async function loadAnimationBatchFile(file) {
   if (!characterGlbBuffer) {
     showToast('Load a character mesh first!', true);
     return;
+  }
+
+  if (isFbxFile(file)) {
+    try {
+      file = await maybeConvertFbxFile(file);
+    } catch (err) {
+      hideLoading();
+      showToast(err.message, true);
+      return;
+    }
   }
 
   resetLoaderSteps();
@@ -2535,8 +2628,8 @@ function renderAnimationEventsTab() {
     </div>
     <div class="event-targets">
       ${targets.map(target => {
-        const events = animationEvents[target.key] || [];
-        return `
+    const events = animationEvents[target.key] || [];
+    return `
           <div class="event-target-card">
             <div class="event-target-head">
               <strong>${escapeHtml(target.label)}</strong>
@@ -2556,7 +2649,7 @@ function renderAnimationEventsTab() {
             ` : `<div class="event-marker-empty">No markers yet</div>`}
           </div>
         `;
-      }).join('')}
+  }).join('')}
     </div>
   `;
 
@@ -3152,10 +3245,10 @@ function setupDropzone(zoneId, inputId, onFile) {
     e.preventDefault();
     zone.classList.remove('dragover');
     const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.glb')) {
+    if (file && /\.(glb|fbx)$/i.test(file.name)) {
       onFile(file);
     } else {
-      showToast('Please import a valid .glb file', true);
+      showToast('Please import a valid .glb or .fbx file', true);
     }
   });
 }
@@ -3195,7 +3288,7 @@ function updateExportCode() {
     }
   });
 
-  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: 'character_animated.glb',\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
+  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: 'character_animated.glb',\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
   savePreferences();

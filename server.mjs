@@ -20,6 +20,7 @@ const multer = require('multer');
 
 import { mergeGLBs, analyzeGLB } from './js/core/merge_api.mjs';
 import { autoRigGLB, guessJoints } from './js/core/autorig_api.mjs';
+import { convertFBXToGLB } from './js/core/fbx_api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -92,6 +93,28 @@ app.post('/api/merge', upload.fields([
     console.log(`[merge] Done. Output: ${(merged.length / 1024 / 1024).toFixed(2)} MB`);
   } catch (err) {
     console.error('[merge] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Convert FBX → GLB ────────────────────────────────────────────────────────
+// POST /api/convert-fbx
+// Body: multipart with field "file" (single FBX)
+// Response: binary .glb (materials fixed + RootNode transform flattened)
+app.post('/api/convert-fbx', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
+    console.log(`[convert-fbx] ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(2)} MB)`);
+
+    const glb = await convertFBXToGLB(req.file.buffer, req.file.originalname);
+
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Disposition', 'attachment; filename="converted.glb"');
+    res.setHeader('Content-Length', glb.length);
+    res.end(glb);
+    console.log(`[convert-fbx] Done. Output: ${(glb.length / 1024 / 1024).toFixed(2)} MB`);
+  } catch (err) {
+    console.error('[convert-fbx] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });

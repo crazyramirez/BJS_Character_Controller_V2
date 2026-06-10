@@ -99,7 +99,7 @@ function worldMatrixOf(node, parentMap, cache) {
 }
 
 // ── Mesh bounds (world space) ────────────────────────────────────────────────
-function computeWorldBounds(doc, identityMeshes = new Set()) {
+function computeWorldBounds(doc, identityMeshes = new Set(), bodyMeshes = null) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const min = [Infinity, Infinity, Infinity];
@@ -108,6 +108,7 @@ function computeWorldBounds(doc, identityMeshes = new Set()) {
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     // Skinned vertices live in skin space — the node chain does not apply
     const world = identityMeshes.has(mesh)
       ? MAT4_IDENTITY
@@ -129,6 +130,65 @@ function computeWorldBounds(doc, identityMeshes = new Set()) {
   return { min, max };
 }
 
+// ── Body mesh selection ──────────────────────────────────────────────────────
+// Scene files (Sketchfab & co.) often bundle the character with a ground
+// plane, props and light gizmos. Rigging/measuring against ALL meshes ruins
+// the joint guess and skins the floor to the skeleton. Pick the "body": the
+// densest tall mesh plus everything contained in (or near) its bounding box.
+function selectBodyMeshes(doc, identityMeshes = new Set()) {
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  const entries = [];
+  const seen = new Set();
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh || seen.has(mesh)) continue;
+    seen.add(mesh);
+    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    const min = [1 / 0, 1 / 0, 1 / 0], max = [-1 / 0, -1 / 0, -1 / 0];
+    let count = 0;
+    for (const prim of mesh.listPrimitives()) {
+      const arr = prim.getAttribute('POSITION')?.getArray();
+      if (!arr) continue;
+      count += arr.length / 3;
+      for (let i = 0; i < arr.length; i += 3) {
+        const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
+        for (let k = 0; k < 3; k++) {
+          if (p[k] < min[k]) min[k] = p[k];
+          if (p[k] > max[k]) max[k] = p[k];
+        }
+      }
+    }
+    if (count === 0 || !Number.isFinite(min[0])) continue;
+    entries.push({
+      mesh, min, max, count,
+      height: max[1] - min[1],
+      footprint: Math.max(1e-6, (max[0] - min[0]) * (max[2] - min[2])),
+    });
+  }
+  if (entries.length <= 1) return null; // single mesh → no filtering needed
+
+  // Main body = densest tall mesh
+  let main = entries[0];
+  for (const e of entries) {
+    if (e.count * e.height > main.count * main.height) main = e;
+  }
+  const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
+  const keep = new Set();
+  for (const e of entries) {
+    const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
+    const inside =
+      cx > main.min[0] - m && cx < main.max[0] + m &&
+      cy > main.min[1] - m && cy < main.max[1] + m &&
+      cz > main.min[2] - m && cz < main.max[2] + m;
+    if (e === main || (inside && e.footprint <= 2.5 * main.footprint)) keep.add(e.mesh);
+  }
+  if (keep.size === entries.length) return null;
+  const dropped = entries.filter(e => !keep.has(e.mesh)).length;
+  console.log(`[autorig] Ignoring ${dropped} non-body mesh(es) (ground/props/lights) for rigging.`);
+  return keep;
+}
+
 // ── Default joint guess from bounds (T/A-pose humanoid heuristics) ───────────
 /**
  * Returns Mixamo-named joint world positions guessed from the mesh bounding box.
@@ -139,7 +199,7 @@ function computeWorldBounds(doc, identityMeshes = new Set()) {
  * stick out forward, so the lowest vertices are biased toward the facing side.
  * Returns +1 (faces +Z, Mixamo convention) or -1 (faces -Z).
  */
-function detectForwardZ(doc, { min, max }, identityMeshes = new Set()) {
+function detectForwardZ(doc, { min, max }, identityMeshes = new Set(), bodyMeshes = null) {
   const H = max[1] - min[1];
   const cz = (min[2] + max[2]) / 2;
   const footY = min[1] + 0.12 * H;
@@ -150,6 +210,7 @@ function detectForwardZ(doc, { min, max }, identityMeshes = new Set()) {
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
@@ -210,7 +271,7 @@ export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
 // The bounds guess assumes ideal T-pose proportions. Real meshes vary: A-poses,
 // wide stances, hunched spines, big heads. Analyze the actual vertex cloud and
 // override the bounds guess where the measurement is reliable.
-function collectWorldVertices(doc, identityMeshes = new Set(), maxVerts = 200000) {
+function collectWorldVertices(doc, identityMeshes = new Set(), bodyMeshes = null, maxVerts = 200000) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const pts = [];
@@ -218,6 +279,7 @@ function collectWorldVertices(doc, identityMeshes = new Set(), maxVerts = 200000
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     for (const prim of mesh.listPrimitives()) {
       total += (prim.getAttribute('POSITION')?.getCount()) || 0;
     }
@@ -226,6 +288,7 @@ function collectWorldVertices(doc, identityMeshes = new Set(), maxVerts = 200000
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
@@ -396,7 +459,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 // point sampling, classifies limbs by centerline thickness, and places the
 // Mixamo joints along the limb centerlines.
 
-function voxelizeSolid(doc, identityMeshes, bounds, N = 64) {
+function voxelizeSolid(doc, identityMeshes, bounds, N = 64, bodyMeshes = null) {
   const { min, max } = bounds;
   const extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const cell = Math.max(...extent) / N;
@@ -422,6 +485,7 @@ function voxelizeSolid(doc, identityMeshes, bounds, N = 64) {
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, matCache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION')?.getArray();
@@ -534,9 +598,9 @@ function voxelBFS(vox, sources) {
  * Pose-independent joint guess. Returns { joints, height, bounds, confidence,
  * method:'topology' } or null when the topology cannot be resolved.
  */
-export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 1) {
+export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 1, bodyMeshes = null) {
   // 96³: fine enough that touching thighs/arms don't fuse prematurely
-  const vox = voxelizeSolid(doc, identityMeshes, bounds, 96);
+  const vox = voxelizeSolid(doc, identityMeshes, bounds, 96, bodyMeshes);
   if (!vox || vox.solid < 500) return null;
   const { grid, nx, ny, origin, cell } = vox;
   const worldOf = (i) => {
@@ -806,14 +870,14 @@ export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, identityMeshes, bounds, forwardZ) {
-  const verts = collectWorldVertices(doc, identityMeshes);
+function guessJointsAuto(doc, identityMeshes, bounds, forwardZ, bodyMeshes = null) {
+  const verts = collectWorldVertices(doc, identityMeshes, bodyMeshes);
   const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
   sliced.method = 'slicing';
 
   let topo = null;
   try {
-    topo = guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ);
+    topo = guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ, bodyMeshes);
   } catch (e) {
     console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
   }
@@ -914,9 +978,10 @@ export async function guessJoints(buffer) {
   for (const node of doc.getRoot().listNodes()) {
     if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
   }
-  const bounds = computeWorldBounds(doc, skinnedMeshes);
-  const fwd = detectForwardZ(doc, bounds, skinnedMeshes);
-  const guess = guessJointsAuto(doc, skinnedMeshes, bounds, fwd);
+  const bodyMeshes = selectBodyMeshes(doc, skinnedMeshes);
+  const bounds = computeWorldBounds(doc, skinnedMeshes, bodyMeshes);
+  const fwd = detectForwardZ(doc, bounds, skinnedMeshes, bodyMeshes);
+  const guess = guessJointsAuto(doc, skinnedMeshes, bounds, fwd, bodyMeshes);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
@@ -1166,9 +1231,10 @@ export async function autoRigGLB(buffer, options = {}) {
   }
   const previouslySkinned = new Set();
 
-  const bounds = computeWorldBounds(doc, previouslySkinned);
-  const forwardZ = detectForwardZ(doc, bounds, previouslySkinned);
-  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ);
+  const bodyMeshes = selectBodyMeshes(doc, previouslySkinned);
+  const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
+  const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
+  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes);
   const joints = { ...guess.joints, ...(options.joints || {}) };
   const H = guess.height;
 
@@ -1208,6 +1274,8 @@ export async function autoRigGLB(buffer, options = {}) {
   for (const node of root.listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
+    // Non-body meshes (ground, props, lights) stay static: no bake, no skin
+    if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     meshNodes.push(node);
     if (bakedMeshes.has(mesh)) continue; // shared mesh: bake once with first node's matrix
     bakedMeshes.add(mesh);
