@@ -490,6 +490,18 @@ class AnimCtrl {
   has(name) { return this.g.has(name); }
 
   setAnimation(name, animationGroup) {
+    // If this group is already mapped to another action, clone it so each
+    // action keeps independent playback state, weights and frame ranges
+    // (allows reusing e.g. Walk for both Walk_Loop and Sprint_Loop).
+    for (const [otherName, otherAg] of this.g) {
+      if (otherName !== name && otherAg === animationGroup) {
+        const clone = animationGroup.clone(`${animationGroup.name}__${name}`);
+        clone.__isSharedClone = true;
+        animationGroup = clone;
+        break;
+      }
+    }
+
     const oldAg = this.g.get(name);
     let wasPlaying = false;
     let speedRatio = 1.0;
@@ -504,6 +516,7 @@ class AnimCtrl {
     }
 
     this.g.set(name, animationGroup);
+    if (oldAg && oldAg.__isSharedClone && oldAg !== animationGroup) oldAg.dispose();
 
     // If the locomotion blend tree is active and we replaced one of its components
     if (this.locoGroup && this.locoGroup.isPlaying && ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop'].includes(name)) {

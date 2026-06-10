@@ -201,10 +201,10 @@ function resetCharacterTransform() {
   const sX = document.getElementById('slider-scale-x');
   const sY = document.getElementById('slider-scale-y');
   const sZ = document.getElementById('slider-scale-z');
-  if (sU) { sU.min = "0.1"; sU.max = "5.0"; }
-  if (sX) { sX.min = "0.1"; sX.max = "5.0"; }
-  if (sY) { sY.min = "0.1"; sY.max = "5.0"; }
-  if (sZ) { sZ.min = "0.1"; sZ.max = "5.0"; }
+  if (sU) { sU.min = "0.01"; sU.max = "5.0"; }
+  if (sX) { sX.min = "0.01"; sX.max = "5.0"; }
+  if (sY) { sY.min = "0.01"; sY.max = "5.0"; }
+  if (sZ) { sZ.min = "0.01"; sZ.max = "5.0"; }
 
   const pX = document.getElementById('slider-pivot-x');
   const pY = document.getElementById('slider-pivot-y');
@@ -635,23 +635,26 @@ async function initBabylonScene() {
   propMat.roughness = 0.7;
 
   const platform = BABYLON.MeshBuilder.CreateCylinder('platform', { diameter: 6, height: 0.5 }, scene);
-  platform.position.set(5, 0.25, 5);
+  platform.position.set(7, 0.25, 5);
   platform.checkCollisions = true;
   platform.material = propMat;
+  platform.receiveShadows = true;
   shadowGenerator.addShadowCaster(platform);
 
-  const ramp = BABYLON.MeshBuilder.CreateBox('ramp', { width: 3, height: 0.3, depth: 6 }, scene);
+  const ramp = BABYLON.MeshBuilder.CreateBox('ramp', { width: 6, height: 0.3, depth: 6 }, scene);
   ramp.position.set(-6, 0.5, 4);
   ramp.rotation.x = Math.PI / 10;
   ramp.checkCollisions = true;
   ramp.material = propMat;
+  ramp.receiveShadows = true;
   shadowGenerator.addShadowCaster(ramp);
 
-  for (let i = 0; i < 5; i++) {
-    const step = BABYLON.MeshBuilder.CreateBox(`step_${i}`, { width: 3, height: 0.2, depth: 0.5 }, scene);
-    step.position.set(0, 0.1 + 0.2 * i, -5 + 0.4 * i);
+  for (let i = 0; i < 15; i++) {
+    const step = BABYLON.MeshBuilder.CreateBox(`step_${i}`, { width: 7, height: 0.2, depth: 0.5 }, scene);
+    step.position.set(0, 0.1 + 0.2 * i, 8 + 0.4 * i);
     step.checkCollisions = true;
     step.material = propMat;
+    step.receiveShadows = true;
     shadowGenerator.addShadowCaster(step);
   }
 
@@ -1873,6 +1876,8 @@ function applyAnimationsToController() {
         activeCharacter.animCtrl.setAnimationRanges(stdKey.key, mapping.from, mapping.to);
       }
     } else {
+      const oldAg = activeCharacter.animCtrl.g.get(stdKey.key);
+      if (oldAg && oldAg.__isSharedClone) { oldAg.stop(); oldAg.dispose(); }
       activeCharacter.animCtrl.g.delete(stdKey.key);
     }
   });
