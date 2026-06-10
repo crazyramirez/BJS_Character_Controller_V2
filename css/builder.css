@@ -127,7 +127,7 @@ body::before {
    ============================================================ */
 
 #sidebar {
-  width: 480px;
+  width: 500px;
   height: 100%;
   background: var(--bg-panel);
   backdrop-filter: blur(28px) saturate(170%);
@@ -328,8 +328,8 @@ body::before {
   min-height: 96px;
   padding: 11px;
   border-radius: var(--r-md);
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
   color: var(--text-secondary);
   text-align: left;
   cursor: pointer;
@@ -371,8 +371,8 @@ body::before {
   font-family: var(--font-mono);
   font-size: 0.52rem;
   color: var(--text-muted);
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.18);
   border-radius: 999px;
   padding: 2px 5px;
 }
@@ -392,8 +392,8 @@ body::before {
 .scenario-chip {
   min-height: 28px;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(0,0,0,0.16);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.16);
   color: var(--text-muted);
   font-size: 0.58rem;
   font-weight: 800;
@@ -421,8 +421,8 @@ body::before {
 .test-action {
   min-height: 34px;
   border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
   color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 800;
@@ -445,9 +445,9 @@ body::before {
 .test-lab-metrics div {
   min-width: 0;
   padding: 8px;
-  border: 1px solid rgba(255,255,255,0.07);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 6px;
-  background: rgba(0,0,0,0.16);
+  background: rgba(0, 0, 0, 0.16);
 }
 
 .test-lab-metrics span {
@@ -741,8 +741,13 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @keyframes autorigFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .autorig-mode-badge {
@@ -771,8 +776,17 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @keyframes autorigPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.18); opacity: 0.75; }
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.18);
+    opacity: 0.75;
+  }
 }
 
 .autorig-badge-sub {
@@ -915,18 +929,21 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
   pointer-events: none;
 }
+
 .viewport-offline-notice svg {
   width: 14px;
   height: 14px;
   fill: #fbbf24;
   flex-shrink: 0;
 }
+
 .viewport-offline-notice span {
   font-size: 0.73rem;
   font-weight: 600;
   color: #fbbf24;
   letter-spacing: 0.01em;
 }
+
 .viewport-offline-notice code {
   font-family: var(--font-mono);
   font-size: 0.70rem;
@@ -1202,9 +1219,9 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .event-target-card {
-  border: 1px solid rgba(255,255,255,0.07);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--r-md);
-  background: rgba(255,255,255,0.025);
+  background: rgba(255, 255, 255, 0.025);
   padding: 9px;
 }
 
@@ -1246,7 +1263,7 @@ input[type="range"]::-moz-range-thumb {
   min-height: 28px;
   padding: 4px 5px;
   border-radius: 6px;
-  background: rgba(0,0,0,0.18);
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .event-marker-type,
@@ -1292,7 +1309,7 @@ input[type="range"]::-moz-range-thumb {
 .event-marker-empty,
 .events-empty {
   padding: 10px;
-  border: 1px dashed rgba(255,255,255,0.09);
+  border: 1px dashed rgba(255, 255, 255, 0.09);
   border-radius: 6px;
   color: var(--text-muted);
   font-size: 0.67rem;
@@ -1749,17 +1766,37 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes pulse-glow {
-  0%, 100% { transform: scale(0.9); opacity: 0.4; }
-  50% { transform: scale(1.15); opacity: 0.75; }
+
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.4;
+  }
+
+  50% {
+    transform: scale(1.15);
+    opacity: 0.75;
+  }
 }
 
 @keyframes pulse-icon {
-  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 4px var(--accent-glow)); }
-  50% { transform: scale(1.1); filter: drop-shadow(0 0 12px rgba(6, 182, 212, 0.7)); }
+
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 4px var(--accent-glow));
+  }
+
+  50% {
+    transform: scale(1.1);
+    filter: drop-shadow(0 0 12px rgba(6, 182, 212, 0.7));
+  }
 }
 
 .loader-title {
@@ -1959,6 +1996,7 @@ input[type="range"]::-moz-range-thumb {
    ============================================================ */
 
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {
@@ -2015,8 +2053,17 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.6; transform: scale(0.85); }
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.6;
+    transform: scale(0.85);
+  }
 }
 
 /* ============================================================
@@ -2039,8 +2086,15 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @keyframes slideIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .file-status-bar .status-icon {
@@ -2071,7 +2125,9 @@ input[type="range"]::-moz-range-thumb {
   flex-shrink: 0;
 }
 
-.btn-clear:hover { color: var(--danger); }
+.btn-clear:hover {
+  color: var(--danger);
+}
 
 /* ============================================================
    SMALL DROPZONE
@@ -2086,8 +2142,13 @@ input[type="range"]::-moz-range-thumb {
   height: 28px;
 }
 
-.dropzone-sm p { font-size: 0.80rem; }
-.dropzone-sm span { font-size: 0.72rem; }
+.dropzone-sm p {
+  font-size: 0.80rem;
+}
+
+.dropzone-sm span {
+  font-size: 0.72rem;
+}
 
 /* ============================================================
    MERGE PROGRESS BAR
@@ -2164,6 +2225,7 @@ input[type="range"]::-moz-range-thumb {
   fill: var(--warn);
   color: var(--warn);
 }
+
 .server-offline-banner-icon svg {
   width: 20px;
   height: 20px;
@@ -2174,6 +2236,7 @@ input[type="range"]::-moz-range-thumb {
   flex: 1;
   min-width: 0;
 }
+
 .server-offline-banner-body strong {
   display: block;
   font-size: 0.8rem;
@@ -2181,12 +2244,14 @@ input[type="range"]::-moz-range-thumb {
   color: #fbbf24;
   margin-bottom: 4px;
 }
+
 .server-offline-banner-body p {
   font-size: 0.73rem;
   color: var(--text-secondary);
   margin: 0 0 6px;
   line-height: 1.45;
 }
+
 .server-offline-banner-body ol {
   margin: 0;
   padding-left: 16px;
@@ -2194,11 +2259,13 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-secondary);
   line-height: 1.7;
 }
+
 .server-offline-banner-body ol li strong {
   display: inline;
   color: var(--text-primary);
   font-weight: 600;
 }
+
 .server-offline-banner-body code {
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -2207,6 +2274,7 @@ input[type="range"]::-moz-range-thumb {
   padding: 1px 5px;
   border-radius: 3px;
 }
+
 .offline-banner-link {
   color: #fbbf24;
   text-decoration: underline;
@@ -2215,6 +2283,7 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.72rem;
   word-break: break-all;
 }
+
 .offline-banner-link:hover {
   color: #fde68a;
 }
@@ -2233,7 +2302,9 @@ input[type="range"]::-moz-range-thumb {
   justify-content: flex-start;
 }
 
-.collapsible-header:hover { color: var(--text-primary); }
+.collapsible-header:hover {
+  color: var(--text-primary);
+}
 
 .chevron {
   margin-left: auto;
@@ -2366,14 +2437,16 @@ input[type="range"]::-moz-range-thumb {
   transition: color 0.15s;
 }
 
-.skeleton-bone:hover .bone-name { color: var(--text-primary); }
+.skeleton-bone:hover .bone-name {
+  color: var(--text-primary);
+}
 
 .bone-children-count {
   font-size: 0.60rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.07);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 4px;
   padding: 1px 5px;
   flex-shrink: 0;
@@ -2418,9 +2491,17 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .health-score.excellent,
-.health-score.good { color: #34d399; }
-.health-score.needs-review { color: #fbbf24; }
-.health-score.blocked { color: #fb7185; }
+.health-score.good {
+  color: #34d399;
+}
+
+.health-score.needs-review {
+  color: #fbbf24;
+}
+
+.health-score.blocked {
+  color: #fb7185;
+}
 
 .health-title {
   display: flex;
@@ -2442,7 +2523,7 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text-secondary);
 }
 
@@ -2462,7 +2543,7 @@ input[type="range"]::-moz-range-thumb {
 .health-metric {
   min-width: 0;
   padding: 7px 8px;
-  border: 1px solid rgba(255,255,255,0.07);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.16);
 }
@@ -2510,10 +2591,21 @@ input[type="range"]::-moz-range-thumb {
   background: var(--text-muted);
 }
 
-.health-check.pass .health-dot { background: #34d399; }
-.health-check.info .health-dot { background: #38bdf8; }
-.health-check.warn .health-dot { background: #fbbf24; }
-.health-check.error .health-dot { background: #fb7185; }
+.health-check.pass .health-dot {
+  background: #34d399;
+}
+
+.health-check.info .health-dot {
+  background: #38bdf8;
+}
+
+.health-check.warn .health-dot {
+  background: #fbbf24;
+}
+
+.health-check.error .health-dot {
+  background: #fb7185;
+}
 
 .health-check strong {
   display: block;
@@ -2625,7 +2717,9 @@ input[type="range"]::-moz-range-thumb {
   transform: scale(1.1);
 }
 
-.anim-entry:hover .anim-entry-name { color: var(--text-primary); }
+.anim-entry:hover .anim-entry-name {
+  color: var(--text-primary);
+}
 
 .btn-anim-delete {
   background: transparent;
@@ -2642,7 +2736,9 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0;
 }
 
-.anim-entry:hover .btn-anim-delete { opacity: 1; }
+.anim-entry:hover .btn-anim-delete {
+  opacity: 1;
+}
 
 .btn-anim-delete:hover {
   color: var(--danger);
