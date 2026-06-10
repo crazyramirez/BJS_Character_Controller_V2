@@ -47,9 +47,9 @@ const BONE_MAP = {
   // ── Root / Spine ────────────────────────────────────────
   'pelvis': ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
   'spine_01': ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback'],
-  'spine_02': ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine'],
-  'spine_03': ['spine2', 'mixamorig:spine2', 'chest', 'upperchest', 'upperspine', 'upperbody'],
-  'neck_01': ['neck', 'mixamorig:neck', 'neck1'],
+  'spine_02': ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine', 'chest'],
+  'spine_03': ['spine2', 'mixamorig:spine2', 'upperchest', 'upper_chest', 'upperspine', 'upperbody'],
+  'neck_01': ['neck', 'mixamorig:neck'],
   'neck_02': ['neck1', 'mixamorig:neck1'],
   'head': ['head', 'mixamorig:head'],
 
@@ -78,22 +78,22 @@ const BONE_MAP = {
   // ── Left leg ──────────────────────────────────────────
   //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl    Biped: lthigh
   'thigh_l': ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
-    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh'],
+    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh', 'l_upperleg', 'upperleg_l'],
   //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl    Biped: lcalf
   'calf_l': ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
-    'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee', 'lcalf'],
+    'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee', 'lcalf', 'l_lowerleg', 'lowerleg_l'],
   'foot_l': ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l', 'lfoot'],
-  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'ltoe0', 'ltoe'],
+  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'lefttoes', 'ltoe0', 'ltoe', 'l_toebase', 'toebase_l'],
   'ball_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
 
   // ── Right leg ────────────────────────────────────────
   //   Biped: rthigh, rcalf, rfoot
   'thigh_r': ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
-    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh'],
+    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh', 'r_upperleg', 'upperleg_r'],
   'calf_r': ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
-    'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee', 'rcalf'],
+    'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee', 'rcalf', 'r_lowerleg', 'lowerleg_r'],
   'foot_r': ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r', 'rfoot'],
-  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'rtoe0', 'rtoe'],
+  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'righttoes', 'rtoe0', 'rtoe', 'r_toebase', 'toebase_r'],
   'ball_r': ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
 
   // ── Fingers ────────────────────────────────────────────
@@ -151,15 +151,25 @@ function stripBJSSuffix(name) {
  *   - Biped:   Bip001 L UpperArm       → lupperarm (prefix stripped)
  *   - BJS:     LeftArm_27              → leftarm (numeric suffix stripped first)
  */
-function normalizeName(name) {
+/**
+ * Like normalizeName but WITHOUT stripping the BJS numeric suffix.
+ * Use for BONE_MAP keys/aliases — literals like 'spine_02' or 'neck_01' must
+ * NOT have their numeric part removed (stripBJSSuffix would turn 'spine_02' → 'spine').
+ */
+function aliasNorm(name) {
   if (!name) return '';
-  let n = stripBJSSuffix(name).toLowerCase();
+  let n = name.toLowerCase();
 
+  // Maya/FBX namespace: 'char01:Hips' → 'hips' (also covers 'mixamorig:Hips')
+  if (n.includes(':')) n = n.split(':').pop();
+
+  // VRM center bones: J_Bip_C_Hips → hips
+  n = n.replace(/^j_?bip_?c_?/i, '');
   // VRM: J_Bip_L_UpperArm → l_upperarm, J_Bip_R_UpperArm → r_upperarm
   n = n.replace(/^j_?bip_?([lr])_?/i, '$1_');
 
-  // Common rig prefixes to strip  (mixamorig, bip001, def-, etc.)
-  n = n.replace(/^(mixamorig\d*|armature|char|bi|bip\d+|biped|def[-_]?|root|gltf_created_\d+_)\b[:_ ]*/i, '');
+  // Common rig prefixes to strip  (mixamorig, bip001, def-, valvebiped, cc_base, etc.)
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|char|bi|bip\d+|biped|def[-_]?|root|gltf_created_\d+_)\b[:_ ]*/i, '');
 
   // Rigify/Blender: .L / .R side suffix → l / r (keep for later)
   n = n.replace(/\.([lr])$/i, '$1');
@@ -169,6 +179,11 @@ function normalizeName(name) {
   n = n.replace(/[:_\-\.\s]/g, '');
 
   return n;
+}
+
+function normalizeName(name) {
+  if (!name) return '';
+  return aliasNorm(stripBJSSuffix(name));
 }
 
 // ── Skeleton type fingerprinting ─────────────────────────────────────────────
@@ -205,13 +220,14 @@ const SKELETON_TYPES = [
     test: (names) =>
       names.some(n => n === 'hips') &&
       (names.some(n => n === 'leftupperleg' || n === 'rightupperleg') ||
-        names.some(n => n === 'leftshoulder' && n === 'spine')),
+        (names.some(n => n === 'leftshoulder') && names.some(n => n === 'spine'))),
   },
   {
     id: 'vrm',
     label: 'VRM / VRoid',
     color: '#a855f7',
-    test: (names) =>
+    // Test raw names — normalizeName strips the J_Bip prefix that identifies VRM
+    testRaw: (names) =>
       names.some(n => n.startsWith('j_bip') || n.startsWith('jbip')) ||
       names.some(n => n.includes('_bip_') || n.includes('vrm')),
   },
@@ -687,28 +703,43 @@ function mat4Mul(a, b) {
   return out;
 }
 
-// Invert a rigid-body (rotation + translation, no scale) column-major 4x4 matrix
+// Invert an affine (rotation + translation + scale) column-major 4x4 matrix.
+// Handles scaled IBMs (e.g. ×100 from Sketchfab/Blender armature scale) where a
+// rigid transpose-based inverse would corrupt both rotation and translation.
 function invertRigidMat4(m) {
-  const R00 = m[0], R10 = m[1], R20 = m[2];
-  const R01 = m[4], R11 = m[5], R21 = m[6];
-  const R02 = m[8], R12 = m[9], R22 = m[10];
+  const a00 = m[0], a10 = m[1], a20 = m[2];
+  const a01 = m[4], a11 = m[5], a21 = m[6];
+  const a02 = m[8], a12 = m[9], a22 = m[10];
   const tx = m[12], ty = m[13], tz = m[14];
+  const det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
+  if (!det || !Number.isFinite(det)) {
+    // Degenerate matrix — fall back to identity to avoid NaN propagation
+    return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  }
+  const id = 1 / det;
+  const i00 = (a11 * a22 - a12 * a21) * id, i01 = (a02 * a21 - a01 * a22) * id, i02 = (a01 * a12 - a02 * a11) * id;
+  const i10 = (a12 * a20 - a10 * a22) * id, i11 = (a00 * a22 - a02 * a20) * id, i12 = (a02 * a10 - a00 * a12) * id;
+  const i20 = (a10 * a21 - a11 * a20) * id, i21 = (a01 * a20 - a00 * a21) * id, i22 = (a00 * a11 - a01 * a10) * id;
   return new Float32Array([
-    R00, R01, R02, 0,
-    R10, R11, R12, 0,
-    R20, R21, R22, 0,
-    -(R00 * tx + R10 * ty + R20 * tz),
-    -(R01 * tx + R11 * ty + R21 * tz),
-    -(R02 * tx + R12 * ty + R22 * tz),
+    i00, i10, i20, 0,
+    i01, i11, i21, 0,
+    i02, i12, i22, 0,
+    -(i00 * tx + i01 * ty + i02 * tz),
+    -(i10 * tx + i11 * ty + i12 * tz),
+    -(i20 * tx + i21 * ty + i22 * tz),
     1,
   ]);
 }
 
-// Extract rotation quaternion from a column-major 4x4 matrix (Shepperd method)
+// Extract rotation quaternion from a column-major 4x4 matrix (Shepperd method).
+// Basis columns are normalized first so scaled matrices yield correct rotations.
 function mat4RotToQuat(m) {
-  const m00 = m[0], m10 = m[1], m20 = m[2];
-  const m01 = m[4], m11 = m[5], m21 = m[6];
-  const m02 = m[8], m12 = m[9], m22 = m[10];
+  const s0 = Math.hypot(m[0], m[1], m[2]) || 1;
+  const s1 = Math.hypot(m[4], m[5], m[6]) || 1;
+  const s2 = Math.hypot(m[8], m[9], m[10]) || 1;
+  const m00 = m[0] / s0, m10 = m[1] / s0, m20 = m[2] / s0;
+  const m01 = m[4] / s1, m11 = m[5] / s1, m21 = m[6] / s1;
+  const m02 = m[8] / s2, m12 = m[9] / s2, m22 = m[10] / s2;
   const trace = m00 + m11 + m22;
   let x, y, z, w;
   if (trace > 0) {
@@ -788,36 +819,84 @@ function extractBindPoseFromIBMs(doc) {
 
   return { bindRotByName, bindWorldByName };
 }
+// Normalized-alias → canonical-key lookup table (built once).
+// Maps every BONE_MAP key and alias, in normalized form, to its canonical key.
+const NORM_TO_CANON = (() => {
+  const map = new Map();
+  for (const [key, alts] of Object.entries(BONE_MAP)) {
+    const kn = aliasNorm(key);
+    if (kn && !map.has(kn)) map.set(kn, key);
+    for (const alt of alts) {
+      const an = aliasNorm(alt);
+      if (an && !map.has(an)) map.set(an, key);
+    }
+  }
+  return map;
+})();
+
+/** Side tag of a normalized bone name: 'l', 'r' or '' (center/unknown). */
+function sideOf(n) {
+  if (n.includes('left')) return 'l';
+  if (n.includes('right')) return 'r';
+  if (/(^|[0-9_])l($|[0-9_])|l$/.test(n)) return 'l';
+  if (/(^|[0-9_])r($|[0-9_])|r$/.test(n)) return 'r';
+  return '';
+}
+
 function findMatchingBone(animNode, charByName, charByNorm) {
   const src = animNode.getName();
   if (!src) return null;
   const lo = src.toLowerCase();
   let hit = charByName.get(src) || charByName.get(lo);
   if (hit) return hit;
-  const mapEntry = BONE_MAP[lo];
-  if (mapEntry) {
-    for (const alt of mapEntry) {
-      hit = charByName.get(alt) || charByName.get(alt.toLowerCase());
-      if (hit) return hit;
-    }
-  }
-  for (const [key, alts] of Object.entries(BONE_MAP)) {
-    if (alts.includes(lo)) {
-      hit = charByName.get(key) || charByName.get(key.toLowerCase());
-      if (hit) return hit;
-      // Also try all sibling aliases of this key against charByName
-      for (const alt of alts) {
-        hit = charByName.get(alt) || charByName.get(alt.toLowerCase());
-        if (hit) return hit;
-      }
-    }
-  }
+
+  // Try one candidate name against raw names AND normalized names.
+  // aliasNorm (no BJS-suffix strip): candidates are BONE_MAP literals like 'spine_02'
+  // whose numeric part is meaningful, not a BJS-appended suffix.
+  const tryName = (cand) => {
+    let h = charByName.get(cand) || charByName.get(cand.toLowerCase());
+    if (h) return h;
+    const cn = aliasNorm(cand);
+    return cn ? charByNorm.get(cn) || null : null;
+  };
+
+  // Resolve ALL candidate canonical keys for this anim bone (direct key, alias
+  // membership, normalized alias). Several keys can share an alias (toe_l/ball_l
+  // both list 'lefttoebase') — try each until one resolves on the character.
   const norm = normalizeName(src);
+  const canonKeys = [];
+  if (BONE_MAP[lo]) canonKeys.push(lo);
+  for (const [key, alts] of Object.entries(BONE_MAP)) {
+    if (canonKeys.includes(key)) continue;
+    if (alts.includes(lo) || (norm && alts.some(a => aliasNorm(a) === norm))) canonKeys.push(key);
+  }
+  if (norm && NORM_TO_CANON.has(norm) && !canonKeys.includes(NORM_TO_CANON.get(norm))) {
+    canonKeys.push(NORM_TO_CANON.get(norm));
+  }
+
+  for (const canonKey of canonKeys) {
+    hit = tryName(canonKey);
+    if (hit) return hit;
+    for (const alt of BONE_MAP[canonKey]) {
+      hit = tryName(alt);
+      if (hit) return hit;
+    }
+  }
+
   hit = charByNorm.get(norm);
   if (hit) return hit;
+
+  // Fuzzy suffix fallback — guarded: side must agree, overlap ≥ 4 chars, longest match wins.
+  const srcSide = sideOf(norm);
+  let best = null, bestLen = 0;
   for (const [n, node] of charByNorm) {
-    if (norm.endsWith(n) || n.endsWith(norm)) return node;
+    if (!(norm.endsWith(n) || n.endsWith(norm))) continue;
+    const overlap = Math.min(n.length, norm.length);
+    if (overlap < 4) continue;
+    if (sideOf(n) !== srcSide) continue;
+    if (overlap > bestLen) { best = node; bestLen = overlap; }
   }
+  if (best) return best;
   // console.log(`[findMatchingBone] Failed to find match for anim bone: "${src}" (normalized: "${norm}")`);
   return null;
 }
@@ -976,8 +1055,13 @@ export async function analyzeGLB(buffer) {
         charByName.set(stripped, node);
         charByName.set(stripped.toLowerCase(), node);
       }
+      // First-wins: UE5 'spine_01/02/03' all collapse to 'spine' after suffix
+      // strip — keep the first (hierarchically lowest) and index the exact
+      // digit-preserving form too.
       const n = normalizeName(name);
-      if (n) charByNorm.set(n, node);
+      if (n && !charByNorm.has(n)) charByNorm.set(n, node);
+      const na = aliasNorm(name.toLowerCase());
+      if (na && !charByNorm.has(na)) charByNorm.set(na, node);
     }
   });
   const poseStyle = detectPoseStyle(doc, charByName, charByNorm);
@@ -1026,23 +1110,44 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const py = cfg.PIVOT_Y !== undefined ? cfg.PIVOT_Y : 0.0;
   const pz = cfg.PIVOT_Z !== undefined ? cfg.PIVOT_Z : 0.0;
 
-  for (const node of charDoc.getRoot().listNodes()) {
-    const name = node.getName();
-    if (name) {
-      const clean = stripBJSSuffix(name);
-      if (clean !== name) node.setName(clean);
+  // Strip BJS-appended numeric suffixes (Hips_66 → Hips) — but ONLY when the
+  // pattern is pervasive (BJS suffixes every node on re-export). Rigs like UE5
+  // legitimately use _N in bone names (spine_01, neck_01); renaming those would
+  // collapse spine_01/02/03 into three nodes all named 'spine'.
+  {
+    const named = charDoc.getRoot().listNodes().filter(n => n.getName());
+    const suffixed = named.filter(n => /_\d+$/.test(n.getName()));
+    if (named.length > 0 && suffixed.length / named.length >= 0.8) {
+      for (const node of named) {
+        const clean = stripBJSSuffix(node.getName());
+        if (clean !== node.getName()) node.setName(clean);
+      }
     }
   }
 
 
+  // Find the hips/pelvis bone across all conventions:
+  // exact (Hips/pelvis), namespaced (char01:Hips), Biped (Bip001 Pelvis),
+  // VRM (J_Bip_C_Hips), CC (CC_Base_Hip) — via normalizeName.
+  // Prefer actual skin joints over loose hierarchy nodes.
+  const HIPS_NORMS = new Set(['hips', 'pelvis', 'hip']);
+  const isHipsName = (rawName) => {
+    const raw = (rawName || '').toLowerCase();
+    const base = raw.includes(':') ? raw.split(':').pop() : raw;
+    if (HIPS_NORMS.has(base)) return true;
+    return HIPS_NORMS.has(normalizeName(base));
+  };
+  const skinJoints = new Set();
+  for (const skin of charDoc.getRoot().listSkins()) {
+    for (const joint of skin.listJoints()) skinJoints.add(joint);
+  }
   let hipsNode = null;
   for (const node of charDoc.getRoot().listNodes()) {
-    const raw = (node.getName() || '').toLowerCase();
-    // Strip any namespace prefix (e.g. "mott_var01:hips" → "hips", "mixamorig:hips" → "hips")
-    const name = raw.includes(':') ? raw.split(':').pop() : raw;
-    if (name === 'hips' || name === 'pelvis') {
-      hipsNode = node;
-      break;
+    if (skinJoints.has(node) && isHipsName(node.getName())) { hipsNode = node; break; }
+  }
+  if (!hipsNode) {
+    for (const node of charDoc.getRoot().listNodes()) {
+      if (isHipsName(node.getName())) { hipsNode = node; break; }
     }
   }
 
@@ -1238,8 +1343,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         charByName.set(stripped, node);
         charByName.set(stripped.toLowerCase(), node);
       }
+      // First-wins + digit-preserving index (see analyzeGLB note)
       const n = normalizeName(name);
-      if (n) charByNorm.set(n, node);
+      if (n && !charByNorm.has(n)) charByNorm.set(n, node);
+      const na = aliasNorm(name.toLowerCase());
+      if (na && !charByNorm.has(na)) charByNorm.set(na, node);
     }
   }
 
@@ -1411,6 +1519,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         if (path === 'scale' && cfg.IGNORE_SCALE) { ch.dispose(); continue; }
 
         const target = findMatchingBone(src, charByName, charByNorm);
+        if (process.env.DEBUG_MATCH) console.log(`[match] ${src.getName()} → ${target ? target.getName() : 'NULL'}`);
         if (!target) { ch.dispose(); continue; }
 
         const tgtName = target.getName().toLowerCase();

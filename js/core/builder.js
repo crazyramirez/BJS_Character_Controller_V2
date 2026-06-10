@@ -2207,15 +2207,23 @@ async function downloadCharacterGlbFile() {
     let resultBuffer = characterGlbBuffer;
 
     if (isServerAvailable && (originalCharacterGlbBuffer || characterGlbBuffer)) {
-      const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+      const hasAnimBuffer = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+
+      // With an animations buffer: re-merge from the clean original (strip + retarget).
+      // Without one: export the CURRENT character buffer (already holds merged
+      // animations) and keep them — stripping here would produce a GLB with zero animations.
+      const baseBuffer = hasAnimBuffer
+        ? (originalCharacterGlbBuffer || characterGlbBuffer)
+        : (characterGlbBuffer || originalCharacterGlbBuffer);
+
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
 
-      if (animationsGlbBuffer && animationsGlbBuffer.byteLength > 0) {
+      if (hasAnimBuffer) {
         formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
       }
 
-      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: true })));
+      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: hasAnimBuffer })));
 
       const res = await fetch('/api/merge', {
         method: 'POST',
