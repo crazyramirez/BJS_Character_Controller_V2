@@ -1460,6 +1460,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   let hasMadeInitialWalk = false;
   scene.registerBeforeRender(() => {
     if (!activeCharacter) return;
+    if (autoRigState) return; // rig mode: user pans freely (right-drag), don't recenter
     const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, 0.4, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.1);
 
@@ -1821,7 +1822,15 @@ function enterRigViewportMode() {
     if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) scene.stopAnimation(camera);
   });
 
-  autoRigState.viewportMode = { hiddenMeshes, prevClearColor, hud, prevHudDisplay, pointerObserver };
+  // Right-drag panning: scale sensibility to character size (higher = slower)
+  const prevPanningSensibility = camera.panningSensibility;
+  const h = autoRigState.sceneHeight || 1.8;
+  camera.panningSensibility = Math.max(150, 1000 * (1.8 / h));
+
+  autoRigState.viewportMode = {
+    hiddenMeshes, prevClearColor, hud, prevHudDisplay, pointerObserver,
+    prevPanningSensibility, prevTarget: camera.target.clone(),
+  };
   setRigView('front');
 }
 
@@ -1831,6 +1840,8 @@ function exitRigViewportMode(state) {
   vm.hiddenMeshes.forEach(m => m.setEnabled(true));
   if (vm.pointerObserver) scene.onPointerObservable.remove(vm.pointerObserver);
   scene.stopAnimation(camera);
+  if (vm.prevPanningSensibility !== undefined) camera.panningSensibility = vm.prevPanningSensibility;
+  if (vm.prevTarget) camera.target.copyFrom(vm.prevTarget); // undo any panning offset
   scene.clearColor = vm.prevClearColor;
   if (vm.hud) vm.hud.style.display = vm.prevHudDisplay || '';
   const ui = document.getElementById('autorig-viewport-ui');
@@ -1859,6 +1870,13 @@ function setRigView(view) {
   camera.inertialAlphaOffset = 0;
   camera.inertialBetaOffset = 0;
   camera.inertialRadiusOffset = 0;
+  camera.inertialPanningX = 0;
+  camera.inertialPanningY = 0;
+  // Recenter on the character (undoes any right-drag panning offset)
+  if (activeCharacter?.playerCapsule) {
+    const p = activeCharacter.playerCapsule.position;
+    camera.target.set(p.x, p.y, p.z);
+  }
   camera.alpha = alpha;
   camera.beta = beta;
   camera.radius = radius;
