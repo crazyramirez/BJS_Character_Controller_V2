@@ -214,13 +214,48 @@ To run the local server which powers advanced skeletal retargeting, GLB animatio
 
 | Tab | What it does |
 |---|---|
-| **Model** | Set the GLB asset path and filename for your character model |
-| **Animations** | Auto-match Mixamo/custom animation names to controller slots. Each row has an `↺` reset button to re-run keyword auto-detection for that single slot |
+| **Model** | Import your character GLB, adjust scale/pivot (with *Pivot to Ground* helper), tweak bind-pose angles (arm spread/splay, leg spread, spine straighten), inspect the skeleton tree & health report, and auto-rig skinless meshes |
+| **Animations** | Auto-match Mixamo/custom animation names to controller slots, define **Animation Events** (gameplay frame markers), and add custom triggered actions. Each row has an `↺` reset button to re-run keyword auto-detection for that single slot |
 | **Controls** | Remap every key binding. Each action has an `↺` button to restore its default key |
-| **Physics** | Tune all physics, camera, and speed parameters with sliders and toggles. Each control has an `↺` reset to restore the baked default |
-| **Export** | Preview the final configuration code, download `custom-character-controller.js`, or export the character in GLB format with all animations incorporated |
+| **Physics** | Apply **Controller Presets**, test moves in the **Controller Test Lab**, and tune all physics, camera, and speed parameters with sliders and toggles. Each control has an `↺` reset to restore the baked default |
+| **Export** | Preview the final configuration code, download `custom-character-controller.js`, save/restore the full setup as `builder-config.json`, or export the character in GLB format with all animations incorporated |
 
 All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wipe all overrides and restore factory defaults.
+
+### 💀 Auto-Rig (skeleton generation for skinless meshes)
+
+If you import a mesh-only GLB (no skeleton/skin), the **Model → Skeleton** section offers **Generate Skeleton (Auto-Rig)**:
+
+1. The server analyzes the actual vertex cloud — not just the bounding box — to propose Mixamo-named joint positions: it detects the crotch (where the body splits into legs), shoulder height, hand positions (works for both **T-pose and A-pose** meshes), per-leg offsets, and follows hunched spines.
+2. The builder enters a dedicated **rig viewport mode**: the character is isolated, draggable yellow joint markers appear, with Front/Side/Top camera presets (keys `1`/`2`/`3`) and optional **symmetric editing** (left ↔ right mirroring).
+3. **Apply Rig** builds the skeleton, computes proximity-based skin weights server-side, and re-merges your animation set against the fresh rig automatically.
+
+Already-rigged characters get **Re-Rig / Adjust Skeleton** instead: markers seed from the current bind pose, and applying moves the existing joints while preserving the hierarchy, extra bones (fingers/twist) and the original artist skin weights.
+
+### 🎯 Animation Events (gameplay frame markers)
+
+In **Animations → Animation Events** you can attach typed markers (`footstep`, `hit`, `cast`, `sound`, `particle`, `camera`, `custom`) to any mapped animation at a specific frame:
+
+- Markers fire **live in the builder viewport** (toast + console) while previewing or playing animations — including during crossfades and inside the Locomotion blend tree (footsteps fire on Walk/Sprint loops).
+- Markers survive character swaps: they are kept as long as the slot maps to the **same clip**, and a **Clear All** button removes every marker at once.
+- The Export tab emits them as `charCtrl.animationEvents`. Consume them in your game:
+
+```javascript
+charCtrl.animationEvents = {
+  Punch: [{ type: 'hit', frame: 12, label: 'impact' }],
+  Walk_Loop: [{ type: 'footstep', frame: 5 }, { type: 'footstep', frame: 19 }],
+};
+charCtrl.onAnimationEvent = (evt, animName) => {
+  if (evt.type === 'hit') applyDamage();
+  if (evt.type === 'footstep') playFootstepSound();
+};
+// or listen globally:
+window.addEventListener('charanimevent', (e) => console.log(e.detail));
+```
+
+### 🧪 Controller Presets & Test Lab
+
+The **Physics** tab includes four one-click controller presets (**Balanced Adventure**, **Action Combat**, **Arcade Platformer**, **Cinematic Walkthrough**) and a **Controller Test Lab**: scenario camera chips (Studio / Motion / Air / Close Cam), action buttons (Idle, Walk, Sprint, Jump, Roll, Crouch — locomotion buttons drive the real blend tree, exactly like in-game), and a live metrics panel (state, speed, grounded, active animation, camera framing).
 
 ### 🔄 Retargeting & Animation Merging (`merge_api.mjs`)
 
