@@ -794,6 +794,24 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
 
     updateCharStatusBar(file.name);
 
+    // No usable animation set in imported character (none, or a single clip
+    // like a mixamo.com export / t-pose) → use default animations.glb
+    if (!animationsGlbBuffer && detectedAnimations.length <= 1) {
+      try {
+        const animRes = await fetch('assets/animations.glb');
+        if (animRes.ok) {
+          animationsGlbBuffer = await animRes.arrayBuffer();
+          showToast(detectedAnimations.length === 0
+            ? 'No animations in character — using default animations.glb'
+            : 'Only one animation in character — adding default animations.glb');
+        } else {
+          console.warn('assets/animations.glb not found, skipping default animations.');
+        }
+      } catch (e) {
+        console.warn('Could not fetch default animations.glb:', e);
+      }
+    }
+
     if (animationsGlbBuffer) {
       await applyPreloadedAnimations();
     } else {

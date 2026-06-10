@@ -932,8 +932,8 @@ class CharCtrl {
     this.dustPS.minEmitBox = new BABYLON.Vector3(-0.25, -0.05, -0.25);
     this.dustPS.maxEmitBox = new BABYLON.Vector3(0.25, 0.05, 0.25);
 
-    this.dustPS.color1 = new BABYLON.Color4(0.7, 0.7, 0.7, 0.45);
-    this.dustPS.color2 = new BABYLON.Color4(0.55, 0.52, 0.48, 0.22);
+    this.dustPS.color1 = new BABYLON.Color4(0.7, 0.7, 0.7, 0.25);
+    this.dustPS.color2 = new BABYLON.Color4(0.55, 0.52, 0.48, 0.12);
     this.dustPS.colorDead = new BABYLON.Color4(0, 0, 0, 0);
 
     this.dustPS.minSize = 0.16;
