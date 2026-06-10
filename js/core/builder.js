@@ -2127,7 +2127,8 @@ function clearCharacter() {
   animationsGlbBuffer = null;
   detectedAnimations = [];
   skeletonInfo = null;
-  animationEvents = {};
+  // animationEvents intentionally kept: markers survive character swaps and are
+  // re-attached when the same clips get mapped again (see pruneAnimationEvents).
   updateTestLabMetrics();
 
   const section = document.getElementById('section-skeleton');
@@ -2400,11 +2401,19 @@ function getAnimationEventTargets() {
   return [...standardTargets, ...customTargets];
 }
 
+// Markers are never dropped just because a key is currently unmapped (e.g.
+// while a new character loads) — they stay stored and reappear when the same
+// clip is mapped again. A marker is only removed when its key gets mapped to a
+// DIFFERENT clip than the one it was authored for (evt.anim).
 function pruneAnimationEvents() {
-  const valid = new Set(getAnimationEventTargets().map(t => t.key));
+  const mappedAnim = new Map(getAnimationEventTargets().map(t => [t.key, t.animName]));
   Object.keys(animationEvents).forEach(key => {
-    if (!valid.has(key)) delete animationEvents[key];
-    else animationEvents[key] = (animationEvents[key] || []).filter(evt => evt && Number.isFinite(Number(evt.frame)));
+    const mapped = mappedAnim.get(key);
+    const list = (animationEvents[key] || []).filter(evt =>
+      evt && Number.isFinite(Number(evt.frame)) &&
+      (!evt.anim || !mapped || evt.anim === mapped));
+    if (list.length) animationEvents[key] = list;
+    else delete animationEvents[key];
   });
 }
 
@@ -2427,12 +2436,14 @@ function addAnimationEvent() {
     type: typeEl.value,
     frame: Number.isFinite(parsedFrame) ? parsedFrame : fallbackFrame,
     label: (labelEl?.value || '').trim(),
+    anim: target?.animName, // clip this marker was authored for (survives remaps)
   };
   if (!animationEvents[key]) animationEvents[key] = [];
   animationEvents[key].push(evt);
   animationEvents[key].sort((a, b) => a.frame - b.frame);
   if (labelEl) labelEl.value = '';
   renderAnimationEventsTab();
+  savePreferences();
   updateExportCode();
   showToast(`Added ${evt.type} marker to ${key}.`);
 }
@@ -2442,7 +2453,24 @@ function deleteAnimationEvent(key, index) {
   animationEvents[key].splice(index, 1);
   if (animationEvents[key].length === 0) delete animationEvents[key];
   renderAnimationEventsTab();
+  savePreferences();
   updateExportCode();
+}
+
+function clearAllAnimationEvents() {
+  const total = Object.values(animationEvents).reduce((n, l) => n + (l?.length || 0), 0);
+  if (total === 0) { showToast('No animation events to clear.'); return; }
+  showConfirm(
+    'Clear Animation Events',
+    `Delete all ${total} animation event marker${total !== 1 ? 's' : ''}? This cannot be undone.`,
+    () => {
+      animationEvents = {};
+      renderAnimationEventsTab();
+      savePreferences();
+      updateExportCode();
+      showToast('All animation events cleared.');
+    }
+  );
 }
 
 // Push the editor's markers into the live controller so they fire in the
@@ -2485,6 +2513,7 @@ function renderAnimationEventsTab() {
       <input id="event-frame-input" type="number" min="0" step="1" value="${defaultFrame}" aria-label="Event frame">
       <input id="event-label-input" type="text" placeholder="Label / payload">
       <button id="btn-add-animation-event" class="btn-add-event">Add Marker</button>
+      <button id="btn-clear-animation-events" class="btn-clear-events" title="Delete all markers">Clear All</button>
     </div>
     <div class="event-targets">
       ${targets.map(target => {
@@ -2520,14 +2549,18 @@ function renderAnimationEventsTab() {
     if (target && frameInput) frameInput.value = Math.round((target.from + target.to) / 2);
   });
   document.getElementById('btn-add-animation-event')?.addEventListener('click', addAnimationEvent);
+  document.getElementById('btn-clear-animation-events')?.addEventListener('click', clearAllAnimationEvents);
   container.querySelectorAll('.btn-event-delete').forEach(btn => {
     btn.addEventListener('click', () => deleteAnimationEvent(btn.dataset.eventKey, parseInt(btn.dataset.eventIndex, 10)));
   });
 }
 
 function formatAnimationEventsForExport(indent = '      ') {
+  const mapped = new Set(getAnimationEventTargets().map(t => t.key));
   const activeEvents = Object.fromEntries(
-    Object.entries(animationEvents).filter(([, events]) => Array.isArray(events) && events.length > 0)
+    Object.entries(animationEvents)
+      .filter(([key, events]) => mapped.has(key) && Array.isArray(events) && events.length > 0)
+      .map(([key, events]) => [key, events.map(({ type, frame, label }) => ({ type, frame, label }))])
   );
   if (Object.keys(activeEvents).length === 0) return '';
   return `${indent}// Gameplay animation markers exported from Builder\n` +

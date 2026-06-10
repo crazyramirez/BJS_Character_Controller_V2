@@ -1176,6 +1176,25 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-primary);
 }
 
+.btn-clear-events {
+  grid-column: 1 / -1;
+  min-height: 28px;
+  border: 1px solid rgba(248, 113, 113, 0.22);
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.06);
+  color: #fca5a5;
+  font-size: 0.66rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.16s var(--ease-std), border-color 0.16s var(--ease-std), color 0.16s var(--ease-std);
+}
+
+.btn-clear-events:hover {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: var(--text-primary);
+}
+
 .event-targets {
   display: flex;
   flex-direction: column;

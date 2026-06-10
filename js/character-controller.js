@@ -304,18 +304,26 @@ class AnimCtrl {
     const events = this.animationEvents;
     if (!events || !this.cur) { this._evtLastFrame.clear(); return; }
 
-    // Groups to watch: the current group, plus the loco loops when the
-    // Locomotion blend tree is active (footsteps on Walk/Sprint).
+    // Groups to watch: the current group, fading-out groups still blending
+    // (so markers near a clip's end fire during the crossfade), plus the loco
+    // loops when the Locomotion blend tree is active (footsteps on Walk/Sprint).
     const watch = [];
-    if (this.curName === 'Locomotion') {
-      for (const n of ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop']) {
-        const ag = this.g.get(n);
-        const a = ag?.animatables?.[0];
-        if (a && a.weight > 0.3) watch.push([n, ag]);
+    const watched = new Set();
+    const addWatch = (name, ag) => {
+      if (!name || !ag || watched.has(name)) return;
+      watched.add(name);
+      if (name === 'Locomotion') {
+        for (const n of ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop']) {
+          const sub = this.g.get(n);
+          const a = sub?.animatables?.[0];
+          if (a && a.weight > 0.3 && !watched.has(n)) { watched.add(n); watch.push([n, sub]); }
+        }
+      } else {
+        watch.push([name, ag]);
       }
-    } else {
-      watch.push([this.curName, this.cur]);
-    }
+    };
+    addWatch(this.curName, this.cur);
+    for (const t of this.activeTransitions) addWatch(t.outgoingName, t.outgoing);
 
     const seen = new Set();
     for (const [name, ag] of watch) {
@@ -440,6 +448,7 @@ class AnimCtrl {
           this.cur.onAnimationGroupEndObservable.clear();
         }
         this.cur.start(loop, finalSpeedRatio, this.cur.from, this.cur.to, false);
+        if (Number.isFinite(this.cur.from)) this._evtLastFrame.set(name, this.cur.from - 0.001);
         if (onEnd) {
           this.cur.onAnimationGroupEndObservable.addOnce(() => onEnd());
         }
@@ -474,6 +483,7 @@ class AnimCtrl {
       const transition = {
         incoming,
         outgoing,
+        outgoingName: this.curName, // for animation event tracking during fade-out
         observer: null
       };
       transition.observer = this.scene.onBeforeRenderObservable.add(() => {
@@ -510,6 +520,8 @@ class AnimCtrl {
 
     this.cur = incoming;
     this.curName = name;
+    // Seed event tracking at the clip start so frame-0 markers fire
+    if (Number.isFinite(incoming.from)) this._evtLastFrame.set(name, incoming.from - 0.001);
 
     if (this.onAnimationChange) {
       this.onAnimationChange(name);
@@ -1736,18 +1748,25 @@ class CharCtrl {
 
   _interact() {
     this._setState(S.INTERACT);
-    // Calculate 35% of the interact animation duration to restore movement control even earlier
+    // Allow canceling into movement after 35% of the clip; when idle, let the
+    // full clip play (so late animation events still fire) and exit on end.
     const ag = this.anim.g.get('Interact');
     const fps = (ag && ag.targetedAnimations[0] && ag.targetedAnimations[0].animation) ? ag.targetedAnimations[0].animation.framePerSecond : 30;
     const durationMs = ag ? ((ag.to - ag.from) / fps) * 1000 : 1000;
     const recoveryDelay = (durationMs * 0.35) / this.SPEED_MULTIPLIER;
 
-    this.anim.play('Interact', false, 0.35);
+    this.anim.play('Interact', false, 0.35, () => {
+      if (this.state === S.INTERACT) this._returnToLoco(0.35);
+    });
 
     setTimeout(() => {
-      if (this.state === S.INTERACT) {
-        this._returnToLoco(0.35);
-      }
+      const cancelIfMoving = setInterval(() => {
+        if (this.state !== S.INTERACT) { clearInterval(cancelIfMoving); return; }
+        const moving = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
+          this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
+          (this.isTouch && (Math.abs(this.touchVector.x) > 0.2 || Math.abs(this.touchVector.y) > 0.2));
+        if (moving) { clearInterval(cancelIfMoving); this._returnToLoco(0.35); }
+      }, 50);
     }, recoveryDelay);
   }
 
