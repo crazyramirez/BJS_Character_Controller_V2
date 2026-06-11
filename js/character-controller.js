@@ -3069,6 +3069,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
     if (options.shadow) options.shadow.addShadowCaster(m, true);
     m.receiveShadows = true;
     m.isPickable = false;
+    m.checkCollisions = false; // Prevent self-collision with the player capsule which causes jitter
   });
 
   // Stop any auto-playing animations from character.glb

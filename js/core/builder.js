@@ -1427,6 +1427,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     shadowGenerator.addShadowCaster(m, true);
     m.receiveShadows = true;
     m.isPickable = false;
+    m.checkCollisions = false; // Prevent self-collision with the player capsule which causes jitter
   });
 
   charRes.animationGroups.forEach(ag => ag.stop());
@@ -1519,8 +1520,15 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         axis.rotateByQuaternionToRef(inv, out);
         return out.normalize();
       };
+      // Spine root (first spine bone above the hips) counters the hips tilt
+      let ancestorRole = null;
+      for (let p = node.parent; p; p = p.parent) {
+        ancestorRole = boneRole(p.name || '');
+        if (ancestorRole) break;
+      }
       boneOffsetAxes.set(node.uniqueId, {
         role,
+        isSpineRoot: role === 'spine' && ancestorRole === 'hips',
         x: toLocal(BABYLON.Axis.X),
         y: toLocal(BABYLON.Axis.Y),
         z: toLocal(BABYLON.Axis.Z),
@@ -1582,12 +1590,15 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             break;
           case 'legL':
             apply(axes.z, -legAngle);
+            apply(axes.x, -hipsTilt); // counter: feet keep world orientation
             break;
           case 'legR':
             apply(axes.z, legAngle);
+            apply(axes.x, -hipsTilt);
             break;
           case 'spine':
             apply(axes.x, spineAngle);
+            if (axes.isSpineRoot) apply(axes.x, -hipsTilt); // counter: torso stays
             break;
           case 'hips':
             apply(axes.x, hipsTilt);

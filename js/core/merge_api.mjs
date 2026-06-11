@@ -528,27 +528,12 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // Find spine/waist bones
-  const spine = findMatchingBone({ getName: () => 'spine' }, charByName, charByNorm);
-  const spine1 = findMatchingBone({ getName: () => 'spine1' }, charByName, charByNorm);
-  const spine2 = findMatchingBone({ getName: () => 'spine2' }, charByName, charByNorm);
-  const neck = findMatchingBone({ getName: () => 'neck_01' }, charByName, charByNorm);
-
-  // 1. Straighten the hips→spine→neck chain: align each segment DIRECTION to
-  // vertical (+Y), like the limb steps below. Do NOT force world rotation to
-  // identity — only Mixamo-convention rigs have identity-ish spine bind
-  // orientations; CC/AccuRig/UE FBX rigs carry joint orients (e.g. -90°X), and
-  // zeroing them folds the torso at the waist after retargeting.
-  const spineChain = [hips, spine, spine1, spine2, neck].filter(Boolean);
-  for (let i = 0; i + 1 < spineChain.length; i++) {
-    const a = spineChain[i], b = spineChain[i + 1];
-    const pA = getUpdatedWorldPos(a);
-    const pB = getUpdatedWorldPos(b);
-    const seg = vec3Subtract(pB, pA);
-    if (vec3Length(seg) < 1e-6) continue;
-    const qAlign = quatFromTwoVectors(vec3Normalize(seg), [0, 1, 0]);
-    applyCorrection(a, qAlign);
-  }
+  // 1. Hips/spine are left at their BIND orientation on purpose. Forcing them
+  // to identity broke CC/UE rigs (non-identity joint orients folded the torso)
+  // and aligning each segment to vertical re-posed the pelvis (tucked butt,
+  // hunched back) on rigs whose hip→waist segment isn't vertical by anatomy.
+  // For Mixamo-convention rigs both variants were no-ops anyway — the virtual
+  // T-pose only needs to fix the LIMBS (A-pose arms/legs), handled below.
 
   // 2. Left Arm
   if (leftArm && leftForearm) {
@@ -1916,10 +1901,16 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], cfg.ARM_SPLAY_ANGLE);
             } else if (canon === 'thigh_l') {
               if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.LEG_SPREAD_ANGLE);
+              // Counter the hips tilt so legs/feet keep their world orientation
+              if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
             } else if (canon === 'thigh_r') {
               if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], cfg.LEG_SPREAD_ANGLE);
+              if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
             } else if (/^spine_0[123]$/.test(canon)) {
               if (cfg.SPINE_STRAIGHTEN_ANGLE) addOff([1, 0, 0], cfg.SPINE_STRAIGHTEN_ANGLE);
+              // Counter the hips tilt on the FIRST spine bone so only the
+              // pelvis reorients — torso keeps its world orientation.
+              if (cfg.HIPS_TILT_ANGLE && canon === 'spine_01') addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
             } else if (canon === 'pelvis') {
               // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
               // tilt only the root so the offset doesn't double down the chain.
