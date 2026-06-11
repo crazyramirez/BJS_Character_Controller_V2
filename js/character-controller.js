@@ -1399,7 +1399,7 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'JUMP')) {
-      if (this.grounded && !inAction && !this.sitting) {
+      if (this.grounded && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
         if (this._isCeilingBlocked()) {
           this._showCombo('CEILING BLOCKED');
           setTimeout(() => this._hideCombo(), 1200);
@@ -2079,6 +2079,54 @@ class CharCtrl {
 
     let inAction = this._isInAction();
 
+    // Calculate movement direction vector 'dir' early so it is available for vertical snap/slope calculations
+    let dir = new BABYLON.Vector3(0, 0, 0);
+    const canMove = !inAction || this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.JUMP_LAND;
+
+    if (canMove && !this.sitting) {
+      if (this.CAM_FOLLOW_LOCK) {
+        if (!this.grounded && !this.AIR_CONTROL) {
+          dir.copyFrom(this.moveDir);
+        } else {
+          // Perform horizontal steering rotation early so 'dir' reflects it
+          if (inputX !== 0) {
+            const steerSpeed = 2.8 * this.SPEED_MULTIPLIER; // Radians per second
+            this.rotY += inputX * steerSpeed * dt;
+            if (this.usePhysics) {
+              this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+            } else {
+              this.root.rotation.y = this.rotY;
+            }
+          }
+          if (inputZ !== 0) {
+            dir.copyFromFloats(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
+            if (inputZ < 0) dir.scaleInPlace(-1);
+          }
+        }
+      } else {
+        const camFwd = this._camForward();
+        const camRgt = this._camRight(camFwd);
+        const fwd = (this._frozenCamFwd && !this.CAM_FOLLOW_LOCK) ? this._frozenCamFwd : camFwd;
+        const rgt = (this._frozenCamRgt && !this.CAM_FOLLOW_LOCK) ? this._frozenCamRgt : camRgt;
+
+        if (!this.grounded) {
+          if (this.AIR_CONTROL) {
+            if (hasMove) {
+              dir = rgt.scale(inputX).add(fwd.scale(inputZ));
+              if (dir.length() > 0.01) dir.normalize();
+            }
+          } else {
+            dir.copyFrom(this.moveDir);
+          }
+        } else {
+          if (hasMove) {
+            dir = rgt.scale(inputX).add(fwd.scale(inputZ));
+            if (dir.length() > 0.01) dir.normalize();
+          }
+        }
+      }
+    }
+
     // Ledge snap push: if we just lost grounding while moving and did not jump or roll, push down to snap to flat floor immediately and avoid floating
     if (!this.grounded && wasGrounded && this.state !== S.JUMP_START && this.state !== S.JUMP_LOOP && this.state !== S.ROLL) {
       if (this.usePhysics) {
@@ -2265,34 +2313,10 @@ class CharCtrl {
     }
 
     // ── PROCESS HORIZONTAL PHYSICS (LOCOMOTION) ────────────
-    let dir = new BABYLON.Vector3(0, 0, 0);
-
-    const canMove = !inAction || this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.JUMP_LAND;
     if (canMove && !this.sitting) {
       if (this.CAM_FOLLOW_LOCK) {
-        if (!this.grounded && !this.AIR_CONTROL) {
-          // Zero steering in mid-air under follow lock: keep momentum direction and takeoff speed
-          dir = this.moveDir;
-        } else {
-          // ── DIRECT KEYBOARD/ANALOG STEERING ────────────────
-          // 1. A/D rotates the character; observer pushes camera.alpha to match rotY
-          if (inputX !== 0) {
-            const steerSpeed = 2.8 * this.SPEED_MULTIPLIER; // Radians per second
-            this.rotY += inputX * steerSpeed * dt;
-            if (this.usePhysics) {
-              this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
-            } else {
-              this.root.rotation.y = this.rotY;
-            }
-          }
-
-          // 2. W/S moves forward/backward relative to character heading
-          if (inputZ !== 0) {
-            dir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
-            if (inputZ < 0) dir.scaleInPlace(-1);
-          }
-
-          // 3. Direct Target Speed (only W/S drives physical movement speed)
+        if (this.grounded || this.AIR_CONTROL) {
+          // Direct Target Speed (only W/S drives physical movement speed)
           let tgt = 0;
           if (inputZ !== 0) {
             if (this.crouching) {
@@ -2311,20 +2335,9 @@ class CharCtrl {
         }
       } else {
         // ── STANDARD CAMERA-RELATIVE LOCOMOTION ────────────
-        const camFwd = this._camForward();
-        const camRgt = this._camRight(camFwd);
-        const fwd = (this._frozenCamFwd && !this.CAM_FOLLOW_LOCK) ? this._frozenCamFwd : camFwd;
-        const rgt = (this._frozenCamRgt && !this.CAM_FOLLOW_LOCK) ? this._frozenCamRgt : camRgt;
-
         if (!this.grounded) {
           // Air control logic:
           if (this.AIR_CONTROL) {
-            // Full steering in mid-air:
-            if (hasMove) {
-              dir = rgt.scale(inputX).add(fwd.scale(inputZ));
-              if (dir.length() > 0.01) dir.normalize();
-            }
-
             let tgtSpeed = this.speed;
             if (hasMove) {
               let idealTgt = (isSprinting ? this.SPD_SPRINT : this.SPD_WALK) * this.SPEED_MULTIPLIER;
@@ -2334,17 +2347,8 @@ class CharCtrl {
               tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
             }
             this.speed = tgtSpeed;
-          } else {
-            // Zero steering in mid-air: keep momentum direction and takeoff speed
-            dir = this.moveDir;
           }
         } else {
-          // Standard grounded logic:
-          if (hasMove) {
-            dir = rgt.scale(inputX).add(fwd.scale(inputZ));
-            if (dir.length() > 0.01) dir.normalize();
-          }
-
           // Target Speed calculation
           let tgt = 0;
           if (hasMove) {
