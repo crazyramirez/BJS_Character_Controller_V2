@@ -23,6 +23,9 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Visual Enhancements**: Procedural dust/smoke trails at the feet, procedural leaning/banking on turns, slope-incline alignment, and squash & stretch scaling.
 *   **Collision height adjustments & Ceiling protection**: Shrinks the capsule automatically when crouching/rolling, prevents standing up or rolling under low ceilings, and expands width when sprinting to prevent wall clipping.
 *   **Ledge & Stairs Snapping**: Keeps the character grounded on sloped surfaces and stairs to prevent airborne jitter.
+*   **Slope-Aligned Kinematic Traversal**: Kinematic collisions mode projects movement directly onto the ground normal to ensure butter-smooth ascent/descent on ramps and slopes.
+*   **Smart Snap-Down Controls**: Dynamically disables downward snap forces when ascending stairs or steep slopes to eliminate physics/collision jitter.
+*   **Implicit Self-Collision Prevention**: Prevents parent-capsule jitter by automatically disabling collision checks (`checkCollisions = false`) on imported character visual meshes.
 *   **Mobile Touch Support**: Responsive virtual joystick and customizable glassmorphism action buttons.
 *   **Air Dash (Mid-Air Roll)**: Perform a responsive dodge roll in mid-air with a horizontal speed boost and a 55% jump-power vertical hop (available if Double Jump is enabled, works even after double jumping).
 *   **Action Interrupt Roll**: Pressing Roll immediately interrupts active attack combos or spell casts for instant responsiveness.
@@ -70,6 +73,36 @@ const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, 
   }
 });
 ```
+
+---
+
+## ⚙️ Configuration Parameters
+
+The `config` object in the constructor accepts a wide range of physics, camera, and gameplay properties to fine-tune character behavior:
+
+| Parameter | Default | Type | Description |
+|---|---|---|---|
+| `GRAV` | `22` | *number* | Gravity force pulling the character down |
+| `JUMP_PWR` | `9.5` | *number* | Vertical takeoff impulse force for jumping |
+| `SPD_WALK` | `2.5` | *number* | Maximum physical walking speed |
+| `SPD_JOG` | `3.0` | *number* | Maximum physical jogging speed (blend speed threshold) |
+| `SPD_SPRINT` | `5.0` | *number* | Maximum physical sprinting speed |
+| `SPD_CROUCH` | `2.0` | *number* | Maximum physical crouching walk speed |
+| `SPD_CROUCH_RUN` | `3.2` | *number* | Maximum physical crouching run speed |
+| `ACCEL` | `14` | *number* | Movement acceleration rate (speed-up responsiveness) |
+| `DECEL` | `16` | *number* | Movement deceleration rate (braking/stopping responsiveness) |
+| `ROT_SPD` | `40` | *number* | Character yaw rotation speed responsiveness |
+| `AIR_CONTROL` | `false` | *boolean* | Steering control in mid-air (true = full control, false = no control) |
+| `DYNAMIC_FOV` | `true` | *boolean* | Dynamically adjust camera Field of View based on speed |
+| `DYNAMIC_FOV_MAX` | `0.10` | *number* | Maximum camera FOV expansion amount at full sprint speed |
+| `CAM_FOLLOW_LOCK` | `true` | *boolean* | If true, the camera is locked behind the character's facing direction |
+| `CAM_FOLLOW_PITCH` | `1.047` | *number* | Camera follow lock pitch (beta angle in radians, approx 60 degrees) |
+| `CAM_FOLLOW_DIST` | `8.0` | *number* | Camera follow lock distance (radius in meters) |
+| `CAM_LOCK_PITCH` | `false` | *boolean* | If true, drag input only rotates camera horizontally (locks pitch axis) |
+| `JOYSTICK_LOCK_X` | `false` | *boolean* | If true, joystick input is locked to vertical axis only (no strafing) |
+| `DOUBLE_JUMP_ENABLED` | `true` | *boolean* | If true, the character can perform a double jump in mid-air |
+| `SPEED_MULTIPLIER` | `1.0` | *number* | Speed multiplier for walking, running, and jogging |
+| `PLAY_PARTICLES` | `true` | *boolean* | Play procedural dust/smoke particles under the character's feet |
 
 ---
 
