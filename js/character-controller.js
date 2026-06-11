@@ -2115,7 +2115,10 @@ class CharCtrl {
               this._emitLandingDust();
             }
           } else {
-            if (hasMove && this.onScalable) {
+            // Apply snap down on stairs or flat parts of scalable meshes.
+            // On slanted ramps, the projected Y velocity (velocity.y) handles slope tracking perfectly.
+            const dot = this._groundNormal ? BABYLON.Vector3.Dot(dir, this._groundNormal) : 0;
+            if (hasMove && this.onScalable && Math.abs(dot) <= 0.01) {
               _snapVelY = -1.5;
             }
           }
@@ -2480,9 +2483,52 @@ class CharCtrl {
         this.physicsBody.setLinearVelocity(new BABYLON.Vector3(velocity.x, targetY, velocity.z));
         this._wasClimbingStep = (stepClimbVelY !== 0);
       } else {
-        // Move the Capsule using collisions!
-        const horizontalDisplacement = dir.scale(this.speed * dt);
-        const verticalDisplacement = new BABYLON.Vector3(0, this.jumpVel * dt, 0);
+        // Project movement direction onto ground slope normal for smooth slope traversal in kinematic mode
+        let moveVelocity = dir.scale(this.speed);
+        let dot = 0;
+        if (this.grounded && this._groundNormal) {
+          dot = BABYLON.Vector3.Dot(dir, this._groundNormal);
+          const slopeDir = dir.subtract(this._groundNormal.scale(dot));
+          if (slopeDir.length() > 0.01) {
+            slopeDir.normalize();
+            moveVelocity = slopeDir.scale(this.speed);
+          }
+        }
+
+        let snapDown = 0;
+        if (this.grounded) {
+          if (this.jumpVel > 0.1) {
+            snapDown = this.jumpVel;
+            this.jumpVel = 0;
+          } else {
+            // Snap down on flat ground always (settles after jump); on scalable only when moving (prevents ramp sliding)
+            if (this.onScalable) {
+              if (dot < -0.01) {
+                // Moving up a slope: do not snap down to avoid fighting the slope
+                snapDown = 0;
+              } else if (dot > 0.01) {
+                // Moving down a slope: add gentle downward snap pressure
+                snapDown = -1.5;
+              } else {
+                // On stairs or flat parts of scalable meshes:
+                // If we are currently climbing up (deltaY is positive), do not snap down!
+                const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
+                if (deltaY > 0.002) {
+                  snapDown = 0;
+                } else {
+                  snapDown = hasMove ? -1.5 : 0;
+                }
+              }
+            } else {
+              snapDown = -3.5;
+            }
+          }
+        } else {
+          snapDown = this.jumpVel;
+        }
+
+        const horizontalDisplacement = new BABYLON.Vector3(moveVelocity.x * dt, 0, moveVelocity.z * dt);
+        const verticalDisplacement = new BABYLON.Vector3(0, (moveVelocity.y + snapDown) * dt, 0);
         const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
 
         this.root.moveWithCollisions(totalDisplacement);
