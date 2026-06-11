@@ -517,6 +517,7 @@ function getMergeOptions(extra = {}) {
     ARM_SPLAY_ANGLE: charTransformConfig.ARM_SPLAY_ANGLE,
     LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
+    HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
     removeExistingAnimations: true,
     ...extra
   };
