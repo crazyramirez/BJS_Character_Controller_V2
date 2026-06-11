@@ -2050,10 +2050,20 @@ function setRigView(view) {
   const h = autoRigState.sceneHeight || 1.8; // scene units, not GLB units
   const radius = Math.min(Math.max(h * 2.1, 2.5), 18);
 
+  // Presets are relative to the character's facing, not world axes — the capsule
+  // yaw is arbitrary (the controller rotates it during the load-time walk).
+  // Controller convention: camera-behind alpha = -rotY - PI/2, so the camera
+  // that FACES the character (front view) sits at -rotY + PI/2.
+  let rotY = 0;
+  const cap = activeCharacter?.playerCapsule;
+  if (cap?.rotationQuaternion) rotY = cap.rotationQuaternion.toEulerAngles().y;
+  else if (cap) rotY = cap.rotation.y;
+  const frontAlpha = -rotY + Math.PI / 2;
+
   let alpha, beta;
-  if (view === 'side') { alpha = 0; beta = 1.42; }
-  else if (view === 'top') { alpha = -Math.PI / 2; beta = 0.06; }
-  else { alpha = -Math.PI / 2; beta = 1.42; } // front
+  if (view === 'side') { alpha = frontAlpha + Math.PI / 2; beta = 1.42; }
+  else if (view === 'top') { alpha = frontAlpha; beta = 0.06; }
+  else { alpha = frontAlpha; beta = 1.42; } // front
 
   // Shortest rotation path — avoid full spins
   alpha += Math.round((camera.alpha - alpha) / (2 * Math.PI)) * 2 * Math.PI;
@@ -2069,8 +2079,27 @@ function setRigView(view) {
   camera.inertialRadiusOffset = 0;
   camera.inertialPanningX = 0;
   camera.inertialPanningY = 0;
-  // Recenter on the character (undoes any right-drag panning offset)
-  if (activeCharacter?.playerCapsule) {
+  // Recenter on the character (undoes any right-drag panning offset).
+  // Use the world bounding center of the visible meshes — the capsule position
+  // can be offset from where the frozen bind-pose mesh actually renders.
+  let cx = NaN, cy = NaN, cz = NaN;
+  if (activeCharacter?.rawMeshes?.length) {
+    const min = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+    const max = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+    activeCharacter.rawMeshes.forEach(m => {
+      if (!m.getBoundingInfo || !m.geometry) return;
+      m.computeWorldMatrix(true);
+      const bb = m.getBoundingInfo().boundingBox;
+      min.minimizeInPlace(bb.minimumWorld);
+      max.maximizeInPlace(bb.maximumWorld);
+    });
+    if (Number.isFinite(max.x - min.x)) {
+      cx = (min.x + max.x) / 2; cy = (min.y + max.y) / 2; cz = (min.z + max.z) / 2;
+    }
+  }
+  if (Number.isFinite(cx)) {
+    camera.target.set(cx, cy, cz);
+  } else if (activeCharacter?.playerCapsule) {
     const p = activeCharacter.playerCapsule.position;
     camera.target.set(p.x, p.y, p.z);
   }
