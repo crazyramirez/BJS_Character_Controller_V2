@@ -56,6 +56,7 @@
       <nav class="tabs-nav">
         <button class="tab-btn active" data-tab="model">Model</button>
         <button class="tab-btn" data-tab="animations">Animations</button>
+        <button class="tab-btn" data-tab="mapping">Mapping</button>
         <button class="tab-btn" data-tab="keys">Controls</button>
         <button class="tab-btn" data-tab="physics">Physics</button>
         <button class="tab-btn" data-tab="export">Export</button>
@@ -232,6 +233,14 @@
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span>Shoulder Raise (up/down)</span>
+                    <span class="control-value" id="val-shoulder-raise" style="color:var(--text-cyan);">0°</span>
+                  </div>
+                  <input type="range" id="slider-shoulder-raise" min="-15" max="15" step="0.1" value="0">
+                </div>
+                <div class="control-group" style="margin-bottom:10px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Leg Spread Angle</span>
                     <span class="control-value" id="val-leg-spread" style="color:var(--text-cyan);">0°</span>
                   </div>
@@ -402,21 +411,6 @@
         ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-keys">
           <div class="settings-section">
-            <h3>Control Mapping</h3>
-            <p style="margin-bottom:14px;">
-              Click on a control action box and press any keyboard key to bind it.
-            </p>
-            <div id="keybindings-list">
-              <!-- Dynamically populated -->
-            </div>
-          </div>
-        </div>
-
-        <!-- ══════════════════════════════════════
-             4. PHYSICS TAB
-        ══════════════════════════════════════ -->
-        <div class="tab-panel" id="panel-physics">
-          <div class="settings-section">
             <h3>Controller Presets</h3>
             <div class="preset-grid" id="controller-presets"></div>
           </div>
@@ -448,74 +442,6 @@
                 <div><span>Roll</span><strong id="metric-roll">-</strong></div>
                 <div><span>Camera</span><strong id="metric-camera">-</strong></div>
               </div>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <h3>Physics Engine Defaults</h3>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Gravity Strength</span>
-                <span class="control-value" id="slider-grav-val">22</span>
-              </div>
-              <input type="range" id="slider-grav" min="5" max="40" step="0.5" value="22">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Jump Takeoff Power</span>
-                <span class="control-value" id="slider-jump-pwr-val">9.5</span>
-              </div>
-              <input type="range" id="slider-jump-pwr" min="3" max="25" step="0.1" value="9.5">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Walk Speed</span>
-                <span class="control-value" id="slider-speed-walk-val">2.5</span>
-              </div>
-              <input type="range" id="slider-speed-walk" min="0.5" max="8" step="0.1" value="2.5">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Sprint Speed</span>
-                <span class="control-value" id="slider-speed-sprint-val">5.0</span>
-              </div>
-              <input type="range" id="slider-speed-sprint" min="2" max="15" step="0.1" value="5.0">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Acceleration</span>
-                <span class="control-value" id="slider-accel-val">14</span>
-              </div>
-              <input type="range" id="slider-accel" min="1" max="40" step="0.5" value="14">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Deceleration</span>
-                <span class="control-value" id="slider-decel-val">16</span>
-              </div>
-              <input type="range" id="slider-decel" min="1" max="40" step="0.5" value="16">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Rotation Speed</span>
-                <span class="control-value" id="slider-rot-val">40</span>
-              </div>
-              <input type="range" id="slider-rot" min="5" max="120" step="1" value="40">
-            </div>
-
-            <div class="control-group">
-              <div class="control-label">
-                <span>Speed Multiplier</span>
-                <span class="control-value" id="slider-speed-mult-val">1.0x</span>
-              </div>
-              <input type="range" id="slider-speed-mult" min="0.5" max="2.0" step="0.1" value="1.0">
             </div>
           </div>
 
@@ -625,6 +551,96 @@
               </label>
             </div>
           </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════
+             MAPPING TAB
+        ══════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-mapping">
+          <div class="settings-section">
+            <h3>Control Mapping</h3>
+            <p style="margin-bottom:14px;">
+              Click on a control action box and press any keyboard key to bind it.
+            </p>
+            <div id="keybindings-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+
+        <!-- ══════════════════════════════════════
+             4. PHYSICS TAB
+        ══════════════════════════════════════ -->
+        <div class="tab-panel" id="panel-physics">
+          <div class="settings-section">
+            <h3>Physics Engine Defaults</h3>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Gravity Strength</span>
+                <span class="control-value" id="slider-grav-val">22</span>
+              </div>
+              <input type="range" id="slider-grav" min="5" max="40" step="0.5" value="22">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Jump Takeoff Power</span>
+                <span class="control-value" id="slider-jump-pwr-val">9.5</span>
+              </div>
+              <input type="range" id="slider-jump-pwr" min="3" max="25" step="0.1" value="9.5">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Walk Speed</span>
+                <span class="control-value" id="slider-speed-walk-val">2.5</span>
+              </div>
+              <input type="range" id="slider-speed-walk" min="0.5" max="8" step="0.1" value="2.5">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Sprint Speed</span>
+                <span class="control-value" id="slider-speed-sprint-val">5.0</span>
+              </div>
+              <input type="range" id="slider-speed-sprint" min="2" max="15" step="0.1" value="5.0">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Acceleration</span>
+                <span class="control-value" id="slider-accel-val">14</span>
+              </div>
+              <input type="range" id="slider-accel" min="1" max="40" step="0.5" value="14">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Deceleration</span>
+                <span class="control-value" id="slider-decel-val">16</span>
+              </div>
+              <input type="range" id="slider-decel" min="1" max="40" step="0.5" value="16">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Rotation Speed</span>
+                <span class="control-value" id="slider-rot-val">40</span>
+              </div>
+              <input type="range" id="slider-rot" min="5" max="120" step="1" value="40">
+            </div>
+
+            <div class="control-group">
+              <div class="control-label">
+                <span>Speed Multiplier</span>
+                <span class="control-value" id="slider-speed-mult-val">1.0x</span>
+              </div>
+              <input type="range" id="slider-speed-mult" min="0.5" max="2.0" step="0.1" value="1.0">
+            </div>
+          </div>
+
         </div>
 
         <!-- ══════════════════════════════════════

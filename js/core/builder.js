@@ -153,6 +153,7 @@ let charTransformConfig = {
   SCALE_UNIFORM: 1.0,
   ARM_SPREAD_ANGLE: 0.0,
   ARM_SPLAY_ANGLE: 0.0,
+  SHOULDER_RAISE_ANGLE: 0.0,
   LEG_SPREAD_ANGLE: 0.0,
   SPINE_STRAIGHTEN_ANGLE: 0.0,
   HIPS_TILT_ANGLE: 0.0
@@ -174,10 +175,12 @@ function boneRoleNorm(name) {
 }
 
 const BONE_ROLE_SETS = {
-  armL: new Set(['leftshoulder', 'leftcollar', 'claviclel', 'lclavicle', 'shoulderl', 'lshoulder', 'collarl',
-    'leftarm', 'leftupperarm', 'upperarml', 'lupperarm', 'arml', 'larm']),
-  armR: new Set(['rightshoulder', 'rightcollar', 'clavicler', 'rclavicle', 'shoulderr', 'rshoulder', 'collarr',
-    'rightarm', 'rightupperarm', 'upperarmr', 'rupperarm', 'armr', 'rarm']),
+  // Clavicle bones get their own role so Shoulder Raise can target them alone;
+  // they still receive arm spread/splay (see boneOffsetObserver switch).
+  shoulderL: new Set(['leftshoulder', 'leftcollar', 'claviclel', 'lclavicle', 'shoulderl', 'lshoulder', 'collarl']),
+  shoulderR: new Set(['rightshoulder', 'rightcollar', 'clavicler', 'rclavicle', 'shoulderr', 'rshoulder', 'collarr']),
+  armL: new Set(['leftarm', 'leftupperarm', 'upperarml', 'lupperarm', 'arml', 'larm']),
+  armR: new Set(['rightarm', 'rightupperarm', 'upperarmr', 'rupperarm', 'armr', 'rarm']),
   legL: new Set(['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'leftthigh', 'hipl']),
   legR: new Set(['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'rightthigh', 'hipr']),
   spine: new Set(['spine', 'spine1', 'spine2', 'spine3', 'spine01', 'spine02', 'spine03',
@@ -339,6 +342,7 @@ function syncCharTransformToUI() {
   setSlider('slider-pivot-z', charTransformConfig.PIVOT_Z, 'm');
   setSlider('slider-arm-spread', charTransformConfig.ARM_SPREAD_ANGLE, '°');
   setSlider('slider-arm-splay', charTransformConfig.ARM_SPLAY_ANGLE, '°');
+  setSlider('slider-shoulder-raise', charTransformConfig.SHOULDER_RAISE_ANGLE, '°');
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
   setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
   setSlider('slider-hips-tilt', charTransformConfig.HIPS_TILT_ANGLE, '°');
@@ -366,11 +370,13 @@ function resetCharacterTransform() {
 
   const armS = document.getElementById('slider-arm-spread');
   const armSplay = document.getElementById('slider-arm-splay');
+  const shoulderR = document.getElementById('slider-shoulder-raise');
   const legS = document.getElementById('slider-leg-spread');
   const spineS = document.getElementById('slider-spine-straighten');
   const hipsT = document.getElementById('slider-hips-tilt');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
   if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
+  if (shoulderR) { shoulderR.min = "-15"; shoulderR.max = "15"; }
   if (legS) { legS.min = "-10"; legS.max = "10"; }
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
   if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
@@ -392,6 +398,7 @@ function setupCharTransformControls() {
   const pivotZSlider = document.getElementById('slider-pivot-z');
   const armSpreadSlider = document.getElementById('slider-arm-spread');
   const armSplaySlider = document.getElementById('slider-arm-splay');
+  const shoulderRaiseSlider = document.getElementById('slider-shoulder-raise');
   const legSpreadSlider = document.getElementById('slider-leg-spread');
   const spineStraightenSlider = document.getElementById('slider-spine-straighten');
   const hipsTiltSlider = document.getElementById('slider-hips-tilt');
@@ -422,6 +429,7 @@ function setupCharTransformControls() {
     charTransformConfig.PIVOT_Z = pivotZSlider ? parseFloat(pivotZSlider.value) : 0.0;
     charTransformConfig.ARM_SPREAD_ANGLE = armSpreadSlider ? parseFloat(armSpreadSlider.value) : 0.0;
     charTransformConfig.ARM_SPLAY_ANGLE = armSplaySlider ? parseFloat(armSplaySlider.value) : 0.0;
+    charTransformConfig.SHOULDER_RAISE_ANGLE = shoulderRaiseSlider ? parseFloat(shoulderRaiseSlider.value) : 0.0;
     charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
     charTransformConfig.HIPS_TILT_ANGLE = hipsTiltSlider ? parseFloat(hipsTiltSlider.value) : 0.0;
@@ -442,6 +450,7 @@ function setupCharTransformControls() {
   pivotZSlider?.addEventListener('input', onSliderChange);
   armSpreadSlider?.addEventListener('input', onSliderChange);
   armSplaySlider?.addEventListener('input', onSliderChange);
+  shoulderRaiseSlider?.addEventListener('input', onSliderChange);
   legSpreadSlider?.addEventListener('input', onSliderChange);
   spineStraightenSlider?.addEventListener('input', onSliderChange);
   hipsTiltSlider?.addEventListener('input', onSliderChange);
@@ -515,6 +524,7 @@ function getMergeOptions(extra = {}) {
     PIVOT_Z: charTransformConfig.PIVOT_Z,
     ARM_SPREAD_ANGLE: charTransformConfig.ARM_SPREAD_ANGLE,
     ARM_SPLAY_ANGLE: charTransformConfig.ARM_SPLAY_ANGLE,
+    SHOULDER_RAISE_ANGLE: charTransformConfig.SHOULDER_RAISE_ANGLE,
     LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
@@ -1538,8 +1548,16 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   });
 
   // Set up observable to apply real-time bone rotation offsets (posture sliders)
+  // Per-bone smoothing state: when a bone flips between "driven by animation"
+  // and "resting at bind+offset" (clip with track ↔ clip without), the pose
+  // source changes instantly and the bone snaps. Blend over a short window.
+  const boneWasAnimated = new Map();   // uniqueId → bool
+  const boneLastFinal = new Map();     // uniqueId → Quaternion (last applied)
+  const boneBlend = new Map();         // uniqueId → { from: Quaternion, t: number }
+  const BLEND_SECS = 0.18;
   activeCharacter.boneOffsetObserver = scene.onAfterAnimationsObservable.add(() => {
     if (!activeCharacter) return;
+    const dt = scene.getEngine().getDeltaTime() / 1000;
 
     // 1. Gather all unique node IDs that are currently animated by any playing animation group
     const animatedNodes = new Set();
@@ -1555,6 +1573,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
     const armAngle = charTransformConfig.ARM_SPREAD_ANGLE || 0;
     const armSplay = charTransformConfig.ARM_SPLAY_ANGLE || 0;
+    const shoulderRaise = charTransformConfig.SHOULDER_RAISE_ANGLE || 0;
     const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
     const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
     const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
@@ -1567,8 +1586,10 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         const axes = boneOffsetAxes.get(node.uniqueId);
         if (!axes) return;
 
-        if (!animatedNodes.has(node.uniqueId)) {
-          const origRot = originalBoneRotations.get(node.uniqueId);
+        const id = node.uniqueId;
+        const isAnimated = animatedNodes.has(id);
+        if (!isAnimated) {
+          const origRot = originalBoneRotations.get(id);
           if (origRot) {
             node.rotationQuaternion.copyFrom(origRot);
           }
@@ -1581,12 +1602,21 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         };
 
         switch (axes.role) {
+          case 'shoulderL':
+            apply(axes.z, armAngle + shoulderRaise);
+            apply(axes.y, -armSplay);
+            break;
+          case 'shoulderR':
+            apply(axes.z, -(armAngle + shoulderRaise));
+            apply(axes.y, armSplay);
+            break;
           case 'armL':
-            apply(axes.z, armAngle);
+            // counter shoulder raise: arm keeps world orientation (pure shrug)
+            apply(axes.z, armAngle - shoulderRaise);
             apply(axes.y, -armSplay);
             break;
           case 'armR':
-            apply(axes.z, -armAngle);
+            apply(axes.z, -(armAngle - shoulderRaise));
             apply(axes.y, armSplay);
             break;
           case 'legL':
@@ -1605,6 +1635,28 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             apply(axes.x, hipsTilt);
             break;
         }
+
+        // Pose-source switch (animated ↔ rest) → blend instead of snapping
+        const wasAnimated = boneWasAnimated.get(id);
+        if (wasAnimated !== undefined && wasAnimated !== isAnimated) {
+          const last = boneLastFinal.get(id);
+          if (last) boneBlend.set(id, { from: last.clone(), t: 0 });
+        }
+        const blend = boneBlend.get(id);
+        if (blend) {
+          blend.t += dt;
+          const k = blend.t / BLEND_SECS;
+          if (k >= 1) {
+            boneBlend.delete(id);
+          } else {
+            BABYLON.Quaternion.SlerpToRef(blend.from, node.rotationQuaternion, k, node.rotationQuaternion);
+          }
+        }
+
+        boneWasAnimated.set(id, isAnimated);
+        let last = boneLastFinal.get(id);
+        if (!last) { last = new BABYLON.Quaternion(); boneLastFinal.set(id, last); }
+        last.copyFrom(node.rotationQuaternion);
       });
     });
   });
@@ -2253,6 +2305,54 @@ async function startAutoRigAdjust() {
   });
   renderAutoRigLegend();
 
+  // ── Marker ↔ bone follow (re-rig with live posture sliders) ───────────────
+  // The posture-offset observer keeps deforming the skeleton while rig mode is
+  // open, but markers live in the BASE rest space (what the server rigs). Bind
+  // each marker to its nearest bone: the marker is displayed posed (follows
+  // slider movement) while `canonical` keeps the rest-space coordinate that is
+  // actually sent to the server. All matrices are taken relative to
+  // markerParent so the rig-mode yaw spin (Q/E) cancels out.
+  const boneBindings = new Map();  // joint name → transform node
+  const restRel = new Map();       // node → bind matrix relative to markerParent
+  const canonical = new Map();     // joint name → Vector3 (markerParent-local, rest space)
+  if (scene.skeletons?.length) {
+    const mpInv0 = markerParent.getWorldMatrix().clone().invert();
+    const nodes = [];
+    scene.skeletons.forEach(sk => sk.bones.forEach(b => {
+      const n = b.getTransformNode();
+      if (n && !restRel.has(n)) {
+        n.computeWorldMatrix(true);
+        restRel.set(n, n.getWorldMatrix().multiply(mpInv0));
+        nodes.push(n);
+      }
+    }));
+    markers.forEach((m, name) => {
+      m.computeWorldMatrix(true);
+      const mw = m.getAbsolutePosition();
+      let best = null, bestD = Infinity;
+      nodes.forEach(n => {
+        const d = BABYLON.Vector3.DistanceSquared(mw, n.getAbsolutePosition());
+        if (d < bestD) { bestD = d; best = n; }
+      });
+      if (best) boneBindings.set(name, best);
+    });
+  }
+  markers.forEach((m, name) => canonical.set(name, m.position.clone()));
+
+  const curRelOf = (node) => {
+    node.computeWorldMatrix(true);
+    return node.getWorldMatrix().multiply(markerParent.getWorldMatrix().clone().invert());
+  };
+  // Marker was moved by the user: re-derive its rest-space coordinate
+  const updateCanonicalFromMarker = (m) => {
+    const name = m.metadata?.autorigJoint;
+    if (!name) return;
+    const node = boneBindings.get(name);
+    if (!node) { canonical.set(name, m.position.clone()); return; }
+    const toRest = curRelOf(node).invert().multiply(restRel.get(node));
+    canonical.set(name, BABYLON.Vector3.TransformCoordinates(m.position, toRest));
+  };
+
   // Hover/selection tooltip with the anatomical joint name
   const tipEl = document.getElementById('autorig-joint-tip');
   const showTip = (jointName, x, y) => {
@@ -2296,16 +2396,34 @@ async function startAutoRigAdjust() {
       const twinName = mirrorJointName(attached.metadata.autorigJoint);
       if (!twinName) return;
       const twin = markers.get(twinName);
-      if (twin) twin.position.set(-attached.position.x, attached.position.y, attached.position.z);
+      if (twin) {
+        twin.position.set(-attached.position.x, attached.position.y, attached.position.z);
+        updateCanonicalFromMarker(twin);
+      }
     };
     [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
       g?.dragBehavior?.onDragObservable.add(syncMirror);
     });
   }
 
+  // Re-pose markers every frame from their bound bone (runs after the posture
+  // offset observer, which was registered at character load). The attached
+  // marker is the one the user may be dragging — treat ITS position as the
+  // source of truth instead and back-derive its canonical coordinate.
+  const followObserver = scene.onAfterAnimationsObservable.add(() => {
+    markers.forEach((m, name) => {
+      const node = boneBindings.get(name);
+      if (!node) return;
+      if (m === gizmoManager.attachedMesh) { updateCanonicalFromMarker(m); return; }
+      const toPosed = restRel.get(node).clone().invert().multiply(curRelOf(node));
+      const posed = BABYLON.Vector3.TransformCoordinates(canonical.get(name), toPosed);
+      m.position.copyFrom(posed);
+    });
+  });
+
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
-    groupMats, hoverObserver, hideTip,
+    groupMats, hoverObserver, hideTip, canonical, followObserver,
     pausedCtrlCallback: ctrlObserver?.callback || null,
     pausedCamLockCallback: camLockObserver?.callback || null,
   };
@@ -2329,6 +2447,7 @@ function cancelAutoRigAdjust() {
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
     if (autoRigState.hoverObserver) scene.onPointerObservable.remove(autoRigState.hoverObserver);
+    if (autoRigState.followObserver) scene.onAfterAnimationsObservable.remove(autoRigState.followObserver);
     autoRigState.hideTip?.();
     autoRigState.gizmoManager?.dispose();
     autoRigState.markers.forEach(m => m.dispose());
@@ -2371,10 +2490,13 @@ function cancelAutoRigAdjust() {
 async function applyAutoRig() {
   if (!autoRigState || !characterGlbBuffer) return;
 
-  // Collect adjusted joint positions (local to charRoot = glTF space)
+  // Collect adjusted joint positions (local to charRoot = glTF space).
+  // Use the canonical (rest-space) coordinates: displayed markers may be
+  // posed by the posture sliders, but the server rigs the BASE unposed GLB.
   const joints = {};
   autoRigState.markers.forEach((m, name) => {
-    joints[name] = [m.position.x, m.position.y, m.position.z];
+    const p = autoRigState.canonical?.get(name) || m.position;
+    joints[name] = [p.x, p.y, p.z];
   });
 
   const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
@@ -2394,6 +2516,17 @@ async function applyAutoRig() {
     }
     const riggedBuffer = await res.arrayBuffer();
     completeMergeProgress();
+
+    // New skeleton = new bind pose: stale posture offsets (arm spread/splay,
+    // shoulder raise, leg spread, spine, hips tilt) no longer apply. Reset
+    // them BEFORE reloading so the merge doesn't bake them into the new rig.
+    charTransformConfig.ARM_SPREAD_ANGLE = 0;
+    charTransformConfig.ARM_SPLAY_ANGLE = 0;
+    charTransformConfig.SHOULDER_RAISE_ANGLE = 0;
+    charTransformConfig.LEG_SPREAD_ANGLE = 0;
+    charTransformConfig.SPINE_STRAIGHTEN_ANGLE = 0;
+    charTransformConfig.HIPS_TILT_ANGLE = 0;
+    syncCharTransformToUI();
 
     // Reload through the normal character pipeline: re-analyze, then merge
     // default/preloaded animations against the freshly rigged skeleton.

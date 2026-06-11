@@ -478,6 +478,17 @@ class AnimCtrl {
       if (outgoing.onAnimationGroupEndObservable) {
         outgoing.onAnimationGroupEndObservable.clear();
       }
+      // An ended one-shot has already stopped: its animatables are gone, so the
+      // crossfade would have no source pose — Babylon normalizes the incoming
+      // group's tiny weight to full influence and the pose snaps. Re-start the
+      // outgoing clip pinned at its last frame at ~zero speed so it keeps
+      // writing its end pose into the weighted blend (a paused animatable
+      // stops writing and is excluded from weight normalization).
+      if (!outgoing.isPlaying) {
+        const pinFrom = Math.max(outgoing.from, outgoing.to - 0.01);
+        outgoing.start(false, 0.0001, pinFrom, outgoing.to, false);
+        outgoing.goToFrame(outgoing.to - 0.005);
+      }
       let elapsed = 0;
       const outgoingStartWeight = outgoing.animatables[0] ? outgoing.animatables[0].weight : targetWeight;
       const transition = {

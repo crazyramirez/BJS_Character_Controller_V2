@@ -127,7 +127,7 @@ body::before {
    ============================================================ */
 
 #sidebar {
-  width: 500px;
+  width: 565px;
   height: 100%;
   background: var(--bg-panel);
   backdrop-filter: blur(28px) saturate(170%);

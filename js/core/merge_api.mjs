@@ -22,6 +22,8 @@ const DEFAULTS = {
   // Set ARM_SPREAD_ANGLE to a non-zero value to manually override auto A-pose correction.
   ARM_SPREAD_ANGLE: 0,
   ARM_SPLAY_ANGLE: 0,
+  // Clavicle-only up/down rotation (shoulder shrug). Positive raises shoulders.
+  SHOULDER_RAISE_ANGLE: 0,
   LEG_SPREAD_ANGLE: 0,
   SPINE_STRAIGHTEN_ANGLE: 0,
   HIPS_TILT_ANGLE: 0,
@@ -1782,6 +1784,63 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   if (cfg.SKELETON_SOURCE === 'character') {
     const charParentMap = buildParentMap(charDoc);
 
+    // ── Posture/spread slider offsets (precomputed per bone) ─────────────────
+    // Matched on NORMALIZED names so CC/UE/Unity rigs work too, and applied
+    // about WORLD axes converted into the bone's bind frame — raw local-axis
+    // offsets only behaved correctly on Mixamo binds (identity-ish orients).
+    // Precomputed for the whole skeleton so the same offset can be baked into
+    // animation tracks, the rest pose AND injected static tracks consistently.
+    const postureOffsets = new Map(); // node → quat (local, right-multiplied)
+    {
+      const anyPosture = cfg.ARM_SPREAD_ANGLE || cfg.ARM_SPLAY_ANGLE || cfg.SHOULDER_RAISE_ANGLE
+        || cfg.LEG_SPREAD_ANGLE || cfg.SPINE_STRAIGHTEN_ANGLE || cfg.HIPS_TILT_ANGLE
+        || Object.keys(cfg.POSE_OFFSETS || {}).length;
+      if (anyPosture) {
+        for (const node of charDoc.getRoot().listNodes()) {
+          if (!origNodes.has(node)) continue;
+          const nName = (node.getName() || '').toLowerCase();
+          const canon = NORM_TO_CANON.get(normalizeName(nName)) || '';
+          const WcharBind = charWorldByNode.get(node) || [0, 0, 0, 1];
+          let offsetQ = null;
+          const axisLocalQ = (axis, deg) => {
+            const a = rotateVec3(axis, qInvert(WcharBind));
+            const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+            return [a[0] * s, a[1] * s, a[2] * s, Math.cos(r / 2)];
+          };
+          const addOff = (axis, deg) => { offsetQ = qMul(offsetQ || [0, 0, 0, 1], axisLocalQ(axis, deg)); };
+          if (canon === 'clavicle_l' || canon === 'upperarm_l') {
+            if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], cfg.ARM_SPREAD_ANGLE);
+            if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], -cfg.ARM_SPLAY_ANGLE);
+            // Counter on the upperarm so the arm keeps its world orientation (pure shrug)
+            if (cfg.SHOULDER_RAISE_ANGLE) addOff([0, 0, 1], canon === 'clavicle_l' ? cfg.SHOULDER_RAISE_ANGLE : -cfg.SHOULDER_RAISE_ANGLE);
+          } else if (canon === 'clavicle_r' || canon === 'upperarm_r') {
+            if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.ARM_SPREAD_ANGLE);
+            if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], cfg.ARM_SPLAY_ANGLE);
+            if (cfg.SHOULDER_RAISE_ANGLE) addOff([0, 0, 1], canon === 'clavicle_r' ? -cfg.SHOULDER_RAISE_ANGLE : cfg.SHOULDER_RAISE_ANGLE);
+          } else if (canon === 'thigh_l') {
+            if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.LEG_SPREAD_ANGLE);
+            // Counter the hips tilt so legs/feet keep their world orientation
+            if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+          } else if (canon === 'thigh_r') {
+            if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], cfg.LEG_SPREAD_ANGLE);
+            if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+          } else if (/^spine_0[123]$/.test(canon)) {
+            if (cfg.SPINE_STRAIGHTEN_ANGLE) addOff([1, 0, 0], cfg.SPINE_STRAIGHTEN_ANGLE);
+            // Counter the hips tilt on the FIRST spine bone so only the
+            // pelvis reorients — torso keeps its world orientation.
+            if (cfg.HIPS_TILT_ANGLE && canon === 'spine_01') addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+          } else if (canon === 'pelvis') {
+            // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
+            // tilt only the root so the offset doesn't double down the chain.
+            const sp = charParentMap.get(node);
+            const parentIsPelvis = sp && NORM_TO_CANON.get(normalizeName((sp.getName() || '').toLowerCase())) === 'pelvis';
+            if (cfg.HIPS_TILT_ANGLE && !parentIsPelvis) addOff([1, 0, 0], cfg.HIPS_TILT_ANGLE);
+          }
+          if (offsetQ) postureOffsets.set(node, offsetQ);
+        }
+      }
+    }
+
     for (const anim of importedAnims) {
       for (const ch of anim.listChannels()) {
         const path = ch.getTargetPath();
@@ -1878,47 +1937,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             CpFinger = qMul(qInvert(WcharP), WanimP);
           }
 
-          // ── Posture/spread slider offsets ─────────────────────────────────
-          // Matched on NORMALIZED names so CC/UE/Unity rigs work too, and
-          // applied about WORLD axes converted into the bone's bind frame —
-          // raw local-axis offsets only behaved correctly on Mixamo binds
-          // (identity-ish joint orients).
-          let offsetQ = null;
-          {
-            const canon = NORM_TO_CANON.get(normalizeName(tgtName)) || '';
-            const WcharBind = charWorldByNode.get(target) || [0, 0, 0, 1];
-            const axisLocalQ = (axis, deg) => {
-              const a = rotateVec3(axis, qInvert(WcharBind));
-              const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
-              return [a[0] * s, a[1] * s, a[2] * s, Math.cos(r / 2)];
-            };
-            const addOff = (axis, deg) => { offsetQ = qMul(offsetQ || [0, 0, 0, 1], axisLocalQ(axis, deg)); };
-            if (canon === 'clavicle_l' || canon === 'upperarm_l') {
-              if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], cfg.ARM_SPREAD_ANGLE);
-              if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], -cfg.ARM_SPLAY_ANGLE);
-            } else if (canon === 'clavicle_r' || canon === 'upperarm_r') {
-              if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.ARM_SPREAD_ANGLE);
-              if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], cfg.ARM_SPLAY_ANGLE);
-            } else if (canon === 'thigh_l') {
-              if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.LEG_SPREAD_ANGLE);
-              // Counter the hips tilt so legs/feet keep their world orientation
-              if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
-            } else if (canon === 'thigh_r') {
-              if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], cfg.LEG_SPREAD_ANGLE);
-              if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
-            } else if (/^spine_0[123]$/.test(canon)) {
-              if (cfg.SPINE_STRAIGHTEN_ANGLE) addOff([1, 0, 0], cfg.SPINE_STRAIGHTEN_ANGLE);
-              // Counter the hips tilt on the FIRST spine bone so only the
-              // pelvis reorients — torso keeps its world orientation.
-              if (cfg.HIPS_TILT_ANGLE && canon === 'spine_01') addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
-            } else if (canon === 'pelvis') {
-              // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
-              // tilt only the root so the offset doesn't double down the chain.
-              const sp = charParentMap.get(target);
-              const parentIsPelvis = sp && NORM_TO_CANON.get(normalizeName((sp.getName() || '').toLowerCase())) === 'pelvis';
-              if (cfg.HIPS_TILT_ANGLE && !parentIsPelvis) addOff([1, 0, 0], cfg.HIPS_TILT_ANGLE);
-            }
-          }
+          // Posture/spread slider offset for this bone (precomputed above)
+          const offsetQ = postureOffsets.get(target) || null;
 
           const sampler = ch.getSampler();
           if (sampler) {
@@ -1988,6 +2008,45 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         }
 
         ch.setTargetNode(target);
+      }
+    }
+
+    // ── Bake posture offsets into rest pose + inject missing static tracks ───
+    // Rotation keys above already carry the offset, but a clip with NO track
+    // for a posture bone leaves it at the un-offset rest pose — the character
+    // visibly snaps when blending between a clip that animates the bone and
+    // one that doesn't. Fix both sides of that discontinuity:
+    //   1. rest pose := rest × offset (bone holds the posture when idle)
+    //   2. every imported clip gets a 1-key static rotation track pinning the
+    //      bone to that same posture rest when it has no track of its own.
+    if (postureOffsets.size) {
+      const postureRest = new Map();
+      for (const [node, q] of postureOffsets) {
+        const rest = node.getRotation() || [0, 0, 0, 1];
+        const r = qMul(rest, q);
+        postureRest.set(node, r);
+        node.setRotation([r[0], r[1], r[2], r[3]]);
+      }
+
+      const trackBuf = charDoc.getRoot().listBuffers()[0];
+      for (const anim of importedAnims) {
+        const covered = new Set();
+        for (const ch of anim.listChannels()) {
+          if (ch.getTargetPath() === 'rotation' && ch.getTargetNode()) covered.add(ch.getTargetNode());
+        }
+        for (const [node, r] of postureRest) {
+          if (covered.has(node)) continue;
+          const input = charDoc.createAccessor()
+            .setType('SCALAR').setArray(new Float32Array([0])).setBuffer(trackBuf);
+          const output = charDoc.createAccessor()
+            .setType('VEC4').setArray(new Float32Array(r)).setBuffer(trackBuf);
+          const samp = charDoc.createAnimationSampler()
+            .setInput(input).setOutput(output).setInterpolation('LINEAR');
+          const chan = charDoc.createAnimationChannel()
+            .setTargetNode(node).setTargetPath('rotation').setSampler(samp);
+          anim.addSampler(samp);
+          anim.addChannel(chan);
+        }
       }
     }
 
