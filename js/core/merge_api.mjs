@@ -21,7 +21,10 @@ const DEFAULTS = {
   // ARM_SPREAD_ANGLE / LEG_SPREAD_ANGLE are now only used as manual overrides.
   // Set ARM_SPREAD_ANGLE to a non-zero value to manually override auto A-pose correction.
   ARM_SPREAD_ANGLE: 0,
+  ARM_SPLAY_ANGLE: 0,
   LEG_SPREAD_ANGLE: 0,
+  SPINE_STRAIGHTEN_ANGLE: 0,
+  HIPS_TILT_ANGLE: 0,
   POSE_OFFSETS: {},
   COMPRESS_OUTPUT: true,
   // A-pose correction is disabled: the world-space change-of-basis C = inv(Wchar)·Wanim
@@ -1890,6 +1893,42 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             CpFinger = qMul(qInvert(WcharP), WanimP);
           }
 
+          // ── Posture/spread slider offsets ─────────────────────────────────
+          // Matched on NORMALIZED names so CC/UE/Unity rigs work too, and
+          // applied about WORLD axes converted into the bone's bind frame —
+          // raw local-axis offsets only behaved correctly on Mixamo binds
+          // (identity-ish joint orients).
+          let offsetQ = null;
+          {
+            const canon = NORM_TO_CANON.get(normalizeName(tgtName)) || '';
+            const WcharBind = charWorldByNode.get(target) || [0, 0, 0, 1];
+            const axisLocalQ = (axis, deg) => {
+              const a = rotateVec3(axis, qInvert(WcharBind));
+              const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+              return [a[0] * s, a[1] * s, a[2] * s, Math.cos(r / 2)];
+            };
+            const addOff = (axis, deg) => { offsetQ = qMul(offsetQ || [0, 0, 0, 1], axisLocalQ(axis, deg)); };
+            if (canon === 'clavicle_l' || canon === 'upperarm_l') {
+              if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], cfg.ARM_SPREAD_ANGLE);
+              if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], -cfg.ARM_SPLAY_ANGLE);
+            } else if (canon === 'clavicle_r' || canon === 'upperarm_r') {
+              if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.ARM_SPREAD_ANGLE);
+              if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], cfg.ARM_SPLAY_ANGLE);
+            } else if (canon === 'thigh_l') {
+              if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.LEG_SPREAD_ANGLE);
+            } else if (canon === 'thigh_r') {
+              if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], cfg.LEG_SPREAD_ANGLE);
+            } else if (/^spine_0[123]$/.test(canon)) {
+              if (cfg.SPINE_STRAIGHTEN_ANGLE) addOff([1, 0, 0], cfg.SPINE_STRAIGHTEN_ANGLE);
+            } else if (canon === 'pelvis') {
+              // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
+              // tilt only the root so the offset doesn't double down the chain.
+              const sp = charParentMap.get(target);
+              const parentIsPelvis = sp && NORM_TO_CANON.get(normalizeName((sp.getName() || '').toLowerCase())) === 'pelvis';
+              if (cfg.HIPS_TILT_ANGLE && !parentIsPelvis) addOff([1, 0, 0], cfg.HIPS_TILT_ANGLE);
+            }
+          }
+
           const sampler = ch.getSampler();
           if (sampler) {
             const output = sampler.getOutput();
@@ -1908,21 +1947,13 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                     final = qMul(rChar, rotated);
                   }
 
-                  // Manual per-bone overrides (POSE_OFFSETS and legacy spread angles)
-                  let pOffset = [0, 0, 0];
-                  if (cfg.POSE_OFFSETS[tgtName]) pOffset = [...cfg.POSE_OFFSETS[tgtName]];
-                  if (cfg.ARM_SPREAD_ANGLE !== 0) {
-                    if (tgtName.includes('leftshoulder') || tgtName.includes('leftarm')) pOffset[2] += cfg.ARM_SPREAD_ANGLE;
-                    else if (tgtName.includes('rightshoulder') || tgtName.includes('rightarm')) pOffset[2] -= cfg.ARM_SPREAD_ANGLE;
-                  }
-                  if (cfg.LEG_SPREAD_ANGLE !== 0) {
-                    if (tgtName.includes('leftupleg') || tgtName.includes('leftthigh')) pOffset[2] -= cfg.LEG_SPREAD_ANGLE;
-                    else if (tgtName.includes('rightupleg') || tgtName.includes('rightthigh')) pOffset[2] += cfg.LEG_SPREAD_ANGLE;
-                  }
-
-                  if (pOffset[0] !== 0 || pOffset[1] !== 0 || pOffset[2] !== 0) {
+                  // Manual per-bone overrides (raw-name keyed, local euler — legacy)
+                  if (cfg.POSE_OFFSETS[tgtName]) {
+                    const pOffset = cfg.POSE_OFFSETS[tgtName];
                     final = qMul(final, eulerToQuat(pOffset[0], pOffset[1], pOffset[2]));
                   }
+                  // Posture/spread sliders (normalized-name matched, world-axis based)
+                  if (offsetQ) final = qMul(final, offsetQ);
                   out[j] = final[0]; out[j + 1] = final[1]; out[j + 2] = final[2]; out[j + 3] = final[3];
                 }
                 output.setArray(out);

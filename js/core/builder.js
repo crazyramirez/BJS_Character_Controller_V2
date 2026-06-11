@@ -154,9 +154,44 @@ let charTransformConfig = {
   ARM_SPREAD_ANGLE: 0.0,
   ARM_SPLAY_ANGLE: 0.0,
   LEG_SPREAD_ANGLE: 0.0,
-  SPINE_STRAIGHTEN_ANGLE: 0.0
+  SPINE_STRAIGHTEN_ANGLE: 0.0,
+  HIPS_TILT_ANGLE: 0.0
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
+
+// ── Bone role classification (posture/spread sliders) ───────────────────────
+// Normalized like merge_api's aliasNorm so CC/AccuRig, UE, Unity, Biped and
+// Rigify names classify the same as Mixamo ones.
+function boneRoleNorm(name) {
+  let n = (name || '').toLowerCase();
+  if (n.includes(':')) n = n.split(':').pop();
+  n = n.replace(/_\d+$/, ''); // BJS numeric suffix (Hips_66) + spine_01 → spine (covered by sets)
+  n = n.replace(/^j_?bip_?c_?/, '').replace(/^j_?bip_?([lr])_?/, '$1_');
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/, '');
+  n = n.replace(/^mixamorig\d*/, '');
+  n = n.replace(/\.([lr])$/, '$1');
+  return n.replace(/[:_\-.\s]/g, '');
+}
+
+const BONE_ROLE_SETS = {
+  armL: new Set(['leftshoulder', 'leftcollar', 'claviclel', 'lclavicle', 'shoulderl', 'lshoulder', 'collarl',
+    'leftarm', 'leftupperarm', 'upperarml', 'lupperarm', 'arml', 'larm']),
+  armR: new Set(['rightshoulder', 'rightcollar', 'clavicler', 'rclavicle', 'shoulderr', 'rshoulder', 'collarr',
+    'rightarm', 'rightupperarm', 'upperarmr', 'rupperarm', 'armr', 'rarm']),
+  legL: new Set(['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'leftthigh', 'hipl']),
+  legR: new Set(['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'rightthigh', 'hipr']),
+  spine: new Set(['spine', 'spine1', 'spine2', 'spine3', 'spine01', 'spine02', 'spine03',
+    'waist', 'chest', 'upperchest', 'lowerback']),
+  hips: new Set(['hips', 'hip', 'pelvis']),
+};
+
+function boneRole(name) {
+  const n = boneRoleNorm(name);
+  for (const [role, set] of Object.entries(BONE_ROLE_SETS)) {
+    if (set.has(n)) return role;
+  }
+  return null;
+}
 
 // ═══════════════════════════════════════════════════════════
 // PREFERENCES
@@ -306,6 +341,7 @@ function syncCharTransformToUI() {
   setSlider('slider-arm-splay', charTransformConfig.ARM_SPLAY_ANGLE, '°');
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
   setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
+  setSlider('slider-hips-tilt', charTransformConfig.HIPS_TILT_ANGLE, '°');
 }
 
 function resetCharacterTransform() {
@@ -332,10 +368,12 @@ function resetCharacterTransform() {
   const armSplay = document.getElementById('slider-arm-splay');
   const legS = document.getElementById('slider-leg-spread');
   const spineS = document.getElementById('slider-spine-straighten');
+  const hipsT = document.getElementById('slider-hips-tilt');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
   if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
   if (legS) { legS.min = "-10"; legS.max = "10"; }
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
+  if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -356,6 +394,7 @@ function setupCharTransformControls() {
   const armSplaySlider = document.getElementById('slider-arm-splay');
   const legSpreadSlider = document.getElementById('slider-leg-spread');
   const spineStraightenSlider = document.getElementById('slider-spine-straighten');
+  const hipsTiltSlider = document.getElementById('slider-hips-tilt');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -385,6 +424,7 @@ function setupCharTransformControls() {
     charTransformConfig.ARM_SPLAY_ANGLE = armSplaySlider ? parseFloat(armSplaySlider.value) : 0.0;
     charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
+    charTransformConfig.HIPS_TILT_ANGLE = hipsTiltSlider ? parseFloat(hipsTiltSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -404,6 +444,7 @@ function setupCharTransformControls() {
   armSplaySlider?.addEventListener('input', onSliderChange);
   legSpreadSlider?.addEventListener('input', onSliderChange);
   spineStraightenSlider?.addEventListener('input', onSliderChange);
+  hipsTiltSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -1455,7 +1496,38 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   });
   activeCharacter.originalBoneRotations = originalBoneRotations;
 
-  // Set up observable to apply real-time bone rotation offsets (arm & leg spread angles)
+  // Bind-pose local axes per posture-relevant bone. Offsets must rotate about
+  // WORLD axes (X = pitch, Y = splay, Z = spread). Mixamo binds are
+  // identity-ish (local ≈ world), but CC/AccuRig/UE/Unity rigs carry joint
+  // orients — the world axis has to be converted into each bone's frame.
+  const boneOffsetAxes = new Map(); // node.uniqueId → { role, x, y, z }
+  scene.skeletons.forEach(skel => {
+    skel.bones.forEach(bone => {
+      const node = bone.getTransformNode();
+      if (!node) return;
+      const role = boneRole(bone.name || node.name || '');
+      if (!role || boneOffsetAxes.has(node.uniqueId)) return;
+      // CC rigs have Hip (root) AND Pelvis (child): tilt only the root,
+      // otherwise the offset doubles down the chain.
+      if (role === 'hips' && boneRole(node.parent?.name || '') === 'hips') return;
+      node.computeWorldMatrix(true);
+      const wq = node.absoluteRotationQuaternion?.clone() || BABYLON.Quaternion.Identity();
+      const inv = BABYLON.Quaternion.Inverse(wq);
+      const toLocal = (axis) => {
+        const out = new BABYLON.Vector3();
+        axis.rotateByQuaternionToRef(inv, out);
+        return out.normalize();
+      };
+      boneOffsetAxes.set(node.uniqueId, {
+        role,
+        x: toLocal(BABYLON.Axis.X),
+        y: toLocal(BABYLON.Axis.Y),
+        z: toLocal(BABYLON.Axis.Z),
+      });
+    });
+  });
+
+  // Set up observable to apply real-time bone rotation offsets (posture sliders)
   activeCharacter.boneOffsetObserver = scene.onAfterAnimationsObservable.add(() => {
     if (!activeCharacter) return;
 
@@ -1475,67 +1547,50 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     const armSplay = charTransformConfig.ARM_SPLAY_ANGLE || 0;
     const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
     const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
+    const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
 
-    // 2. Loop through character bones and apply offsets
+    // 2. Loop through character bones and apply offsets about bind-world axes
     scene.skeletons.forEach(skel => {
       skel.bones.forEach(bone => {
         const node = bone.getTransformNode();
-        if (!node) return;
+        if (!node || !node.rotationQuaternion) return;
+        const axes = boneOffsetAxes.get(node.uniqueId);
+        if (!axes) return;
 
-        const name = (bone.name || node.name || '').toLowerCase();
-        let isArm = false;
-        let isLeg = false;
-        let isSpine = false;
-        let isLeft = false;
-        let isRight = false;
-
-        if (name.includes('leftshoulder') || name.includes('leftarm')) {
-          isArm = true;
-          isLeft = true;
-        } else if (name.includes('rightshoulder') || name.includes('rightarm')) {
-          isArm = true;
-          isRight = true;
-        } else if (name.includes('leftupleg') || name.includes('leftthigh')) {
-          isLeg = true;
-          isLeft = true;
-        } else if (name.includes('rightupleg') || name.includes('rightthigh')) {
-          isLeg = true;
-          isRight = true;
-        } else if (name.includes('spine')) {
-          isSpine = true;
+        if (!animatedNodes.has(node.uniqueId)) {
+          const origRot = originalBoneRotations.get(node.uniqueId);
+          if (origRot) {
+            node.rotationQuaternion.copyFrom(origRot);
+          }
         }
 
-        if (isArm || isLeg || isSpine) {
-          if (!animatedNodes.has(node.uniqueId)) {
-            const origRot = originalBoneRotations.get(node.uniqueId);
-            if (origRot) {
-              node.rotationQuaternion.copyFrom(origRot);
-            }
-          }
+        const apply = (axis, deg) => {
+          if (deg === 0) return;
+          const q = BABYLON.Quaternion.RotationAxis(axis, deg * Math.PI / 180);
+          node.rotationQuaternion.multiplyToRef(q, node.rotationQuaternion);
+        };
 
-          if (isArm) {
-            // Z-axis: forward/backward spread
-            if (armAngle !== 0) {
-              const zDeg = isLeft ? armAngle : -armAngle;
-              const zQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, zDeg * Math.PI / 180);
-              node.rotationQuaternion.multiplyToRef(zQuat, node.rotationQuaternion);
-            }
-            // Y-axis: open/close arms laterally (splay)
-            if (armSplay !== 0) {
-              const yDeg = isLeft ? -armSplay : armSplay;
-              const yQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, yDeg * Math.PI / 180);
-              node.rotationQuaternion.multiplyToRef(yQuat, node.rotationQuaternion);
-            }
-          } else if (isLeg) {
-            if (legAngle !== 0) {
-              const zDeg = isLeft ? -legAngle : legAngle;
-              const zQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, zDeg * Math.PI / 180);
-              node.rotationQuaternion.multiplyToRef(zQuat, node.rotationQuaternion);
-            }
-          } else if (isSpine && spineAngle !== 0) {
-            const xQuat = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.X, spineAngle * Math.PI / 180);
-            node.rotationQuaternion.multiplyToRef(xQuat, node.rotationQuaternion);
-          }
+        switch (axes.role) {
+          case 'armL':
+            apply(axes.z, armAngle);
+            apply(axes.y, -armSplay);
+            break;
+          case 'armR':
+            apply(axes.z, -armAngle);
+            apply(axes.y, armSplay);
+            break;
+          case 'legL':
+            apply(axes.z, -legAngle);
+            break;
+          case 'legR':
+            apply(axes.z, legAngle);
+            break;
+          case 'spine':
+            apply(axes.x, spineAngle);
+            break;
+          case 'hips':
+            apply(axes.x, hipsTilt);
+            break;
         }
       });
     });
