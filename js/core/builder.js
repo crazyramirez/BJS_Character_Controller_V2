@@ -1851,6 +1851,43 @@ function renderSkeletonSectionFromBJS() {
 // ═══════════════════════════════════════════════════════════
 let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
 
+// Marker color groups (Mixamo-style legend: each anatomical group gets a color)
+const AUTORIG_JOINT_GROUPS = [
+  { id: 'head', label: 'Head / Neck', color: '#22d3ee', joints: ['Head', 'Neck'] },
+  { id: 'spine', label: 'Spine', color: '#a78bfa', joints: ['Spine', 'Spine1', 'Spine2'] },
+  { id: 'shoulder', label: 'Shoulders', color: '#60a5fa', joints: ['LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm'] },
+  { id: 'elbow', label: 'Elbows', color: '#fde047', joints: ['LeftForeArm', 'RightForeArm'] },
+  { id: 'wrist', label: 'Wrists', color: '#4ade80', joints: ['LeftHand', 'RightHand'] },
+  { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
+  { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
+  { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
+];
+
+// Friendly anatomical names shown in the hover tooltip
+const AUTORIG_JOINT_LABELS = {
+  Hips: 'Hips', Spine: 'Lower Spine', Spine1: 'Mid Spine', Spine2: 'Chest',
+  Neck: 'Neck', Head: 'Head',
+  LeftShoulder: 'Left Clavicle', LeftArm: 'Left Shoulder', LeftForeArm: 'Left Elbow', LeftHand: 'Left Wrist',
+  RightShoulder: 'Right Clavicle', RightArm: 'Right Shoulder', RightForeArm: 'Right Elbow', RightHand: 'Right Wrist',
+  LeftUpLeg: 'Left Hip (Groin)', LeftLeg: 'Left Knee', LeftFoot: 'Left Ankle', LeftToeBase: 'Left Toes',
+  RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
+};
+
+function autoRigGroupOf(jointName) {
+  return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
+}
+
+function renderAutoRigLegend() {
+  const el = document.getElementById('autorig-legend');
+  if (!el) return;
+  el.innerHTML = `<div class="autorig-legend-title">Joint markers</div>` +
+    AUTORIG_JOINT_GROUPS.map(g =>
+      `<div class="autorig-legend-row">
+        <span class="autorig-legend-dot" style="background:${g.color};color:${g.color};"></span>
+        <span>${g.label}</span>
+      </div>`).join('');
+}
+
 function showAutoRigControls(show, hasExistingSkin = false) {
   const wrap = document.getElementById('autorig-controls');
   if (!wrap) return;
@@ -2053,20 +2090,60 @@ async function startAutoRigAdjust() {
     : 1.8;
 
   const markers = new Map();
-  const markerMat = new BABYLON.StandardMaterial('autorigMarkerMat', scene);
-  markerMat.emissiveColor = new BABYLON.Color3(1, 0.85, 0.1);
-  markerMat.disableLighting = true;
+  // One emissive material per anatomical group (Mixamo-style color coding)
+  const groupMats = new Map();
+  const matFor = (jointName) => {
+    const group = autoRigGroupOf(jointName);
+    const key = group?.id || 'default';
+    if (!groupMats.has(key)) {
+      const mat = new BABYLON.StandardMaterial(`autorigMarkerMat_${key}`, scene);
+      mat.emissiveColor = group
+        ? BABYLON.Color3.FromHexString(group.color)
+        : new BABYLON.Color3(1, 0.85, 0.1);
+      mat.disableLighting = true;
+      groupMats.set(key, mat);
+    }
+    return groupMats.get(key);
+  };
 
   const diameter = Math.max(0.03 * guess.height, 0.02);
   Object.entries(guess.joints).forEach(([name, pos]) => {
     const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
-    m.material = markerMat;
+    m.material = matFor(name);
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
     m.parent = markerParent;
     m.position.set(pos[0], pos[1], pos[2]);
     m.metadata = { autorigJoint: name };
     markers.set(name, m);
+  });
+  renderAutoRigLegend();
+
+  // Hover/selection tooltip with the anatomical joint name
+  const tipEl = document.getElementById('autorig-joint-tip');
+  const showTip = (jointName, x, y) => {
+    if (!tipEl) return;
+    const group = autoRigGroupOf(jointName);
+    tipEl.textContent = AUTORIG_JOINT_LABELS[jointName] || jointName;
+    tipEl.style.borderColor = group?.color || 'rgba(255,255,255,0.18)';
+    tipEl.style.left = `${x}px`;
+    tipEl.style.top = `${y}px`;
+    tipEl.style.display = 'block';
+  };
+  const hideTip = () => { if (tipEl) tipEl.style.display = 'none'; };
+  const hoverObserver = scene.onPointerObservable.add((pi) => {
+    if (pi.type !== BABYLON.PointerEventTypes.POINTERMOVE) return;
+    // While dragging a marker keep its label pinned to the gizmo-attached mesh
+    const dragging = gizmoManager.attachedMesh?.metadata?.autorigJoint &&
+      pi.event.buttons > 0;
+    const mesh = dragging
+      ? gizmoManager.attachedMesh
+      : scene.pick(scene.pointerX, scene.pointerY, (m) => !!m.metadata?.autorigJoint)?.pickedMesh;
+    if (mesh?.metadata?.autorigJoint) {
+      showTip(mesh.metadata.autorigJoint, scene.pointerX, scene.pointerY);
+    } else {
+      hideTip();
+    }
   });
 
   const gizmoManager = new BABYLON.GizmoManager(scene);
@@ -2094,6 +2171,7 @@ async function startAutoRigAdjust() {
 
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
+    groupMats, hoverObserver, hideTip,
     pausedCtrlCallback: ctrlObserver?.callback || null,
     pausedCamLockCallback: camLockObserver?.callback || null,
   };
@@ -2116,11 +2194,11 @@ async function startAutoRigAdjust() {
 function cancelAutoRigAdjust() {
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
+    if (autoRigState.hoverObserver) scene.onPointerObservable.remove(autoRigState.hoverObserver);
+    autoRigState.hideTip?.();
     autoRigState.gizmoManager?.dispose();
-    autoRigState.markers.forEach(m => {
-      m.material?.dispose();
-      m.dispose();
-    });
+    autoRigState.markers.forEach(m => m.dispose());
+    autoRigState.groupMats?.forEach(mat => mat.dispose());
     // Resume the paused controller update loop (no-op after apply: reload replaces it)
     if (autoRigState.pausedCtrlCallback && activeCharacter?.charCtrl) {
       activeCharacter.charCtrl._updateObserver =

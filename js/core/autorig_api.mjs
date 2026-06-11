@@ -98,8 +98,34 @@ function worldMatrixOf(node, parentMap, cache) {
   return world;
 }
 
+// ── Skin space → render world ────────────────────────────────────────────────
+// Skinned vertices are authored in skin space and rendered as jointWorld·IBM·v.
+// At bind pose jointWorld·IBM is the same matrix S for every joint, but S is
+// NOT always identity: FBX-sourced exports (UE, Blender, 3ds Max, AccuRig)
+// keep vertices Z-up and put the up-axis fix on an armature ancestor, so
+// S is that rotation. Returns Map<mesh, mat4> for every skinned mesh.
+function skinWorldXforms(doc) {
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  const byMesh = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    const skin = node.getSkin();
+    const mesh = node.getMesh();
+    if (!skin || !mesh || byMesh.has(mesh)) continue;
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices()?.getArray();
+    if (!joints.length || !ibm || ibm.length < 16) {
+      byMesh.set(mesh, MAT4_IDENTITY);
+      continue;
+    }
+    const W = worldMatrixOf(joints[0], parentMap, cache);
+    byMesh.set(mesh, mat4Mul(W, ibm.slice(0, 16)));
+  }
+  return byMesh;
+}
+
 // ── Mesh bounds (world space) ────────────────────────────────────────────────
-function computeWorldBounds(doc, identityMeshes = new Set(), bodyMeshes = null) {
+function computeWorldBounds(doc, skinXforms = new Map(), bodyMeshes = null) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const min = [Infinity, Infinity, Infinity];
@@ -109,10 +135,8 @@ function computeWorldBounds(doc, identityMeshes = new Set(), bodyMeshes = null) 
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    // Skinned vertices live in skin space — the node chain does not apply
-    const world = identityMeshes.has(mesh)
-      ? MAT4_IDENTITY
-      : worldMatrixOf(node, parentMap, cache);
+    // Skinned vertices: skin space → world via jointWorld·IBM, not the node chain
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION');
       if (!pos) continue;
@@ -135,7 +159,7 @@ function computeWorldBounds(doc, identityMeshes = new Set(), bodyMeshes = null) 
 // plane, props and light gizmos. Rigging/measuring against ALL meshes ruins
 // the joint guess and skins the floor to the skeleton. Pick the "body": the
 // densest tall mesh plus everything contained in (or near) its bounding box.
-function selectBodyMeshes(doc, identityMeshes = new Set()) {
+function selectBodyMeshes(doc, skinXforms = new Map()) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const entries = [];
@@ -144,7 +168,7 @@ function selectBodyMeshes(doc, identityMeshes = new Set()) {
     const mesh = node.getMesh();
     if (!mesh || seen.has(mesh)) continue;
     seen.add(mesh);
-    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
     const min = [1 / 0, 1 / 0, 1 / 0], max = [-1 / 0, -1 / 0, -1 / 0];
     let count = 0;
     for (const prim of mesh.listPrimitives()) {
@@ -199,7 +223,7 @@ function selectBodyMeshes(doc, identityMeshes = new Set()) {
  * stick out forward, so the lowest vertices are biased toward the facing side.
  * Returns +1 (faces +Z, Mixamo convention) or -1 (faces -Z).
  */
-function detectForwardZ(doc, { min, max }, identityMeshes = new Set(), bodyMeshes = null) {
+function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = null) {
   const H = max[1] - min[1];
   const cz = (min[2] + max[2]) / 2;
   const footY = min[1] + 0.12 * H;
@@ -211,7 +235,7 @@ function detectForwardZ(doc, { min, max }, identityMeshes = new Set(), bodyMeshe
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
       if (!arr) continue;
@@ -271,7 +295,7 @@ export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
 // The bounds guess assumes ideal T-pose proportions. Real meshes vary: A-poses,
 // wide stances, hunched spines, big heads. Analyze the actual vertex cloud and
 // override the bounds guess where the measurement is reliable.
-function collectWorldVertices(doc, identityMeshes = new Set(), bodyMeshes = null, maxVerts = 200000) {
+function collectWorldVertices(doc, skinXforms = new Map(), bodyMeshes = null, maxVerts = 200000) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const pts = [];
@@ -289,7 +313,7 @@ function collectWorldVertices(doc, identityMeshes = new Set(), bodyMeshes = null
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
       if (!arr) continue;
@@ -459,7 +483,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 // point sampling, classifies limbs by centerline thickness, and places the
 // Mixamo joints along the limb centerlines.
 
-function voxelizeSolid(doc, identityMeshes, bounds, N = 64, bodyMeshes = null) {
+function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
   const { min, max } = bounds;
   const extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const cell = Math.max(...extent) / N;
@@ -486,7 +510,7 @@ function voxelizeSolid(doc, identityMeshes, bounds, N = 64, bodyMeshes = null) {
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = identityMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, matCache);
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, matCache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION')?.getArray();
       if (!pos) continue;
@@ -598,9 +622,9 @@ function voxelBFS(vox, sources) {
  * Pose-independent joint guess. Returns { joints, height, bounds, confidence,
  * method:'topology' } or null when the topology cannot be resolved.
  */
-export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 1, bodyMeshes = null) {
+export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, bodyMeshes = null) {
   // 96³: fine enough that touching thighs/arms don't fuse prematurely
-  const vox = voxelizeSolid(doc, identityMeshes, bounds, 96, bodyMeshes);
+  const vox = voxelizeSolid(doc, skinXforms, bounds, 96, bodyMeshes);
   if (!vox || vox.solid < 500) return null;
   const { grid, nx, ny, origin, cell } = vox;
   const worldOf = (i) => {
@@ -870,14 +894,14 @@ export function guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ = 
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, identityMeshes, bounds, forwardZ, bodyMeshes = null) {
-  const verts = collectWorldVertices(doc, identityMeshes, bodyMeshes);
+function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
+  const verts = collectWorldVertices(doc, skinXforms, bodyMeshes);
   const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
   sliced.method = 'slicing';
 
   let topo = null;
   try {
-    topo = guessJointsFromTopology(doc, identityMeshes, bounds, forwardZ, bodyMeshes);
+    topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
   } catch (e) {
     console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
   }
@@ -912,36 +936,53 @@ function guessJointsAuto(doc, identityMeshes, bounds, forwardZ, bodyMeshes = nul
 // no separators, no trailing _N). Covers Mixamo/Unity/UE5/generic conventions.
 const SEED_ALIASES = {
   Hips: ['hips', 'pelvis', 'hip'],
-  Spine: ['spine', 'spine01', 'lowerback'],
+  Spine: ['spine', 'spine01', 'lowerback', 'waist'],
   Spine1: ['spine1', 'spine02', 'chest'],
   Spine2: ['spine2', 'spine03', 'upperchest'],
-  Neck: ['neck', 'neck01'],
+  Neck: ['neck', 'neck01', 'necktwist01', 'necktwist'],
   Head: ['head'],
-  LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar'],
-  LeftArm: ['leftarm', 'leftupperarm', 'upperarml', 'larm'],
-  LeftForeArm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml'],
+  LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar', 'lshoulder', 'collarl'],
+  LeftArm: ['leftarm', 'leftupperarm', 'upperarml', 'larm', 'lupperarm', 'arml'],
+  LeftForeArm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'lforearm'],
   LeftHand: ['lefthand', 'handl', 'lhand'],
-  LeftUpLeg: ['leftupleg', 'leftupperleg', 'thighl', 'lthigh'],
-  LeftLeg: ['leftleg', 'leftlowerleg', 'calfl', 'shinl', 'lcalf'],
+  LeftUpLeg: ['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl'],
+  LeftLeg: ['leftleg', 'leftlowerleg', 'calfl', 'shinl', 'lcalf', 'lowerlegl'],
   LeftFoot: ['leftfoot', 'footl', 'lfoot'],
-  LeftToeBase: ['lefttoebase', 'toel', 'toebasel', 'lefttoe'],
-  RightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rclavicle', 'rightcollar'],
-  RightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'rarm'],
-  RightForeArm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr'],
+  LeftToeBase: ['lefttoebase', 'toel', 'toebasel', 'lefttoe', 'ltoebase', 'balll', 'lball', 'ltoe0', 'ltoe'],
+  RightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rclavicle', 'rightcollar', 'rshoulder', 'collarr'],
+  RightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'rarm', 'rupperarm', 'armr'],
+  RightForeArm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rforearm'],
   RightHand: ['righthand', 'handr', 'rhand'],
-  RightUpLeg: ['rightupleg', 'rightupperleg', 'thighr', 'rthigh'],
-  RightLeg: ['rightleg', 'rightlowerleg', 'calfr', 'shinr', 'rcalf'],
+  RightUpLeg: ['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr'],
+  RightLeg: ['rightleg', 'rightlowerleg', 'calfr', 'shinr', 'rcalf', 'lowerlegr'],
   RightFoot: ['rightfoot', 'footr', 'rfoot'],
-  RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe'],
+  RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe', 'rtoebase', 'ballr', 'rball', 'rtoe0', 'rtoe'],
 };
 
 function seedNorm(name) {
   if (!name) return '';
   let n = name.toLowerCase();
   if (n.includes(':')) n = n.split(':').pop();
+  // VRM: J_Bip_C_Hips → hips, J_Bip_L_UpperArm → l_upperarm
+  n = n.replace(/^j_?bip_?c_?/, '');
+  n = n.replace(/^j_?bip_?([lr])_?/, '$1_');
+  // Rig prefixes followed by an explicit separator (AccuRig cc_base_, Biped
+  // bip001, Rigify def-, Source valvebiped...). \b fails before '_'.
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/, '');
   n = n.replace(/^mixamorig\d*/, '');
+  // Blender side suffix: thigh.L → thighl
+  n = n.replace(/\.([lr])$/, '$1');
   n = n.replace(/_\d+$/, '');
   return n.replace(/[:_\-\.\s]/g, '');
+}
+
+// Both normalized variants of a bone name: with the trailing _N stripped (BJS
+// suffix: Hips_66 → hips) and kept (meaningful index: spine_02 → spine02).
+function seedNormVariants(name) {
+  if (!name) return [];
+  const stripped = seedNorm(name);
+  const kept = seedNorm(name.replace(/_(\d+)$/, ' $1')).replace(/ /g, '');
+  return stripped === kept ? [stripped] : [stripped, kept];
 }
 
 /**
@@ -949,17 +990,23 @@ function seedNorm(name) {
  * canonical Mixamo joint names. Used to pre-place markers when re-rigging.
  */
 function seedJointsFromSkins(doc) {
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
   const worldByNorm = new Map();
   for (const skin of doc.getRoot().listSkins()) {
     const joints = skin.listJoints();
     const ibmAcc = skin.getInverseBindMatrices();
     const ibmArray = ibmAcc?.getArray();
-    if (!ibmArray) continue;
+    if (!ibmArray || !joints.length) continue;
+    // Skin space → render world (FBX-sourced rigs keep IBMs Z-up)
+    const S = mat4Mul(worldMatrixOf(joints[0], parentMap, cache), ibmArray.slice(0, 16));
     joints.forEach((joint, i) => {
       if (i * 16 + 16 > ibmArray.length) return;
       const W = invertRigidMat4(ibmArray.slice(i * 16, i * 16 + 16));
-      const n = seedNorm(joint.getName());
-      if (n && !worldByNorm.has(n)) worldByNorm.set(n, [W[12], W[13], W[14]]);
+      const p = transformPoint(S, [W[12], W[13], W[14]]);
+      for (const n of seedNormVariants(joint.getName())) {
+        if (n && !worldByNorm.has(n)) worldByNorm.set(n, p);
+      }
     });
   }
   const seeded = {};
@@ -968,20 +1015,26 @@ function seedJointsFromSkins(doc) {
       if (worldByNorm.has(a)) { seeded[canon] = worldByNorm.get(a); break; }
     }
   }
+  // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): align seeds
+  // with the merge-time chain shift (Spine→Waist, Spine1→Spine01, Spine2→Spine02)
+  // so Spine2 gets a real seed instead of a mesh guess overlapping Spine1.
+  if (worldByNorm.has('waist') && worldByNorm.has('spine01') &&
+      worldByNorm.has('spine02') && !worldByNorm.has('spine03')) {
+    seeded.Spine = worldByNorm.get('waist');
+    seeded.Spine1 = worldByNorm.get('spine01');
+    seeded.Spine2 = worldByNorm.get('spine02');
+  }
   return seeded;
 }
 
 export async function guessJoints(buffer) {
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
-  const skinnedMeshes = new Set();
-  for (const node of doc.getRoot().listNodes()) {
-    if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
-  }
-  const bodyMeshes = selectBodyMeshes(doc, skinnedMeshes);
-  const bounds = computeWorldBounds(doc, skinnedMeshes, bodyMeshes);
-  const fwd = detectForwardZ(doc, bounds, skinnedMeshes, bodyMeshes);
-  const guess = guessJointsAuto(doc, skinnedMeshes, bounds, fwd, bodyMeshes);
+  const skinXf = skinWorldXforms(doc);
+  const bodyMeshes = selectBodyMeshes(doc, skinXf);
+  const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
+  const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
+  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
@@ -1024,17 +1077,35 @@ function adjustExistingRig(doc, targetJoints = {}) {
 
   const jointSet = new Set(origWorld.keys());
 
+  // Markers arrive in render-world space (same space guessJoints reports);
+  // origWorld/IBMs live in skin space. S maps skin space → render world.
+  const matCache0 = new Map();
+  const S = mat4Mul(
+    worldMatrixOf(skinData[0].joints[0], parentMap, matCache0),
+    skinData[0].arr.slice(0, 16)
+  );
+  const invS = invertRigidMat4(S);
+
   // canonical marker name → joint node
   const normToNode = new Map();
   for (const j of jointSet) {
-    const n = seedNorm(j.getName());
-    if (n && !normToNode.has(n)) normToNode.set(n, j);
+    for (const n of seedNormVariants(j.getName())) {
+      if (n && !normToNode.has(n)) normToNode.set(n, j);
+    }
   }
   const markerByNode = new Map();
   for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
     if (!targetJoints[canon]) continue;
     for (const a of aliases) {
-      if (normToNode.has(a)) { markerByNode.set(normToNode.get(a), targetJoints[canon]); break; }
+      if (normToNode.has(a)) { markerByNode.set(normToNode.get(a), transformPoint(invS, targetJoints[canon])); break; }
+    }
+  }
+  // CC/AccuRig 3-bone spine: markers follow the same chain shift as the merge
+  // (Spine→Waist, Spine1→Spine01, Spine2→Spine02); overrides the generic pass.
+  if (normToNode.has('waist') && normToNode.has('spine01') &&
+      normToNode.has('spine02') && !normToNode.has('spine03')) {
+    for (const [canon, alias] of [['Spine', 'waist'], ['Spine1', 'spine01'], ['Spine2', 'spine02']]) {
+      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
     }
   }
 
@@ -1084,10 +1155,11 @@ function adjustExistingRig(doc, targetJoints = {}) {
         M[2] * d[0] + M[6] * d[1] + M[10] * d[2],
       ];
     } else if (directParent) {
+      // np is skin-space; parent worlds are render-space → go through S
       const inv = invertRigidMat4(worldMatrixOf(directParent, parentMap, matCache));
-      local = transformPoint(inv, np);
+      local = transformPoint(mat4Mul(inv, S), np);
     } else {
-      local = np.slice();
+      local = transformPoint(S, np);
     }
     j.setTranslation(local);
   }
@@ -1229,7 +1301,7 @@ export async function autoRigGLB(buffer, options = {}) {
     await doc.transform(prune({ keepLeaves: true }));
     return io.writeBinary(doc);
   }
-  const previouslySkinned = new Set();
+  const previouslySkinned = new Map(); // mesh → skin-space xform (none: file is unskinned here)
 
   const bodyMeshes = selectBodyMeshes(doc, previouslySkinned);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);

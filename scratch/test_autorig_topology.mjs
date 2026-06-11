@@ -13,9 +13,9 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies(
 });
 const doc = await io.readBinary(new Uint8Array(buf));
 
-const skinnedMeshes = new Set();
+const skinnedMeshes = new Map(); // mesh → skin-space xform
 for (const node of doc.getRoot().listNodes()) {
-  if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
+  if (node.getSkin() && node.getMesh()) skinnedMeshes.set(node.getMesh(), [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 }
 // world bounds (same logic as autorig: skinned verts live in skin space)
 const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];

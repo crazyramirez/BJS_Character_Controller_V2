@@ -104,6 +104,9 @@
               </svg>
               <p>Drag &amp; drop <strong>.glb</strong> or <strong>.fbx</strong> character here</p>
               <span>or click to browse</span>
+              <p style="margin-top:10px;color:var(--text-secondary);">Recommended: <a href="https://www.mixamo.com"
+                  target="_blank" style="color:var(--accent);text-decoration:underline;"><strong>Mixamo</strong></a>
+                Rigged Models</p>
               <input type="file" id="char-file-input" accept=".glb,.fbx" style="display:none;">
             </div>
 
@@ -649,12 +652,14 @@
           <div class="settings-section">
             <h3>Download Builder Config</h3>
             <p style="margin-bottom:12px;">
-              Save or restore the full Builder setup as a reusable <code>builder-config.json</code> preset for this character.
+              Save or restore the full Builder setup as a reusable <code>builder-config.json</code> preset for this
+              character.
             </p>
             <div class="config-actions">
               <button class="btn-action btn-secondary" id="btn-download-config">
                 <svg style="width:20px;height:20px;fill:currentColor;" viewBox="0 0 24 24">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm0 2.5L17.5 8H14V4.5zM8 13h8v2H8v-2zm0 4h8v2H8v-2zm0-8h4v2H8V9z" />
+                  <path
+                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm0 2.5L17.5 8H14V4.5zM8 13h8v2H8v-2zm0 4h8v2H8v-2zm0-8h4v2H8V9z" />
                 </svg>
                 Download builder-config.json
               </button>
@@ -754,6 +759,10 @@
           <button id="btn-autorig-apply-vp" class="autorig-vp-apply">✓ Apply Rig</button>
           <button id="btn-autorig-cancel-vp" class="autorig-vp-cancel">✕ Cancel</button>
         </div>
+        <!-- Marker color legend (populated from AUTORIG_JOINT_GROUPS) -->
+        <div id="autorig-legend" class="autorig-legend"></div>
+        <!-- Floating joint name tooltip (follows hovered/selected marker) -->
+        <div id="autorig-joint-tip" class="autorig-joint-tip" style="display:none;"></div>
       </div>
 
       <!-- HUD -->

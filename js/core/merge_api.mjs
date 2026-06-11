@@ -46,11 +46,11 @@ const DEFAULTS = {
 const BONE_MAP = {
   // ── Root / Spine ────────────────────────────────────────
   'pelvis': ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
-  'spine_01': ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback'],
+  'spine_01': ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback', 'waist'],
   'spine_02': ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine', 'chest'],
   'spine_03': ['spine2', 'mixamorig:spine2', 'upperchest', 'upper_chest', 'upperspine', 'upperbody'],
-  'neck_01': ['neck', 'mixamorig:neck'],
-  'neck_02': ['neck1', 'mixamorig:neck1'],
+  'neck_01': ['neck', 'mixamorig:neck', 'necktwist01', 'necktwist'],
+  'neck_02': ['neck1', 'mixamorig:neck1', 'necktwist02'],
   'head': ['head', 'mixamorig:head'],
 
   // ── Left arm ──────────────────────────────────────────
@@ -169,7 +169,9 @@ function aliasNorm(name) {
   n = n.replace(/^j_?bip_?([lr])_?/i, '$1_');
 
   // Common rig prefixes to strip  (mixamorig, bip001, def-, valvebiped, cc_base, etc.)
-  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|char|bi|bip\d+|biped|def[-_]?|root|gltf_created_\d+_)\b[:_ ]*/i, '');
+  // NOTE: \b does not work before '_' (underscore is a word char), so prefixes
+  // like 'cc_base_l_upperarm' must be matched with an explicit separator class.
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|char|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/i, '');
 
   // Rigify/Blender: .L / .R side suffix → l / r (keep for later)
   n = n.replace(/\.([lr])$/i, '$1');
@@ -527,16 +529,23 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
   const spine = findMatchingBone({ getName: () => 'spine' }, charByName, charByNorm);
   const spine1 = findMatchingBone({ getName: () => 'spine1' }, charByName, charByNorm);
   const spine2 = findMatchingBone({ getName: () => 'spine2' }, charByName, charByNorm);
+  const neck = findMatchingBone({ getName: () => 'neck_01' }, charByName, charByNorm);
 
-  // 1. Align Hips (Pelvis/Waist) and spine bones to World Identity (straightens back/cintura)
-  const waistBones = [hips, spine, spine1, spine2];
-  waistBones.forEach(bone => {
-    if (bone) {
-      const wrot = worldRotT.get(bone) || [0, 0, 0, 1];
-      const qCorr = qInvert(wrot);
-      applyCorrection(bone, qCorr);
-    }
-  });
+  // 1. Straighten the hips→spine→neck chain: align each segment DIRECTION to
+  // vertical (+Y), like the limb steps below. Do NOT force world rotation to
+  // identity — only Mixamo-convention rigs have identity-ish spine bind
+  // orientations; CC/AccuRig/UE FBX rigs carry joint orients (e.g. -90°X), and
+  // zeroing them folds the torso at the waist after retargeting.
+  const spineChain = [hips, spine, spine1, spine2, neck].filter(Boolean);
+  for (let i = 0; i + 1 < spineChain.length; i++) {
+    const a = spineChain[i], b = spineChain[i + 1];
+    const pA = getUpdatedWorldPos(a);
+    const pB = getUpdatedWorldPos(b);
+    const seg = vec3Subtract(pB, pA);
+    if (vec3Length(seg) < 1e-6) continue;
+    const qAlign = quatFromTwoVectors(vec3Normalize(seg), [0, 1, 0]);
+    applyCorrection(a, qAlign);
+  }
 
   // 2. Left Arm
   if (leftArm && leftForearm) {
@@ -723,9 +732,19 @@ function worldMatrixOf(node, parentMap, cache) {
 function computeMeshStats(doc) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
-  const skinnedMeshes = new Set();
+  // Skinned vertices are authored in skin space; render world = jointWorld·IBM.
+  // FBX-sourced exports (UE/Blender/AccuRig) keep skin space Z-up with the
+  // up-axis fix on an armature ancestor — identity would measure them lying down.
+  const skinXforms = new Map();
   for (const node of doc.getRoot().listNodes()) {
-    if (node.getSkin() && node.getMesh()) skinnedMeshes.add(node.getMesh());
+    const skin = node.getSkin();
+    const mesh = node.getMesh();
+    if (!skin || !mesh || skinXforms.has(mesh)) continue;
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices()?.getArray();
+    skinXforms.set(mesh, (joints.length && ibm && ibm.length >= 16)
+      ? mat4Mul(worldMatrixOf(joints[0], parentMap, cache), ibm.slice(0, 16))
+      : MAT4_IDENTITY);
   }
 
   const min = [Infinity, Infinity, Infinity];
@@ -738,7 +757,7 @@ function computeMeshStats(doc) {
     const mesh = node.getMesh();
     if (!mesh) continue;
     meshSet.add(mesh);
-    const world = skinnedMeshes.has(mesh) ? MAT4_IDENTITY : worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       primitiveCount++;
       const pos = prim.getAttribute('POSITION');
@@ -913,6 +932,26 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   let hit = charByName.get(src) || charByName.get(lo);
   if (hit) return hit;
 
+  // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): generic
+  // matching maps Spine→Spine01, Spine1→Spine02 and DROPS Spine2 — the Mixamo
+  // chest bone that carries the clavicles, so crouch/roll lose the chest bend.
+  // Shift the chain down one so all three animation spines drive a bone.
+  const norm = normalizeName(src);
+
+  // CC/AccuRig pelvis split: Hip (root) → Pelvis (legs) + Waist (spine). Root
+  // motion must drive Hip — matching Pelvis would leave the whole torso static.
+  if (norm === 'hips' || norm === 'hip' || norm === 'pelvis') {
+    const ccHip = charByNorm.get('hip');
+    const ccPelvis = charByNorm.get('pelvis');
+    if (ccHip && ccPelvis && ccHip.listChildren().includes(ccPelvis)) return ccHip;
+  }
+
+  if ((norm === 'spine' || norm === 'spine1' || norm === 'spine2') &&
+      charByNorm.has('waist') && charByNorm.has('spine01') &&
+      charByNorm.has('spine02') && !charByNorm.has('spine03')) {
+    return charByNorm.get({ spine: 'waist', spine1: 'spine01', spine2: 'spine02' }[norm]);
+  }
+
   // Try one candidate name against raw names AND normalized names.
   // aliasNorm (no BJS-suffix strip): candidates are BONE_MAP literals like 'spine_02'
   // whose numeric part is meaningful, not a BJS-appended suffix.
@@ -926,7 +965,6 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   // Resolve ALL candidate canonical keys for this anim bone (direct key, alias
   // membership, normalized alias). Several keys can share an alias (toe_l/ball_l
   // both list 'lefttoebase') — try each until one resolves on the character.
-  const norm = normalizeName(src);
   const canonKeys = [];
   if (BONE_MAP[lo]) canonKeys.push(lo);
   for (const [key, alts] of Object.entries(BONE_MAP)) {
@@ -1769,7 +1807,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
         const tgtName = target.getName().toLowerCase();
         const srcName = src.getName().toLowerCase();
-        const isRoot = tgtName.includes('hips') || tgtName.includes('pelvis') || tgtName === '__root__';
+        // Root detection by normalized name too: CC/AccuRig root is 'CC_Base_Hip'
+        // ('hip', no s) — substring checks alone would drop its translation track.
+        const isRoot = tgtName.includes('hips') || tgtName.includes('pelvis') || tgtName === '__root__'
+          || aliasNorm(tgtName) === 'hip';
 
         if (path === 'translation' && !isRoot && cfg.IGNORE_NON_ROOT_TRANSLATION) { ch.dispose(); continue; }
 
