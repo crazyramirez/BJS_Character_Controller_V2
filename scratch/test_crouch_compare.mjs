@@ -106,4 +106,58 @@ check('torso upY matches ref', close(refM.upY, ccM.upY, 0.12), `ref=${refM.upY.t
 check('lean matches ref', close(refM.lean, ccM.lean, 0.15), `ref=${refM.lean.toFixed(2)} cc=${ccM.lean.toFixed(2)}`);
 check('hip drop ratio matches ref', close(refM.hipDrop / refM.hipBindY, ccM.hipDrop / ccM.hipBindY, 0.15),
   `ref=${(refM.hipDrop / refM.hipBindY).toFixed(2)} cc=${(ccM.hipDrop / ccM.hipBindY).toFixed(2)}`);
+
+// Finger mapping: CC short names (L_Mid1, L_Index1) must receive Mixamo
+// LeftHandMiddle1 / LeftHandIndex1 channels.
+const ccDoc = await io.readBinary(new Uint8Array(ccMerged));
+const ccClip = ccDoc.getRoot().listAnimations().find(a => /crouch_idle_loop/i.test(a.getName() || ''));
+const ccTargets = new Set(ccClip.listChannels().map(ch => ch.getTargetNode()?.getName()).filter(Boolean));
+check('CC_Base_L_Mid1 driven (middle finger)', ccTargets.has('CC_Base_L_Mid1'), [...ccTargets].filter(n => /mid|index/i.test(n)).join(','));
+check('CC_Base_R_Mid1 driven', ccTargets.has('CC_Base_R_Mid1'), '');
+check('CC_Base_L_Index1 driven', ccTargets.has('CC_Base_L_Index1'), '');
+
+// ── Fingertip curl: CC index chain (per-phalanx joint orients) must curl the
+// same amount as the reference Mixamo index finger — chain-error shows here.
+const qInvQ = (q) => [-q[0], -q[1], -q[2], q[3]];
+function curlOf(mdoc, handName, p1Name, tipName) {
+  const anims2 = mdoc.getRoot().listAnimations();
+  const clip2 = anims2.find(a => /crouch_idle_loop/i.test(a.getName() || ''));
+  const rotAt0 = new Map(), trsAt0 = new Map();
+  for (const ch of clip2.listChannels()) {
+    const node = ch.getTargetNode();
+    const out = ch.getSampler()?.getOutput()?.getArray();
+    if (!node || !out) continue;
+    if (ch.getTargetPath() === 'rotation') rotAt0.set(node, [out[0], out[1], out[2], out[3]]);
+    if (ch.getTargetPath() === 'translation') trsAt0.set(node, [out[0], out[1], out[2]]);
+  }
+  const parentOf = new Map();
+  for (const n of mdoc.getRoot().listNodes()) for (const c of n.listChildren()) parentOf.set(c, n);
+  function world(node, animated) {
+    const lr = (animated && rotAt0.get(node)) || node.getRotation() || [0, 0, 0, 1];
+    const lp = (animated && trsAt0.get(node)) || node.getTranslation() || [0, 0, 0];
+    const parent = parentOf.get(node);
+    if (!parent) return { p: lp, q: lr };
+    const pw = world(parent, animated);
+    return { p: rotV(lp, pw.q).map((v, i) => v + pw.p[i]), q: qMul(pw.q, lr) };
+  }
+  const find = (sub) => mdoc.getRoot().listNodes().find(n => (n.getName() || '').toLowerCase() === sub.toLowerCase())
+    || mdoc.getRoot().listNodes().find(n => (n.getName() || '').toLowerCase().includes(sub.toLowerCase()));
+  const dirInHand = (animated) => {
+    const hand = world(find(handName), animated);
+    const a = world(find(p1Name), animated).p;
+    const b = world(find(tipName), animated).p;
+    const v = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const l = Math.hypot(...v) || 1;
+    return rotV(v.map(x => x / l), qInvQ(hand.q));
+  };
+  const vb = dirInHand(false), vf = dirInHand(true);
+  const dot = Math.max(-1, Math.min(1, vb[0] * vf[0] + vb[1] * vf[1] + vb[2] * vf[2]));
+  return (Math.acos(dot) * 180) / Math.PI; // curl change from bind, degrees
+}
+const refDoc = await io.readBinary(new Uint8Array(refMerged));
+const curlRef = curlOf(refDoc, 'lefthand', 'lefthandindex1', 'lefthandindex3');
+const curlCC = curlOf(ccDoc, 'cc_base_l_hand', 'cc_base_l_index1', 'cc_base_l_index3');
+check('index curl matches ref (±12°)', Math.abs(curlRef - curlCC) <= 12,
+  `ref=${curlRef.toFixed(1)}° cc=${curlCC.toFixed(1)}°`);
+check('Index2/3 driven', ccTargets.has('CC_Base_L_Index2') && ccTargets.has('CC_Base_L_Index3'), '');
 process.exit(fail ? 1 : 0);

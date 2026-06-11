@@ -103,9 +103,9 @@ const BONE_MAP = {
   'index_01_l': ['lefthandindex1', 'mixamorig:lefthandindex1', 'index1l', 'l_index1', 'indexproximall'],
   'index_02_l': ['lefthandindex2', 'mixamorig:lefthandindex2', 'index2l', 'l_index2', 'indexintermediatel'],
   'index_03_l': ['lefthandindex3', 'mixamorig:lefthandindex3', 'index3l', 'l_index3', 'indexdistall'],
-  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1', 'middle1l', 'l_middle1'],
-  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2', 'middle2l', 'l_middle2'],
-  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3', 'middle3l', 'l_middle3'],
+  'middle_01_l': ['lefthandmiddle1', 'mixamorig:lefthandmiddle1', 'middle1l', 'l_middle1', 'l_mid1', 'mid1l'],
+  'middle_02_l': ['lefthandmiddle2', 'mixamorig:lefthandmiddle2', 'middle2l', 'l_middle2', 'l_mid2', 'mid2l'],
+  'middle_03_l': ['lefthandmiddle3', 'mixamorig:lefthandmiddle3', 'middle3l', 'l_middle3', 'l_mid3', 'mid3l'],
   'ring_01_l': ['lefthandring1', 'mixamorig:lefthandring1', 'ring1l', 'l_ring1'],
   'ring_02_l': ['lefthandring2', 'mixamorig:lefthandring2', 'ring2l', 'l_ring2'],
   'ring_03_l': ['lefthandring3', 'mixamorig:lefthandring3', 'ring3l', 'l_ring3'],
@@ -118,9 +118,9 @@ const BONE_MAP = {
   'index_01_r': ['righthandindex1', 'mixamorig:righthandindex1', 'index1r', 'r_index1'],
   'index_02_r': ['righthandindex2', 'mixamorig:righthandindex2', 'index2r', 'r_index2'],
   'index_03_r': ['righthandindex3', 'mixamorig:righthandindex3', 'index3r', 'r_index3'],
-  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1', 'middle1r', 'r_middle1'],
-  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2', 'middle2r', 'r_middle2'],
-  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3', 'middle3r', 'r_middle3'],
+  'middle_01_r': ['righthandmiddle1', 'mixamorig:righthandmiddle1', 'middle1r', 'r_middle1', 'r_mid1', 'mid1r'],
+  'middle_02_r': ['righthandmiddle2', 'mixamorig:righthandmiddle2', 'middle2r', 'r_middle2', 'r_mid2', 'mid2r'],
+  'middle_03_r': ['righthandmiddle3', 'mixamorig:righthandmiddle3', 'middle3r', 'r_middle3', 'r_mid3', 'mid3r'],
   'ring_01_r': ['righthandring1', 'mixamorig:righthandring1', 'ring1r', 'r_ring1'],
   'ring_02_r': ['righthandring2', 'mixamorig:righthandring2', 'ring2r', 'r_ring2'],
   'ring_03_r': ['righthandring3', 'mixamorig:righthandring3', 'ring3r', 'r_ring3'],
@@ -1868,6 +1868,28 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const Cinv = qInvert(C);
           const rAnimInv = qInvert(rAnim);
 
+          // ── Finger bones: exact world-preserving retarget ─────────────────
+          // The delta formula (rChar·C·δ·C⁻¹) is only chain-exact when C is the
+          // same for every bone in the chain. CC/AccuRig rigs orient each
+          // phalanx individually, so the per-bone C differs and the error
+          // accumulates down the 3-phalanx chain — fingertips end up bent.
+          // Exact form: local = Cp·qKey·C⁻¹ with Cp built from the STRUCTURAL
+          // char parent and the anim parent. Identical to the delta formula
+          // when the chain Cs agree (Mixamo→Mixamo), exact at bind by
+          // construction: Cp·rAnim·C⁻¹ = inv(WcharP)·Wchar = rChar.
+          const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
+            || /(thumb|index|middle|ring|pinky)/.test(srcName);
+          let CpFinger = null;
+          if (isFinger) {
+            const srcParentName = animParentNameMap.get(srcName);
+            const WanimP = srcParentName ? (animWorldByName.get(srcParentName) || [0, 0, 0, 1]) : [0, 0, 0, 1];
+            const structParent = charParentMap.get(target);
+            const WcharP = structParent
+              ? (charWorldByNode.get(structParent) || [0, 0, 0, 1])
+              : [0, 0, 0, 1];
+            CpFinger = qMul(qInvert(WcharP), WanimP);
+          }
+
           const sampler = ch.getSampler();
           if (sampler) {
             const output = sampler.getOutput();
@@ -1877,9 +1899,14 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
                   const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
-                  const delta = qMul(rAnimInv, qKey);
-                  const rotated = qMul(qMul(C, delta), Cinv);
-                  let final = qMul(rChar, rotated);
+                  let final;
+                  if (CpFinger) {
+                    final = qMul(qMul(CpFinger, qKey), Cinv);
+                  } else {
+                    const delta = qMul(rAnimInv, qKey);
+                    const rotated = qMul(qMul(C, delta), Cinv);
+                    final = qMul(rChar, rotated);
+                  }
 
                   // Manual per-bone overrides (POSE_OFFSETS and legacy spread angles)
                   let pOffset = [0, 0, 0];

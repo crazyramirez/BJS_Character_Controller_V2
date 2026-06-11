@@ -1,6 +1,34 @@
 /** Factory: synthetic CC/AccuRig-pattern rig (Z-up skin space, -90°X armature). */
 import { Document, NodeIO } from '@gltf-transform/core';
 
+const qMulQ = (a, b) => [
+  a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+];
+const qInv = (q) => [-q[0], -q[1], -q[2], q[3]];
+const qRotV = (q, v) => {
+  const u = [q[0], q[1], q[2]], w = q[3];
+  const uv = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const uuv = [u[1] * uv[2] - u[2] * uv[1], u[2] * uv[0] - u[0] * uv[2], u[0] * uv[1] - u[1] * uv[0]];
+  return [v[0] + 2 * (w * uv[0] + uuv[0]), v[1] + 2 * (w * uv[1] + uuv[1]), v[2] + 2 * (w * uv[2] + uuv[2])];
+};
+const axisAngle = (axis, deg) => {
+  const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+  return [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(r / 2)];
+};
+// Column-major 3x3 of quat, embedded in mat4
+const quatToMat4 = (q) => {
+  const [x, y, z, w] = q;
+  return [
+    1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+    2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+    2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+    0, 0, 0, 1,
+  ];
+};
+
 export async function buildSyntheticCC({ apose = false } = {}) {
   const doc = new Document();
   const buffer = doc.createBuffer();
@@ -36,6 +64,13 @@ export async function buildSyntheticCC({ apose = false } = {}) {
     ['CC_Base_R_Upperarm', 'CC_Base_R_Clavicle', dn(-0.2, 0.13)],
     ['CC_Base_R_Forearm', 'CC_Base_R_Upperarm', dn(-0.5, 0.53)],
     ['CC_Base_R_Hand', 'CC_Base_R_Forearm', dn(-0.8, 0.95)],
+    // Finger chains with per-phalanx joint orients (twist about the bone axis)
+    // — exercises retarget chain-error accumulation like real CC rigs.
+    ['CC_Base_L_Mid1', 'CC_Base_L_Hand', dn(0.85, 1.07), axisAngle([1, 0, 0], 15)],
+    ['CC_Base_L_Index1', 'CC_Base_L_Hand', dn(0.85, 1.05)],
+    ['CC_Base_L_Index2', 'CC_Base_L_Index1', dn(0.9, 1.12), axisAngle([1, 0, 0], 25)],
+    ['CC_Base_L_Index3', 'CC_Base_L_Index2', dn(0.95, 1.19), axisAngle([1, 0, 0], 50)],
+    ['CC_Base_R_Mid1', 'CC_Base_R_Hand', dn(-0.85, 1.07), axisAngle([1, 0, 0], -15)],
     ['CC_Base_L_Thigh', 'CC_Base_Pelvis', [0.12, 0, 0.9]],
     ['CC_Base_L_Calf', 'CC_Base_L_Thigh', [0.12, 0, 0.45]],
     ['CC_Base_L_Foot', 'CC_Base_L_Calf', [0.12, 0, 0.05]],
@@ -48,12 +83,17 @@ export async function buildSyntheticCC({ apose = false } = {}) {
 
   const nodeByName = new Map();
   const posByName = new Map();
-  for (const [name, parent, p] of BONES) {
-    const local = parent ? p.map((v, i) => v - posByName.get(parent)[i]) : p.slice();
-    const n = doc.createNode(name).setTranslation(local);
+  const quatByName = new Map();
+  for (const [name, parent, p, qWorld = [0, 0, 0, 1]] of BONES) {
+    const pq = parent ? quatByName.get(parent) : [0, 0, 0, 1];
+    const dp = parent ? p.map((v, i) => v - posByName.get(parent)[i]) : p.slice();
+    const localPos = qRotV(qInv(pq), dp);
+    const localRot = qMulQ(qInv(pq), qWorld);
+    const n = doc.createNode(name).setTranslation(localPos).setRotation(localRot);
     if (parent) nodeByName.get(parent).addChild(n);
     nodeByName.set(name, n);
     posByName.set(name, p);
+    quatByName.set(name, qWorld);
   }
 
   const s = Math.SQRT1_2;
@@ -63,7 +103,11 @@ export async function buildSyntheticCC({ apose = false } = {}) {
   const ibm = new Float32Array(BONES.length * 16);
   BONES.forEach(([name], i) => {
     const p = posByName.get(name);
-    ibm.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -p[0], -p[1], -p[2], 1], i * 16);
+    const qi = qInv(quatByName.get(name));
+    const m = quatToMat4(qi);
+    const t = qRotV(qi, p);
+    m[12] = -t[0]; m[13] = -t[1]; m[14] = -t[2];
+    ibm.set(m, i * 16);
   });
 
   const joints01 = new Uint16Array((posArr.length / 3) * 4);
