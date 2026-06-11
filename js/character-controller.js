@@ -836,6 +836,7 @@ class CharCtrl {
     this.touchVector = { x: 0, y: 0 };
     this.isTouch = false;
     this._touchListeners = [];
+    this._pointerDragging = false;
 
     this._setupInput();
 
@@ -974,7 +975,7 @@ class CharCtrl {
 
         // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
         const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
-        if (Math.abs(alphaDelta) > 0.0001) {
+        if (this._pointerDragging && Math.abs(alphaDelta) > 0.0001) {
           // Block manual rotation in the air if air control is disabled
           if (!this.grounded && !this.AIR_CONTROL) {
             this.camera.alpha = this._lastCameraAlpha;
@@ -2992,7 +2993,7 @@ class CharCtrl {
     }
 
     // Detect turning in place under follow lock (including manual camera rotation via mouse/trackpad/touch)
-    const isMouseOrTouchTurning = (performance.now() - (this._lastYawTurnTime || 0)) < 100;
+    const isMouseOrTouchTurning = this._pointerDragging && (performance.now() - (this._lastYawTurnTime || 0)) < 100;
     const turning = this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
       (this.isTouch && Math.abs(this.touchVector.x) > 0.15) ||
       isMouseOrTouchTurning;
