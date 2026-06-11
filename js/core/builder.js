@@ -965,6 +965,7 @@ async function initBabylonScene() {
   scene.collisionsEnabled = true;
 
   camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, Math.PI / 3.5, 8, new BABYLON.Vector3(0, 1.2, 0), scene);
+  camera.checkCollisions = false;
   camera.lowerRadiusLimit = 2;
   camera.upperRadiusLimit = 20;
   camera.lowerBetaLimit = 0.05;
@@ -1977,7 +1978,9 @@ function setupAutoRigControls() {
   document.querySelectorAll('.autorig-view-btn').forEach(btn => {
     btn.addEventListener('click', () => setRigView(btn.dataset.view));
   });
-  // Keyboard shortcuts 1/2/3 for views while in rig mode
+  document.getElementById('btn-autorig-rot-left')?.addEventListener('click', () => rotateRigCharacter(-Math.PI / 4));
+  document.getElementById('btn-autorig-rot-right')?.addEventListener('click', () => rotateRigCharacter(Math.PI / 4));
+  // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, while in rig mode
   window.addEventListener('keydown', (e) => {
     if (!autoRigState) return;
     const activeEl = document.activeElement;
@@ -1985,7 +1988,28 @@ function setupAutoRigControls() {
     if (e.code === 'Digit1') setRigView('front');
     else if (e.code === 'Digit2') setRigView('side');
     else if (e.code === 'Digit3') setRigView('top');
+    else if (e.code === 'KeyQ') rotateRigCharacter(-Math.PI / 4);
+    else if (e.code === 'KeyE') rotateRigCharacter(Math.PI / 4);
   });
+}
+
+// Visual-only character spin while placing rig markers. Rotating charRoot
+// carries the markers along (they're parented inside it) but never touches
+// the joint coordinates sent to the server — those are local to markerParent —
+// and the original orientation is restored on exit, so the facing direction
+// the controller relies on is untouched.
+function rotateRigCharacter(deltaYaw) {
+  const vm = autoRigState?.viewportMode;
+  const root = activeCharacter?.charRoot;
+  if (!vm || !root) return;
+  autoRigState.rigYaw = (autoRigState.rigYaw || 0) + deltaYaw;
+  const baseQ = vm.prevCharQuat
+    ? vm.prevCharQuat
+    : BABYLON.Quaternion.RotationYawPitchRoll(
+        vm.prevCharEuler.y, vm.prevCharEuler.x, vm.prevCharEuler.z);
+  root.rotationQuaternion = BABYLON.Quaternion
+    .RotationYawPitchRoll(autoRigState.rigYaw, 0, 0)
+    .multiply(baseQ);
 }
 
 // ── Rig viewport mode: isolate the character, studio backdrop, camera presets ─
@@ -2024,9 +2048,14 @@ function enterRigViewportMode() {
   const h = autoRigState.sceneHeight || 1.8;
   camera.panningSensibility = Math.max(150, 1000 * (1.8 / h));
 
+  // Snapshot charRoot orientation so the rig-mode character spin (Q/E) can be
+  // undone exactly — controller facing must survive the rig session.
+  const charRoot = activeCharacter.charRoot;
   autoRigState.viewportMode = {
     hiddenMeshes, prevClearColor, hud, prevHudDisplay, pointerObserver,
     prevPanningSensibility, prevTarget: camera.target.clone(),
+    prevCharQuat: charRoot?.rotationQuaternion ? charRoot.rotationQuaternion.clone() : null,
+    prevCharEuler: charRoot ? charRoot.rotation.clone() : new BABYLON.Vector3(0, 0, 0),
   };
   setRigView('front');
 }
@@ -2035,6 +2064,15 @@ function exitRigViewportMode(state) {
   const vm = state?.viewportMode;
   if (!vm) return;
   vm.hiddenMeshes.forEach(m => m.setEnabled(true));
+  // Undo any rig-mode character spin: restore the exact pre-rig orientation
+  const root = activeCharacter?.charRoot;
+  if (root && state.rigYaw) {
+    if (vm.prevCharQuat) root.rotationQuaternion = vm.prevCharQuat;
+    else {
+      root.rotationQuaternion = null;
+      root.rotation.copyFrom(vm.prevCharEuler);
+    }
+  }
   if (vm.pointerObserver) scene.onPointerObservable.remove(vm.pointerObserver);
   scene.stopAnimation(camera);
   if (vm.prevPanningSensibility !== undefined) camera.panningSensibility = vm.prevPanningSensibility;

@@ -703,6 +703,9 @@ class CharCtrl {
     this.root = root; // Capsule collider parent mesh
     this.visualMesh = visualMesh; // Visual character mesh
     this.camera = camera;
+    if (this.camera) {
+      this.camera.checkCollisions = false;
+    }
     this.anim = anim;
     anim.charCtrl = this;
     this.scene = scene;

@@ -922,8 +922,15 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
       disagree += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     }
     disagree /= 4 * H;
-    if (process.env.AUTORIG_DEBUG) console.log(`[autorig] cross-check: topoConf=${topo.confidence.toFixed(2)} disagree=${(disagree * 100).toFixed(0)}%`);
-    if (disagree > 0.22) {
+    // standardPose means slicing found a clear crotch and arm span, so the mesh
+    // IS upright (+Y up). Topology may only overrule it if its own skeleton is
+    // upright too — when the graph root lands on the crotch (foot-head diameter
+    // midpoint), the leg pair merges at depth 0 and topology misclassifies a
+    // foot as the head, producing an inverted skeleton with high self-reported
+    // confidence. Disagreement then means topology broke, not the pose.
+    const topoUpright = topo.joints.Head[1] > topo.joints.Hips[1];
+    if (process.env.AUTORIG_DEBUG) console.log(`[autorig] cross-check: topoConf=${topo.confidence.toFixed(2)} disagree=${(disagree * 100).toFixed(0)}% topoUpright=${topoUpright}`);
+    if (disagree > 0.22 && topoUpright) {
       console.log(`[autorig] Detectors disagree (${(disagree * 100).toFixed(0)}% of height) — pose is non-standard, using topology skeleton.`);
       return topo;
     }
