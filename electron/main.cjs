@@ -46,7 +46,7 @@ function createWindow(port) {
     backgroundColor: '#0d1017',
     autoHideMenuBar: true,
     title: 'BJS Character Controller Builder V2',
-    icon: path.join(__dirname, '..', 'assets', 'icons', 'icon.png'),
+    icon: path.join(__dirname, '..', 'assets', 'icons', 'icon2.png'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
