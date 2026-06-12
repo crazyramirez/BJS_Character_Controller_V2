@@ -2932,10 +2932,12 @@ class CharCtrl {
     this._camTiltDragPx = 0;
     // Smooth the raw per-frame drag velocity to avoid jitter from discrete mouse events
     if (this._camDragVelSmooth === undefined) this._camDragVelSmooth = 0;
-    this._camDragVelSmooth = lerp(this._camDragVelSmooth, camDragVel, 1 - Math.exp(-6 * dt));
+    this._camDragVelSmooth = lerp(this._camDragVelSmooth, camDragVel, 1 - Math.exp(-3.5 * dt));
     if (this.CAM_TILT) {
-      // Bank from mouse/touch camera drag speed (drone orbiting feel)
-      targetCamTilt += -this._camDragVelSmooth * 0.0015 * this.CAM_TILT_AMOUNT;
+      // Bank from mouse/touch camera drag speed (drone orbiting feel).
+      // Soft deadzone: subtract the threshold so the response stays continuous (no on/off popping).
+      const dragMag = Math.max(0, Math.abs(this._camDragVelSmooth) - 30);
+      targetCamTilt += -Math.sign(this._camDragVelSmooth) * dragMag * 0.0015 * this.CAM_TILT_AMOUNT;
 
       if (this.grounded && this.speed > 0.5 && !inAction) {
         // Lateral input relative to the camera (strafe direction)
@@ -2943,16 +2945,26 @@ class CharCtrl {
         if (this._isPressed('MOVE_LEFT')) lateralX -= 1;
         if (this._isPressed('MOVE_RIGHT')) lateralX += 1;
         if (this.isTouch && Math.abs(this.touchVector.x) > 0.01) lateralX = this.touchVector.x;
-        // Bank into lateral movement; also add a touch of bank from yaw turning for fluid arcs
-        targetCamTilt += (-lateralX * 0.85 - (turnDelta / Math.max(dt, 0.001)) * 0.04) * this.CAM_TILT_AMOUNT * currentSpeedRatio;
+        // Bank into lateral movement; also add a touch of bank from yaw turning for fluid arcs.
+        // The raw per-frame turn rate is noisy, so keep a smoothed copy for the tilt only.
+        if (this._camTurnVelSmooth === undefined) this._camTurnVelSmooth = 0;
+        this._camTurnVelSmooth = lerp(this._camTurnVelSmooth, turnDelta / Math.max(dt, 0.001), 1 - Math.exp(-4 * dt));
+        targetCamTilt += (-lateralX * 0.85 - this._camTurnVelSmooth * 0.04) * this.CAM_TILT_AMOUNT * currentSpeedRatio;
       }
       // Clamp to the configured maximum bank
       targetCamTilt = Math.max(-this.CAM_TILT_AMOUNT, Math.min(this.CAM_TILT_AMOUNT, targetCamTilt));
     }
     this._camTilt = lerp(this._camTilt, targetCamTilt, 1 - Math.exp(-2.5 * dt));
     if (Math.abs(this._camTilt) > 0.0005) {
-      // Rotate the camera's up vector around its view axis to produce the roll
-      const viewDir = this.camera.getTarget().subtract(this.camera.position).normalize();
+      // Rotate the camera's up vector around its view axis to produce the roll.
+      // The axis is derived analytically from alpha/beta (canonical Y-up orbit) instead of the
+      // actual camera position, which already depends on the tilted upVector and would feed back jitter.
+      const sinBeta = Math.sin(this.camera.beta);
+      const viewDir = new BABYLON.Vector3(
+        -Math.cos(this.camera.alpha) * sinBeta,
+        -Math.cos(this.camera.beta),
+        -Math.sin(this.camera.alpha) * sinBeta
+      ).normalize();
       const tiltMatrix = BABYLON.Matrix.RotationAxis(viewDir, this._camTilt);
       this.camera.upVector = BABYLON.Vector3.TransformNormal(BABYLON.Vector3.Up(), tiltMatrix);
     } else if (this.camera.upVector.x !== 0 || this.camera.upVector.z !== 0 || this.camera.upVector.y !== 1) {
