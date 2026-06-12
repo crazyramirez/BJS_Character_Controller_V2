@@ -242,7 +242,7 @@ To run the local server which powers advanced skeletal retargeting, GLB animatio
    ```
 
 3. **Open the builder:**
-   Navigate to [http://localhost:3000/builder.html](http://localhost:3000/builder.html) in your browser.
+   Navigate to [http://localhost:3000/builder.html](http://localhost:3000/builder) in your browser.
 
 
 ### Tabs
