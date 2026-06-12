@@ -1,10 +1,13 @@
 {
-  "name": "animation_engine",
+  "name": "bjs-character-controller-builder",
+  "productName": "BJS Character Controller Builder",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Build, configure and export a BabylonJS character controller.",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "node server.mjs",
+    "electron": "electron .",
+    "pack": "electron-builder --win",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -20,5 +23,47 @@
     "fbx2gltf": "^0.9.7-p1",
     "fs-extra": "^11.3.5",
     "multer": "^2.1.1"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.crazyramirez.bjs-character-controller-builder",
+    "productName": "BJS Character Controller Builder",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "server.mjs",
+      "builder.html",
+      "index.html",
+      "css/**",
+      "js/**",
+      "assets/**",
+      "package.json",
+      "node_modules/**"
+    ],
+    "asarUnpack": [
+      "node_modules/fbx2gltf/**",
+      "node_modules/draco3dgltf/**"
+    ],
+    "win": {
+      "icon": "assets/icons/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }
