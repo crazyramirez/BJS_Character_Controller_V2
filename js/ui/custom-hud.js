@@ -141,7 +141,35 @@
             </div>
           </div>
 
-          <!-- Group 5: Air Locomotion -->
+          <!-- Group 5: Camera Angle -->
+          <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">CAMERA ANGLE</div>
+
+          <div class="hud-toggle-container"
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #aeb4ff; margin-bottom: 6px;">
+            <span>Camera Angle (Drone Tilt)</span>
+            <label class="switch-toggle">
+              <input type="checkbox" id="toggle-cam-tilt">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="weight-container" id="cam-tilt-container"
+            style="margin-top: 12px; margin-bottom: 20px;">
+            <div class="weight-header"
+              style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="weight-label"
+                style="font-size: 10px; color: #aeb4ff; letter-spacing: 1px; text-transform: uppercase;">Camera Angle
+                Amount</span>
+              <span class="weight-val" id="cam-tilt-val"
+                style="font-size: 11px; font-weight: bold; color: #00ff99;">0.15</span>
+            </div>
+            <div class="slider-wrapper" style="display: flex; align-items: center;">
+              <input type="range" id="slider-cam-tilt" min="0" max="0.5" step="0.01" value="0.15" class="weight-slider"
+                style="width: 100%; pointer-events: auto;">
+            </div>
+          </div>
+
+          <!-- Group 6: Air Locomotion -->
           <div style="font-size: 8px; font-weight: 800; color: #FFB060; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">AIR LOCOMOTION</div>
 
           <div class="hud-toggle-container"
@@ -541,6 +569,8 @@ localStorage.removeItem('use-physics');</div>
     AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
+    CAM_TILT: false,      // Drone-style camera banking (roll) when moving laterally at speed
+    CAM_TILT_AMOUNT: 0.15, // Maximum camera bank angle in radians applied at full lateral sprint
     CAM_FOLLOW_LOCK: false, // If true, the camera is locked behind the character's facing direction
     CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
@@ -752,6 +782,28 @@ node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/charac
       toggleDynamicFov.addEventListener('change', (e) => {
         charCtrl.DYNAMIC_FOV = e.target.checked;
         localStorage.setItem('dynamic-fov', e.target.checked);
+      });
+    }
+
+    const toggleCamTilt = $('toggle-cam-tilt');
+    if (toggleCamTilt) {
+      toggleCamTilt.checked = charCtrl.CAM_TILT;
+      toggleCamTilt.addEventListener('change', (e) => {
+        charCtrl.CAM_TILT = e.target.checked;
+        localStorage.setItem('cam-tilt', e.target.checked);
+      });
+    }
+
+    const sliderCamTilt = $('slider-cam-tilt');
+    const camTiltVal = $('cam-tilt-val');
+    if (sliderCamTilt && camTiltVal) {
+      sliderCamTilt.value = charCtrl.CAM_TILT_AMOUNT;
+      camTiltVal.textContent = charCtrl.CAM_TILT_AMOUNT.toFixed(2);
+      sliderCamTilt.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        charCtrl.CAM_TILT_AMOUNT = val;
+        camTiltVal.textContent = val.toFixed(2);
+        localStorage.setItem('cam-tilt-amount', val);
       });
     }
 

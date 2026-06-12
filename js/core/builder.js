@@ -69,6 +69,8 @@ let physicsConfig = {
   AIR_CONTROL: false,
   DYNAMIC_FOV: true,
   DYNAMIC_FOV_MAX: 0.10,
+  CAM_TILT: false,
+  CAM_TILT_AMOUNT: 0.15,
   CAM_FOLLOW_LOCK: true,
   CAM_FOLLOW_PITCH: 1.047,
   CAM_FOLLOW_DIST: 8.0,
@@ -96,7 +98,7 @@ const CONTROLLER_PRESETS = [
     config: {
       GRAV: 22, JUMP_PWR: 9.5, SPD_WALK: 2.5, SPD_JOG: 3.0, SPD_SPRINT: 5.0,
       ACCEL: 14, DECEL: 16, ROT_SPD: 40, AIR_CONTROL: false,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.10, CAM_FOLLOW_LOCK: true,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.10, CAM_TILT: false, CAM_TILT_AMOUNT: 0.15, CAM_FOLLOW_LOCK: true,
       CAM_FOLLOW_PITCH: 1.047, CAM_FOLLOW_DIST: 8.0, DOUBLE_JUMP_ENABLED: true,
       SPEED_MULTIPLIER: 1.0
     }
@@ -109,7 +111,7 @@ const CONTROLLER_PRESETS = [
     config: {
       GRAV: 28, JUMP_PWR: 9.0, SPD_WALK: 2.7, SPD_JOG: 3.2, SPD_SPRINT: 5.8,
       ACCEL: 24, DECEL: 26, ROT_SPD: 70, AIR_CONTROL: false,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.08, CAM_FOLLOW_LOCK: true,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.08, CAM_TILT: true, CAM_TILT_AMOUNT: 0.20, CAM_FOLLOW_LOCK: true,
       CAM_FOLLOW_PITCH: 0.96, CAM_FOLLOW_DIST: 6.2, DOUBLE_JUMP_ENABLED: false,
       SPEED_MULTIPLIER: 1.0
     }
@@ -122,7 +124,7 @@ const CONTROLLER_PRESETS = [
     config: {
       GRAV: 24, JUMP_PWR: 13.5, SPD_WALK: 3.0, SPD_JOG: 3.8, SPD_SPRINT: 6.6,
       ACCEL: 20, DECEL: 18, ROT_SPD: 58, AIR_CONTROL: true,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.16, CAM_FOLLOW_LOCK: true,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.16, CAM_TILT: true, CAM_TILT_AMOUNT: 0.25, CAM_FOLLOW_LOCK: true,
       CAM_FOLLOW_PITCH: 1.02, CAM_FOLLOW_DIST: 7.0, DOUBLE_JUMP_ENABLED: true,
       SPEED_MULTIPLIER: 1.0
     }
@@ -135,7 +137,7 @@ const CONTROLLER_PRESETS = [
     config: {
       GRAV: 20, JUMP_PWR: 7.5, SPD_WALK: 1.6, SPD_JOG: 2.2, SPD_SPRINT: 3.8,
       ACCEL: 8, DECEL: 10, ROT_SPD: 26, AIR_CONTROL: false,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.04, CAM_FOLLOW_LOCK: true,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.04, CAM_TILT: true, CAM_TILT_AMOUNT: 0.08, CAM_FOLLOW_LOCK: true,
       CAM_FOLLOW_PITCH: 1.12, CAM_FOLLOW_DIST: 9.5, DOUBLE_JUMP_ENABLED: false,
       SPEED_MULTIPLIER: 1.0
     }
@@ -675,6 +677,7 @@ function syncPhysicsConfigToUI() {
   setSlider('slider-speed-mult', physicsConfig.SPEED_MULTIPLIER, 'x');
   setSlider('slider-cam-dist', physicsConfig.CAM_FOLLOW_DIST, 'm');
   setSlider('slider-fov-max', physicsConfig.DYNAMIC_FOV_MAX);
+  setSlider('slider-cam-tilt', physicsConfig.CAM_TILT_AMOUNT);
 
   const pitchDeg = Math.round(physicsConfig.CAM_FOLLOW_PITCH * 180 / Math.PI);
   setSlider('slider-cam-pitch', pitchDeg, '°');
@@ -683,6 +686,7 @@ function syncPhysicsConfigToUI() {
   setCheckbox('toggle-cam-lock-pitch', physicsConfig.CAM_LOCK_PITCH);
   setCheckbox('toggle-joystick-lock-x', physicsConfig.JOYSTICK_LOCK_X);
   setCheckbox('toggle-dynamic-fov', physicsConfig.DYNAMIC_FOV);
+  setCheckbox('toggle-cam-tilt', physicsConfig.CAM_TILT);
   setCheckbox('toggle-double-jump', physicsConfig.DOUBLE_JUMP_ENABLED);
   setCheckbox('toggle-air-control', physicsConfig.AIR_CONTROL);
   setCheckbox('toggle-particles', physicsConfig.PLAY_PARTICLES);
@@ -3203,6 +3207,7 @@ function setupSidebarControls() {
   bindSlider('slider-speed-mult', 'SPEED_MULTIPLIER', true, 'x');
   bindSlider('slider-cam-dist', 'CAM_FOLLOW_DIST', true, 'm');
   bindSlider('slider-fov-max', 'DYNAMIC_FOV_MAX');
+  bindSlider('slider-cam-tilt', 'CAM_TILT_AMOUNT');
 
   const camPitchSlider = document.getElementById('slider-cam-pitch');
   const camPitchVal = document.getElementById('slider-cam-pitch-val');
@@ -3237,6 +3242,7 @@ function setupSidebarControls() {
   bindCheckbox('toggle-cam-lock-pitch', 'CAM_LOCK_PITCH');
   bindCheckbox('toggle-joystick-lock-x', 'JOYSTICK_LOCK_X');
   bindCheckbox('toggle-dynamic-fov', 'DYNAMIC_FOV');
+  bindCheckbox('toggle-cam-tilt', 'CAM_TILT');
   bindCheckbox('toggle-double-jump', 'DOUBLE_JUMP_ENABLED');
   bindCheckbox('toggle-air-control', 'AIR_CONTROL');
   const particlesEl = document.getElementById('toggle-particles');
@@ -3417,6 +3423,7 @@ function injectPhysicsResetButtons() {
   applySlider('slider-speed-mult', 'SPEED_MULTIPLIER', 'x');
   applySlider('slider-cam-dist', 'CAM_FOLLOW_DIST', 'm');
   applySlider('slider-fov-max', 'DYNAMIC_FOV_MAX');
+  applySlider('slider-cam-tilt', 'CAM_TILT_AMOUNT');
 
   const camPitchSlider = document.getElementById('slider-cam-pitch');
   const camPitchVal = document.getElementById('slider-cam-pitch-val');
@@ -3460,6 +3467,7 @@ function injectPhysicsResetButtons() {
   applyCheckbox('toggle-cam-lock-pitch', 'CAM_LOCK_PITCH');
   applyCheckbox('toggle-joystick-lock-x', 'JOYSTICK_LOCK_X');
   applyCheckbox('toggle-dynamic-fov', 'DYNAMIC_FOV');
+  applyCheckbox('toggle-cam-tilt', 'CAM_TILT');
   applyCheckbox('toggle-double-jump', 'DOUBLE_JUMP_ENABLED');
   applyCheckbox('toggle-air-control', 'AIR_CONTROL');
   applyCheckbox('toggle-particles', 'PLAY_PARTICLES');
@@ -3853,7 +3861,7 @@ async function downloadControllerFile() {
   }
 };`;
       const _sig = JSON.stringify(physicsConfig);
-      const seedBlock = `\n(function() {\n  var _sig = ${JSON.stringify(_sig)};\n  if (localStorage.getItem('bcc_cfg_sig') !== _sig) {\n    var P = DEFAULT_CHAR_CONFIG.PHYSICS;\n    localStorage.setItem('air-control-enabled', String(P.AIR_CONTROL));\n    localStorage.setItem('cam-follow-lock', String(P.CAM_FOLLOW_LOCK));\n    localStorage.setItem('dynamic-fov', String(P.DYNAMIC_FOV));\n    localStorage.setItem('play-particles', String(P.PLAY_PARTICLES));\n    localStorage.setItem('bcc_cfg_sig', _sig);\n  }\n})();`;
+      const seedBlock = `\n(function() {\n  var _sig = ${JSON.stringify(_sig)};\n  if (localStorage.getItem('bcc_cfg_sig') !== _sig) {\n    var P = DEFAULT_CHAR_CONFIG.PHYSICS;\n    localStorage.setItem('air-control-enabled', String(P.AIR_CONTROL));\n    localStorage.setItem('cam-follow-lock', String(P.CAM_FOLLOW_LOCK));\n    localStorage.setItem('dynamic-fov', String(P.DYNAMIC_FOV));\n    localStorage.setItem('cam-tilt', String(P.CAM_TILT));\n    localStorage.setItem('cam-tilt-amount', String(P.CAM_TILT_AMOUNT));\n    localStorage.setItem('play-particles', String(P.PLAY_PARTICLES));\n    localStorage.setItem('bcc_cfg_sig', _sig);\n  }\n})();`;
       sourceText = sourceText.replace(configMatch[0], newConfigBlock + seedBlock);
     }
 

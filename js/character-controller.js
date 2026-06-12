@@ -54,6 +54,8 @@ const DEFAULT_CHAR_CONFIG = {
     AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
+    CAM_TILT: false,      // Drone-style camera banking (roll) when moving laterally at speed
+    CAM_TILT_AMOUNT: 0.15, // Maximum camera bank angle in radians applied at full lateral sprint
     CAM_FOLLOW_LOCK: true, // If true, the camera is locked behind the character's facing direction
     CAM_FOLLOW_PITCH: 1.047, // Camera follow lock pitch (beta angle in radians, approx 60 degrees)
     CAM_FOLLOW_DIST: 8.0, // Camera follow lock distance (radius in meters)
@@ -758,6 +760,12 @@ class CharCtrl {
 
     const savedDynamicFovMax = localStorage.getItem('dynamic-fov-max');
     this.DYNAMIC_FOV_MAX = savedDynamicFovMax !== null ? parseFloat(savedDynamicFovMax) : config.DYNAMIC_FOV_MAX;
+
+    const savedCamTilt = localStorage.getItem('cam-tilt');
+    this.CAM_TILT = savedCamTilt !== null ? (savedCamTilt === 'true') : (config.CAM_TILT !== undefined ? config.CAM_TILT : false);
+
+    const savedCamTiltAmount = localStorage.getItem('cam-tilt-amount');
+    this.CAM_TILT_AMOUNT = savedCamTiltAmount !== null ? parseFloat(savedCamTiltAmount) : (config.CAM_TILT_AMOUNT !== undefined ? config.CAM_TILT_AMOUNT : 0.15);
 
     const savedCamFollowPitch = localStorage.getItem('cam-follow-pitch');
     this.CAM_FOLLOW_PITCH = savedCamFollowPitch !== null ? parseFloat(savedCamFollowPitch) : (config.CAM_FOLLOW_PITCH !== undefined ? config.CAM_FOLLOW_PITCH : Math.PI / 3.0);
@@ -2905,6 +2913,51 @@ class CharCtrl {
     // Dynamic FOV based on speed (tunnel vision expansion)
     const targetFOV = this.DYNAMIC_FOV ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX) : this._initialCameraFOV;
     this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+
+    // 5. Camera Angle Movement (Drone-style Banking)
+    // Roll the camera slightly when moving laterally at speed, like a chase drone banking into the move
+    if (this._camTilt === undefined) this._camTilt = 0;
+    // Lazily hook pointer drag tracking (works regardless of CAM_FOLLOW_LOCK, which freezes alpha)
+    if (!this._camTiltPointerInit) {
+      this._camTiltPointerInit = true;
+      this._camTiltDragPx = 0;
+      this.scene.onPointerObservable.add((pi) => {
+        if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE && pi.event && pi.event.buttons > 0) {
+          this._camTiltDragPx += pi.event.movementX || 0;
+        }
+      });
+    }
+    let targetCamTilt = 0;
+    const camDragVel = this._camTiltDragPx / Math.max(dt, 0.001); // horizontal drag speed in px/s
+    this._camTiltDragPx = 0;
+    // Smooth the raw per-frame drag velocity to avoid jitter from discrete mouse events
+    if (this._camDragVelSmooth === undefined) this._camDragVelSmooth = 0;
+    this._camDragVelSmooth = lerp(this._camDragVelSmooth, camDragVel, 1 - Math.exp(-6 * dt));
+    if (this.CAM_TILT) {
+      // Bank from mouse/touch camera drag speed (drone orbiting feel)
+      targetCamTilt += -this._camDragVelSmooth * 0.0015 * this.CAM_TILT_AMOUNT;
+
+      if (this.grounded && this.speed > 0.5 && !inAction) {
+        // Lateral input relative to the camera (strafe direction)
+        let lateralX = 0;
+        if (this._isPressed('MOVE_LEFT')) lateralX -= 1;
+        if (this._isPressed('MOVE_RIGHT')) lateralX += 1;
+        if (this.isTouch && Math.abs(this.touchVector.x) > 0.01) lateralX = this.touchVector.x;
+        // Bank into lateral movement; also add a touch of bank from yaw turning for fluid arcs
+        targetCamTilt += (-lateralX * 0.85 - (turnDelta / Math.max(dt, 0.001)) * 0.04) * this.CAM_TILT_AMOUNT * currentSpeedRatio;
+      }
+      // Clamp to the configured maximum bank
+      targetCamTilt = Math.max(-this.CAM_TILT_AMOUNT, Math.min(this.CAM_TILT_AMOUNT, targetCamTilt));
+    }
+    this._camTilt = lerp(this._camTilt, targetCamTilt, 1 - Math.exp(-2.5 * dt));
+    if (Math.abs(this._camTilt) > 0.0005) {
+      // Rotate the camera's up vector around its view axis to produce the roll
+      const viewDir = this.camera.getTarget().subtract(this.camera.position).normalize();
+      const tiltMatrix = BABYLON.Matrix.RotationAxis(viewDir, this._camTilt);
+      this.camera.upVector = BABYLON.Vector3.TransformNormal(BABYLON.Vector3.Up(), tiltMatrix);
+    } else if (this.camera.upVector.x !== 0 || this.camera.upVector.z !== 0 || this.camera.upVector.y !== 1) {
+      this.camera.upVector = BABYLON.Vector3.Up();
+    }
 
     // Lock camera behind the character if follow lock is active
     if (!this.CAM_FOLLOW_LOCK && this.camera.angularSensibilityX === 999999999) {
