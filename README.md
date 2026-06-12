@@ -223,6 +223,8 @@ We have provided three setup examples to guide your implementation:
 
 ## 🔧 Visual Builder (`builder.html`)
 
+![BJS Character Controller V2 Screenshot](assets/screenshot_2.webp)
+
 `builder.html` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required. You can use it as a static page, or run it with the local NodeJS development server to enable full backend-powered retargeting and GLB merges.
 
 ### 🌐 Running with NodeJS / npm (Recommended)
@@ -255,6 +257,15 @@ To run the local server which powers advanced skeletal retargeting, GLB animatio
 
 All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wipe all overrides and restore factory defaults.
 
+### 💀 FBX Direct Import & Bind-Pose Posture Tuning
+
+When running the NodeJS backend, the **Model** tab offers advanced rigging, conversion, and alignment utilities:
+
+*   **Direct FBX Support**: Drag-and-drop `.fbx` character models and animation files. The server auto-converts them to `.glb` under-the-hood (using `fbx_api.mjs`), fixing materials and flattening the `RootNode` transformation to avoid rotation/scale offset issues.
+*   **Scale & Pivot Offsets**: Fine-tune character sizing using uniform scaling or independent X, Y, and Z scaling. Adjust the pivot offset (X, Y, Z) and use the **Pivot to Ground** helper to easily snap a character's feet to the ground level.
+*   **Skeletal Posture Adjustments**: Straighten or adjust character postures (e.g., matching A-poses to T-poses) using bind-pose angle sliders for **Arm Spread**, **Arm Splay**, **Shoulder Raise**, **Leg Spread**, **Hips Tilt**, and **Spine Straightening**.
+*   **Skeleton Tree & Health Report**: View your character's bone hierarchy tree and check its bone-mapping diagnostics (overall score, Mixamo bone compatibility, bone coverage, and list of missing standard bones).
+
 ### 💀 Auto-Rig (skeleton generation for skinless meshes)
 
 If you import a mesh-only GLB (no skeleton/skin), the **Model → Skeleton** section offers **Generate Skeleton (Auto-Rig)**:
@@ -265,6 +276,14 @@ If you import a mesh-only GLB (no skeleton/skin), the **Model → Skeleton** sec
 3. **Apply Rig** builds the skeleton, computes proximity-based skin weights server-side, and re-merges your animation set against the fresh rig automatically.
 
 Already-rigged characters get **Re-Rig / Adjust Skeleton** instead: markers seed from the current bind pose, and applying moves the existing joints while preserving the hierarchy, extra bones (fingers/twist) and the original artist skin weights.
+
+### 🎭 Custom Actions & Animations
+
+In the **Animations → Custom Animations** section, you can extend the controller by registering completely new character actions (e.g., `TAUNT`, `DANCE`, `WAVE`):
+*   Map a custom action name to any animation group in the library.
+*   Assign key triggers directly to the custom action.
+*   In the exported snippet, these actions are configured and bound automatically.
+*   You can trigger custom actions programmatically at runtime using `charCtrl.anim.play('CUSTOM_ACTION_NAME')`.
 
 ### 🎯 Animation Events (gameplay frame markers)
 
@@ -291,6 +310,9 @@ window.addEventListener('charanimevent', (e) => console.log(e.detail));
 
 The **Physics** tab includes four one-click controller presets (**Balanced Adventure**, **Action Combat**, **Arcade Platformer**, **Cinematic Walkthrough**) and a **Controller Test Lab**: scenario camera chips (Studio / Motion / Air / Close Cam), action buttons (Idle, Walk, Sprint, Jump, Roll, Crouch — locomotion buttons drive the real blend tree, exactly like in-game), and a live metrics panel (state, speed, grounded, active animation, camera framing).
 
+#### ↺ Parameter Reset Buttons
+Beside every slider, toggle, or control mapping under the **Physics** and **Controls** tabs, there is an `↺` reset button. Clicking it instantly restores that single parameter to its baked system default without clearing the rest of your custom settings.
+
 ### 🔄 Retargeting & Animation Merging (`merge_api.mjs`)
 
 The Visual Builder utilizes the server-side module [merge_api.mjs](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/core/merge_api.mjs) (via `server.mjs`) to dynamically retarget and combine your character model with custom animations.
@@ -299,13 +321,33 @@ When using the builder, you can import assets in different ways:
 - **Separate Import:** You can load your character mesh (with or without animations) in the **Model** tab, and then load external animation GLB files in the **Animations** tab.
 - **Using Embedded Animations:** If you want to use the animations already present in the character model itself, you must import the character model file in the **Model** tab, and then import the **same character model file** again in the **Animations** tab.
 
-### 📥 Exporting the Character as GLB (with animations)
+---
 
-The **Export** tab also provides the ability to export the character directly in `.glb` format with the configured animations incorporated. This allows you to generate a single, self-contained GLB file that includes both the character mesh and the mapped animations, ready to be used in other scenes or external tools.
+## 📥 Exporting & Downloading Options
 
-### Downloading `custom-character-controller.js`
+The **Export** tab provides 4 distinct ways to output your configuration and assets for production:
 
-The **Export** tab lets you download a pre-configured version of `character-controller.js` with your settings baked in. This file includes an **auto-seed block** that writes your configuration values to `localStorage` on first load (detected by a config signature). This ensures your exported Physics settings always take priority over any stale `localStorage` values from previous sessions. If you export with new settings, the signature changes and the seed re-runs automatically.
+### 1. 📋 Export Code Snippet (Preview & Copy)
+This provides a complete, custom `loadCharacter` helper function matching your settings. Copy and paste it directly into your `app.js` entry file to replace the default loader. It automatically bakes in:
+*   **Mesh Transform Scaling** (`capsuleScale`).
+*   **Custom Key Bindings** (`keys` mappings).
+*   **Physics Config Parameters** (`config` defaults).
+*   **Mapped Animations & Custom Actions** (`configure` callback).
+*   **Animation Events** (`animationEvents` markers).
+
+### 2. 💾 Saving & Restoring Builder Config (`builder-config.json`)
+Allows you to save/load your visual builder configuration presets:
+*   **Download builder-config.json**: Saves all skeleton transforms, key bindings, physics settings, standard animation mappings, custom action setups, and animation events into a portable JSON file.
+*   **Import builder-config.json**: Restore your saved configuration at any time to resume working in the builder without losing your adjustments.
+
+### 3. 📦 Exporting the Character as GLB (with animations)
+Click **Download character_animated.glb** to download a single, self-contained GLB file that merges your character mesh with the active animations retargeted and merged directly into the skeletal structures on the server. Ready for drag-and-drop into your assets folder.
+
+### ⚡ 4. Downloading Baked Controller (`custom-character-controller.js`)
+Generates a tailored standalone `character-controller.js` file with your settings pre-baked:
+*   Replaces the default configurations (`DEFAULT_CHAR_CONFIG`) inside the script with your custom physics, keys, and touch layouts.
+*   Injects a **local-storage auto-seed signature block** to prioritize your baked physics defaults on first load over any stale cached `localStorage` from previous builder sessions.
+*   Bakes all standard and custom animation remappings, frame ranges, and event markers directly into the controller's setup hooks, acting as a complete drop-in replacement with zero extra code required in your loader scripts.
 
 ```html
 <!-- Use the downloaded file in place of the original: -->
@@ -313,7 +355,6 @@ The **Export** tab lets you download a pre-configured version of `character-cont
 <!-- or, if using the builder export: -->
 <script src="js/custom-character-controller.js"></script>
 ```
-
 ---
 
 ## 📚 Credits & License
