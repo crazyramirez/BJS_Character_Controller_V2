@@ -24,6 +24,9 @@
     "fs-extra": "^11.3.5",
     "multer": "^2.1.1"
   },
+  "overrides": {
+    "sharp": "^0.33.5"
+  },
   "devDependencies": {
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8"
