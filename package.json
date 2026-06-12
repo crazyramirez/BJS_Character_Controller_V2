@@ -28,8 +28,8 @@
     "sharp": "^0.33.5"
   },
   "devDependencies": {
-    "electron": "^33.4.11",
-    "electron-builder": "^25.1.8"
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.2"
   },
   "build": {
     "appId": "com.crazyramirez.bjs-character-controller-builder",
