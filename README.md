@@ -223,8 +223,8 @@ We have provided three setup examples to guide your implementation:
 
 ## 🔧 Visual Builder (`builder.html`)
 
-![BJS Character Controller V2 Screenshot](assets/screenshot_2.webp)
-![BJS Character Controller V2 Builder Video Demo](assets/builder.mp4)
+![BJS Character Controller V2 Builder](assets/screenshot_2.webp)
+![BJS Character Controller V2 Builder Gif](assets/builder.gif)
 
 `builder` is an interactive GUI tool for visually configuring and exporting a custom character controller — no code editing required. You can use it as a static page, or run it with the local NodeJS development server to enable full backend-powered retargeting and GLB merges.
 
