@@ -316,25 +316,6 @@ The **Export** tab lets you download a pre-configured version of `character-cont
 
 ---
 
-## 📦 Merging Animations (`merge_animations.mjs`)
-
-Animations are baked inside `character_animated.glb`. To merge new external GLB animation files onto your character mesh:
-
-```bash
-# Install dependencies
-npm install
-
-# Run the merge tool
-node js/core/merge_animations.mjs
-
-# Example usage with custom paths
-node js/core/merge_animations.mjs -c base_character.glb -a animations.glb -o assets/character_animated.glb
-```
-
-For batch conversion of FBX animations, see [FBX2GLB-Batch-Convert-Optimizer](https://github.com/crazyramirez/FBX2GLB-Batch-Convert-Optimizer).
-
----
-
 ## 📚 Credits & License
 
 *   **Rig**: Customized Mixamo skeletal rig.
