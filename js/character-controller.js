@@ -1583,6 +1583,8 @@ class CharCtrl {
 
   _roll() {
     if (this._rollActive) return;
+    const isMovingBackward = this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2);
+    if (isMovingBackward) return;
     this._lastRollTime = performance.now();
     this._rollActive = true;
     this._setState(S.ROLL);
@@ -2811,7 +2813,7 @@ class CharCtrl {
     const deltaY = this.root.position.y - (this._lastY !== undefined ? this._lastY : this.root.position.y);
     if (this.grounded && wasGrounded) {
       if (this.usePhysics) {
-        if (this.onStairs) {
+        if (this.onScalable) {
           // Compensate visual mesh local Y for capsule height shifts to smooth out stair pops
           this.visualLocalY -= deltaY;
         }
@@ -2967,7 +2969,7 @@ class CharCtrl {
       const dragMag = Math.max(0, Math.abs(this._camDragVelSmooth) - 30);
       targetCamTilt += -Math.sign(this._camDragVelSmooth) * dragMag * 0.0015 * this.CAM_TILT_AMOUNT;
 
-      if (this.grounded && this.speed > 0.5 && !inAction) {
+      if (this.speed > 0.5 && !inAction) {
         // Lateral input relative to the camera (strafe direction)
         let lateralX = 0;
         if (this._isPressed('MOVE_LEFT')) lateralX -= 1;
@@ -3319,7 +3321,8 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         scene.registerBeforeRender(() => {
           const dt = scene.getEngine().getDeltaTime() / 1000;
           const clampedDt = Math.max(0.001, Math.min(0.1, dt));
-          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset, 0));
+          const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
+          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset + deflection, 0));
           camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
         });
 
@@ -3474,7 +3477,8 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   scene.registerBeforeRender(() => {
     const dt = scene.getEngine().getDeltaTime() / 1000;
     const clampedDt = Math.max(0.001, Math.min(0.1, dt));
-    const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset, 0));
+    const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
+    const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset + deflection, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
   });
 

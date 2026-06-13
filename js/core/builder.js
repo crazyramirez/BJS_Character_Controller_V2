@@ -1864,7 +1864,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   scene.registerBeforeRender(() => {
     if (!activeCharacter) return;
     if (autoRigState) return; // rig mode: user pans freely (right-drag), don't recenter
-    const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, 0.4, 0));
+    const deflection = activeCharacter.charCtrl.visualLocalY - activeCharacter.charCtrl.targetLocalY;
+    const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, 0.4 + deflection, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.1);
 
     if (activeCharacter.charCtrl.grounded && !hasMadeInitialWalk) {
@@ -3346,6 +3347,11 @@ function clearAllAnimations() {
         activeCharacter.animCtrl = new AnimCtrl([], scene);
         activeCharacter.animCtrl.charCtrl = activeCharacter.charCtrl;
         activeCharacter.charCtrl.anim = activeCharacter.animCtrl;
+
+        // Reset skeleton to rest pose (same as auto rig / adjust mode)
+        if (scene.skeletons) {
+          scene.skeletons.forEach(skel => skel.returnToRest());
+        }
       }
 
       // Clear stored animations GLB buffer as well
