@@ -16,6 +16,8 @@ let characterGlbBuffer = null; // ArrayBuffer of the loaded character GLB
 let originalCharacterGlbBuffer = null; // Clean original character GLB
 let animationsGlbBuffer = null; // ArrayBuffer of the preloaded animations GLB
 let isServerAvailable = false;
+let characterFilename = 'character.glb';
+let animationsFilename = 'animations.glb';
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
@@ -931,22 +933,20 @@ async function pingServer() {
 function syncOfflineUI(online) {
   const ids = ['dropzone-character', 'dropzone-animations'];
   ids.forEach(id => {
-    document.getElementById(id)?.classList.toggle('dropzone-disabled', !online);
+    document.getElementById(id)?.classList.remove('dropzone-disabled');
   });
 
   const btnIds = ['btn-add-single-anim', 'btn-clear-all-anims'];
   btnIds.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.classList.toggle('btn-disabled-offline', !online);
-    if (!online) el.setAttribute('title', 'Server offline');
-    else el.removeAttribute('title');
+    el.classList.remove('btn-disabled-offline');
+    el.removeAttribute('title');
   });
 
   document.querySelectorAll('.btn-anim-delete').forEach(btn => {
-    btn.classList.toggle('btn-disabled-offline', !online);
-    if (!online) btn.setAttribute('title', 'Server offline');
-    else btn.setAttribute('title', 'Remove this animation');
+    btn.classList.remove('btn-disabled-offline');
+    btn.setAttribute('title', 'Remove this animation');
   });
 
   const viewportNotice = document.getElementById('viewport-offline-notice');
@@ -1192,6 +1192,7 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   const arrayBuffer = preloadedBuffer || await file.arrayBuffer();
   characterGlbBuffer = arrayBuffer;
   originalCharacterGlbBuffer = arrayBuffer;
+  characterFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('import', 'active');
 
@@ -1301,17 +1302,27 @@ async function applyPreloadedAnimations() {
     } catch (err) {
       completeMergeProgress();
       console.error('Server merge failed for preloaded animations, falling back to client-side load:', err);
-      showToast('Server merge failed — loading animations as-is.', true);
-      await _loadGlbIntoScene(animationsGlbBuffer, 'animations.glb', true);
+      showToast('Server merge failed — falling back to client-side retargeting.', true);
+      try {
+        await loadAnimationsOffline(animationsGlbBuffer, 'animations.glb');
+      } catch (clientErr) {
+        console.error('Client-side retargeting fallback failed:', clientErr);
+        showToast('Client-side retargeting failed: ' + clientErr.message, true);
+      }
       setLoaderStep('merge', 'completed');
       hideLoading();
     }
   } else {
-    showLoading(`Loading preloaded animations (no server retargeting)…`);
-    await _loadGlbIntoScene(animationsGlbBuffer, 'animations.glb', true);
+    showLoading(`Retargeting preloaded animations on client…`);
+    try {
+      await loadAnimationsOffline(animationsGlbBuffer, 'animations.glb');
+      showToast(`✓ Client-side retargeted preloaded animations! ${detectedAnimations.length} animations loaded.`);
+    } catch (err) {
+      console.error(err);
+      showToast('Client-side retargeting failed: ' + err.message, true);
+    }
     setLoaderStep('merge', 'completed');
     hideLoading();
-    showToast(`Loaded preloaded animations (offline, no retargeting).`);
   }
 }
 
@@ -1342,6 +1353,7 @@ async function loadAnimationBatchFile(file) {
 
   const animBuffer = await file.arrayBuffer();
   animationsGlbBuffer = animBuffer;
+  animationsFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('merge', 'active');
 
@@ -1378,18 +1390,28 @@ async function loadAnimationBatchFile(file) {
     } catch (err) {
       completeMergeProgress();
       console.error('Server merge failed, falling back to client-side load:', err);
-      showToast('Server merge failed — loading animations as-is.', true);
-      await _loadGlbIntoScene(animBuffer, file.name, true /* animOnly */);
+      showToast('Server merge failed — falling back to client-side retargeting.', true);
+      try {
+        await loadAnimationsOffline(animBuffer, file.name);
+      } catch (clientErr) {
+        console.error('Client-side retargeting fallback failed:', clientErr);
+        showToast('Client-side retargeting failed: ' + clientErr.message, true);
+      }
       setLoaderStep('merge', 'completed');
       hideLoading();
     }
   } else {
-    // Offline fallback: load animation file directly without retargeting
-    showLoading(`Loading ${file.name} (no server retargeting)…`);
-    await _loadGlbIntoScene(animBuffer, file.name, true /* animOnly */);
+    // Offline fallback: load animation file directly with client retargeting
+    showLoading(`Retargeting ${file.name} on client…`);
+    try {
+      await loadAnimationsOffline(animBuffer, file.name);
+      showToast(`✓ Client-side retargeted animations! ${detectedAnimations.length} animations loaded.`);
+    } catch (err) {
+      console.error(err);
+      showToast('Client-side retargeting failed: ' + err.message, true);
+    }
     setLoaderStep('merge', 'completed');
     hideLoading();
-    showToast(`Loaded animations (offline, no retargeting).`);
   }
 }
 
@@ -1398,6 +1420,170 @@ async function loadAnimationBatchFile(file) {
 // ═══════════════════════════════════════════════════════════
 async function addSingleAnimationFile(file) {
   await loadAnimationBatchFile(file); // same pipeline — additive merge
+}
+
+// ═══════════════════════════════════════════════════════════
+// OFFLINE RUNTIME RETARGETING (Fallback via AnimatorAvatar)
+// ═══════════════════════════════════════════════════════════
+async function loadAnimationsOffline(arrayBuffer, filename) {
+  if (!activeCharacter) {
+    throw new Error('Load a character mesh first!');
+  }
+
+  const blob = new Blob([arrayBuffer]);
+  const blobUrl = URL.createObjectURL(blob);
+  const container = await BABYLON.SceneLoader.LoadAssetContainerAsync('', blobUrl, scene, null, '.glb');
+  URL.revokeObjectURL(blobUrl);
+
+  const sourceGroups = container.animationGroups;
+  if (!sourceGroups || sourceGroups.length === 0) {
+    throw new Error("No animation groups found in the animation file.");
+  }
+
+  const skeleton = scene.skeletons[0];
+  const characterRoot = activeCharacter.charRoot;
+
+  // Save and temporarily adjust Character Creator A-pose arms to T-pose for sampling rest matrices
+  const lUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_l_upperarm') : null;
+  const rUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_r_upperarm') : null;
+  
+  let lOrigRot = null, rOrigRot = null;
+  if (lUpperArm) {
+    lOrigRot = lUpperArm.rotation.clone();
+    lUpperArm.rotate(BABYLON.Axis.Z, -Math.PI / 6, BABYLON.Space.LOCAL); // rotate left arm up by ~30 deg
+  }
+  if (rUpperArm) {
+    rOrigRot = rUpperArm.rotation.clone();
+    rUpperArm.rotate(BABYLON.Axis.Z, Math.PI / 6, BABYLON.Space.LOCAL); // rotate right arm up by ~30 deg
+  }
+
+  const avatar = new BABYLON.AnimatorAvatar("activeCharAvatar", characterRoot);
+
+  // Restore original rotations
+  if (lUpperArm && lOrigRot) lUpperArm.rotation.copyFrom(lOrigRot);
+  if (rUpperArm && rOrigRot) rUpperArm.rotation.copyFrom(rOrigRot);
+
+  const boneMap = new Map();
+  const targetBones = skeleton ? skeleton.bones : [];
+  const targetByName = new Map();
+  const targetByNorm = new Map();
+  targetBones.forEach(bone => {
+    targetByName.set(bone.name.toLowerCase(), bone.name);
+    const norm = normBone(bone.name);
+    if (norm) targetByNorm.set(norm, bone.name);
+  });
+
+  const boneAliases = {
+    'mixamorig:spine': 'cc_base_waist',
+    'mixamorig:spine1': 'cc_base_spine01',
+    'mixamorig:spine2': 'cc_base_spine02',
+    'mixamorig:neck': 'cc_base_necktwist01',
+    'mixamorig:neck1': 'cc_base_necktwist02',
+  };
+
+  sourceGroups.forEach(sg => {
+    sg.targetedAnimations.forEach(ta => {
+      const srcNode = ta.target;
+      if (!srcNode || !srcNode.name) return;
+      const srcName = srcNode.name;
+      if (boneMap.has(srcName)) return;
+
+      let matchedName = targetByName.get(srcName.toLowerCase());
+      if (!matchedName) {
+        const alias = boneAliases[srcName.toLowerCase()];
+        if (alias) {
+          matchedName = targetByName.get(alias);
+        }
+      }
+      if (!matchedName) {
+        const norm = normBone(srcName);
+        matchedName = targetByNorm.get(norm);
+      }
+      if (matchedName) {
+        boneMap.set(srcName, matchedName);
+      }
+    });
+  });
+
+  const findSourceNodeByNormalizedRole = (sg, role) => {
+    const roleNorms = {
+      hips: ['hips', 'pelvis', 'hip'],
+      leftfoot: ['leftfoot', 'footl', 'leftankle', 'ankle_l'],
+    };
+    const searchList = roleNorms[role] || [];
+    for (const ta of sg.targetedAnimations) {
+      const node = ta.target;
+      if (!node || !node.name) continue;
+      const norm = normBone(node.name);
+      if (searchList.some(s => norm.includes(s) || s.includes(norm))) return node.name;
+    }
+    return null;
+  };
+
+  const retargetedGroups = [];
+  sourceGroups.forEach(sg => {
+    const cleanName = cleanAnimName(sg.name);
+    const srcRootName = findSourceNodeByNormalizedRole(sg, 'hips') || "Hips";
+    const srcGroundName = findSourceNodeByNormalizedRole(sg, 'leftfoot') || "LeftFoot";
+
+    const retargeted = avatar.retargetAnimationGroup(sg, {
+      animationGroupName: cleanName,
+      retargetAnimationKeys: true,
+      fixRootPosition: true,
+      fixGroundReference: true,
+      rootNodeName: srcRootName,
+      groundReferenceNodeName: srcGroundName,
+      mapNodeNames: boneMap,
+      fixGroundReferenceDynamicRefNode: true
+    });
+
+    // Filter retargeted animations in-place to prevent scaling and non-root translation deformations
+    const filteredAnims = retargeted.targetedAnimations.filter(ta => {
+      const targetNode = ta.target;
+      if (!targetNode || !targetNode.name) return true;
+      const property = ta.animation.targetProperty;
+      
+      // 1. Remove scaling tracks entirely
+      if (property === 'scaling') return false;
+      
+      // 2. Remove position/translation tracks for all nodes except the root bone (Hips)
+      if (property === 'position') {
+        const nameLower = targetNode.name.toLowerCase();
+        const isHips = nameLower.includes('hips') || nameLower.includes('pelvis') || nameLower.includes('hip');
+        if (!isHips) return false;
+      }
+      
+      return true;
+    });
+    retargeted.targetedAnimations.length = 0;
+    retargeted.targetedAnimations.push(...filteredAnims);
+
+    retargeted.stop();
+    scene.addAnimationGroup(retargeted);
+    retargetedGroups.push(retargeted);
+  });
+
+  // Clean up original animation groups from the loaded file
+  container.dispose();
+
+  // Update detected animations list
+  const newAnimNames = retargetedGroups.map(ag => cleanAnimName(ag.name));
+  detectedAnimations = [...new Set([...detectedAnimations, ...newAnimNames])];
+
+  // Add/replace in rawAnimationGroups
+  retargetedGroups.forEach(ag => {
+    const cleanName = cleanAnimName(ag.name);
+    const oldIdx = activeCharacter.rawAnimationGroups.findIndex(g => cleanAnimName(g.name) === cleanName);
+    if (oldIdx !== -1) {
+      const oldAg = activeCharacter.rawAnimationGroups[oldIdx];
+      oldAg.stop();
+      oldAg.dispose();
+      activeCharacter.rawAnimationGroups.splice(oldIdx, 1);
+    }
+    activeCharacter.rawAnimationGroups.push(ag);
+    // Re-map it in animCtrl
+    activeCharacter.animCtrl.setAnimation(cleanName, ag);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3268,12 +3454,17 @@ function setupSidebarControls() {
   if (btnAddSingle && singleInput) {
     btnAddSingle.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
       singleInput.click();
     });
     singleInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
-      if (file) addSingleAnimationFile(file);
+      if (file) {
+        if (!isServerAvailable && !/\.glb$/i.test(file.name)) {
+          showToast('Offline mode only supports .glb files. Start the server to convert .fbx.', true);
+        } else {
+          addSingleAnimationFile(file);
+        }
+      }
       singleInput.value = '';
     });
   }
@@ -3285,7 +3476,6 @@ function setupSidebarControls() {
   // Clear all animations button
   const btnClearAllAnims = document.getElementById('btn-clear-all-anims');
   if (btnClearAllAnims) btnClearAllAnims.addEventListener('click', () => {
-    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
     clearAllAnimations();
   });
 
@@ -3372,6 +3562,20 @@ function setupSidebarControls() {
         Object.keys(physicsConfig).forEach(key => { activeCharacter.charCtrl[key] = physicsConfig[key]; });
       }
       showToast('All configurations reset to defaults!');
+    });
+  }
+
+  // Export Integration Mode Toggle
+  const exportMergedRadio = document.getElementById('export-mode-merged');
+  const exportRuntimeRadio = document.getElementById('export-mode-runtime');
+  if (exportMergedRadio && exportRuntimeRadio) {
+    const inputs = document.querySelectorAll('input[name="export-mode"]');
+    inputs.forEach(input => {
+      input.addEventListener('change', (e) => {
+        exportMergedRadio.classList.toggle('active', e.target.value === 'merged');
+        exportRuntimeRadio.classList.toggle('active', e.target.value === 'runtime');
+        updateExportCode();
+      });
     });
   }
 
@@ -3570,13 +3774,19 @@ window.addEventListener('keydown', (e) => {
 function setupDragAndDrop() {
   // Character dropzone
   setupDropzone('dropzone-character', 'char-file-input', async (file) => {
-    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
+    if (!isServerAvailable && !/\.glb$/i.test(file.name)) {
+      showToast('Offline mode only supports .glb files. Start the server to convert .fbx.', true);
+      return;
+    }
     await loadCharacterMeshFile(file);
   });
 
   // Animations dropzone
   setupDropzone('dropzone-animations', 'anim-file-input', async (file) => {
-    if (!isServerAvailable) { showToast('Server offline. Start the server first (npm start).', true); return; }
+    if (!isServerAvailable && !/\.glb$/i.test(file.name)) {
+      showToast('Offline mode only supports .glb files. Start the server to convert .fbx.', true);
+      return;
+    }
     await loadAnimationBatchFile(file);
   });
 }
@@ -3641,7 +3851,16 @@ function updateExportCode() {
     }
   });
 
-  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: 'character_animated.glb',\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
+  const modeEl = document.querySelector('input[name="export-mode"]:checked');
+  const exportMode = modeEl ? modeEl.value : 'merged';
+
+  let animFileOption = '';
+  if (exportMode === 'runtime') {
+    const animName = animationsFilename || 'animations.glb';
+    animFileOption = `\n    animationsFilename: '${animName}',`;
+  }
+
+  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: '${exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated.glb'}',${animFileOption}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
   savePreferences();

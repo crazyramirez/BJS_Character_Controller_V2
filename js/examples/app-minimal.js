@@ -14,7 +14,13 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
+    // Integration Mode options:
+    // Option A: Pre-merged GLB (Embedded animations, standard)
     filename: 'character_animated.glb'
+    
+    // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
+    // filename: 'character.glb',
+    // animationsFilename: 'animations.glb'
   });
 }
 

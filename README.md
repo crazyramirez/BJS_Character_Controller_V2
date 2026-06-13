@@ -327,6 +327,18 @@ When using the builder, you can import assets in different ways:
 
 The **Export** tab provides 4 distinct ways to output your configuration and assets for production:
 
+### 🔀 Integration Modes (Pre-merged GLB vs. Runtime Retargeting)
+When exporting your setup, you can choose between two integration architectures depending on your project needs:
+
+*   **Pre-merged GLB (Baked Merge)**:
+    *   **How it works**: Merges character meshes and animation channels into a single `character_animated.glb` file.
+    *   **Best for**: Single character games, simple setups, or engines where loading multiple separate files is not desired.
+    *   **Drawback**: Duplicate data. If you have 10 characters sharing the same locomotion set, you will be downloading those animation frames 10 times.
+*   **Runtime Retargeting (Client-Side Dynamic Retargeting)**:
+    *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations.glb`) separate. In your code, [setupCharacter](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L3179) automatically maps the animation channels onto whichever character skeleton is loaded at runtime using [normBone](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L123) matching.
+    *   **Best for**: Multi-character games, RPGs, or modular projects. Reuses one shared animation file across dozens of characters, drastically reducing download size and memory footprint.
+    *   **Note**: Requires Babylon.js 9+ (utilizes the native `AnimatorAvatar` class).
+
 ### 1. 📋 Export Code Snippet (Preview & Copy)
 This provides a complete, custom `loadCharacter` helper function matching your settings. Copy and paste it directly into your `app.js` entry file to replace the default loader. It automatically bakes in:
 *   **Mesh Transform Scaling** (`capsuleScale`).

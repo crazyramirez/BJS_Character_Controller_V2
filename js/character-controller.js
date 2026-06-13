@@ -122,9 +122,37 @@ function lerpAngle(a, b, t) {
 
 function normBone(name) {
   if (!name) return '';
-  return name.toLowerCase()
-    .replace(/^(mixamorig\d*|armature)[:_ ]/i, '')
-    .replace(/[:_ \-]/g, '');
+  let n = name.toLowerCase();
+  
+  // 1. Determine side (left / right)
+  let side = '';
+  if (n.includes('left') || n.match(/\b_l\b/) || n.match(/_l_/) || n.startsWith('l_') || n.match(/[^a-z]l[a-z]/) || n.includes('lhand') || n.includes('lfoot') || n.includes('lthigh') || n.includes('lcalf') || n.includes('larm') || n.includes('lforearm') || n.includes('lclavicle')) {
+    side = 'left';
+  } else if (n.includes('right') || n.match(/\b_r\b/) || n.match(/_r_/) || n.startsWith('r_') || n.match(/[^a-z]r[a-z]/) || n.includes('rhand') || n.includes('rfoot') || n.includes('rthigh') || n.includes('rcalf') || n.includes('rarm') || n.includes('rforearm') || n.includes('rclavicle')) {
+    side = 'right';
+  }
+  
+  // Clean prefixes and punctuation
+  n = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '')
+       .replace(/[:_ \-]/g, '');
+       
+  // 2. Normalize synonyms
+  if (n.includes('thigh')) n = n.replace('thigh', 'upleg');
+  if (n.includes('calf')) n = n.replace('calf', 'leg');
+  if (n.includes('upperarm')) n = n.replace('upperarm', 'arm');
+  if (n.includes('clavicle')) n = n.replace('clavicle', 'shoulder');
+  if (n.includes('pelvis')) n = n.replace('pelvis', 'hips');
+  if (n.includes('hip')) n = n.replace('hip', 'hips');
+  if (n.includes('hand')) n = n.replace('hand', '');
+  if (n.includes('middle')) n = n.replace('middle', 'mid');
+  
+  // If we found a side, prepend it to ensure left/right are distinct
+  if (side) {
+    n = n.replace(/^(left|right|l|r)/, '');
+    n = side + n;
+  }
+  
+  return n;
 }
 
 function cleanAnimName(raw) {
@@ -2956,14 +2984,15 @@ class CharCtrl {
     }
     this._camTilt = lerp(this._camTilt, targetCamTilt, 1 - Math.exp(-2.5 * dt));
     if (Math.abs(this._camTilt) > 0.0005) {
-      // Rotate the camera's up vector around its view axis to produce the roll.
-      // The axis is derived analytically from alpha/beta (canonical Y-up orbit) instead of the
-      // actual camera position, which already depends on the tilted upVector and would feed back jitter.
-      const sinBeta = Math.sin(this.camera.beta);
+      // Derive viewDir from rotY + CAM_FOLLOW_PITCH — controller-owned values that are
+      // never contaminated by the tilted upVector feeding back into Babylon's alpha/beta.
+      const yaw = -this.rotY - Math.PI / 2;
+      const pitch = this.CAM_FOLLOW_PITCH;
+      const sinP = Math.sin(pitch);
       const viewDir = new BABYLON.Vector3(
-        -Math.cos(this.camera.alpha) * sinBeta,
-        -Math.cos(this.camera.beta),
-        -Math.sin(this.camera.alpha) * sinBeta
+        -Math.cos(yaw) * sinP,
+        -Math.cos(pitch),
+        -Math.sin(yaw) * sinP
       ).normalize();
       const tiltMatrix = BABYLON.Matrix.RotationAxis(viewDir, this._camTilt);
       this.camera.upVector = BABYLON.Vector3.TransformNormal(BABYLON.Vector3.Up(), tiltMatrix);
@@ -3188,26 +3217,143 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
     }
   };
 
-  setLoad(10, 'Loading character...');
-  const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
+  // ── Option B: separate mesh + animations files ───────────────────────────────
+  // When animationsFilename is provided, we first try to merge them server-side
+  // using /api/merge (same pipeline as the Builder: virtual T-pose + change-of-basis
+  // quaternion retargeting via merge_api.mjs). This correctly handles skeletons with
+  // different bone orientations (e.g. Mixamo → CC3/UE5).
+  // If the server is unavailable, we fall back to BJS AnimatorAvatar (works for
+  // same-convention skeletons like Mixamo→Mixamo).
+  if (options.animationsFilename) {
+    setLoad(10, 'Merging character + animations on server...');
+    let serverMerged = false;
+    try {
+      const healthRes = await fetch('/api/health');
+      if (healthRes.ok) {
+        setLoad(20, 'Server available — loading files for merge...');
+        const assetsPath = options.assetsPath || 'assets/';
 
-  setLoad(75, 'Retargeting bones...');
-  const charRoot = charRes.meshes[0];
+        // Fetch both GLBs as ArrayBuffers
+        const [charBuf, animBuf] = await Promise.all([
+          fetch(assetsPath + options.filename).then(r => { if (!r.ok) throw new Error('char fetch failed'); return r.arrayBuffer(); }),
+          fetch(assetsPath + options.animationsFilename).then(r => { if (!r.ok) throw new Error('anim fetch failed'); return r.arrayBuffer(); }),
+        ]);
+
+        setLoad(40, 'Sending to server for retargeting...');
+        const formData = new FormData();
+        formData.append('character', new Blob([charBuf], { type: 'model/gltf-binary' }), options.filename);
+        formData.append('animations', new Blob([animBuf], { type: 'model/gltf-binary' }), options.animationsFilename);
+        formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false }));
+
+        const mergeRes = await fetch('/api/merge', { method: 'POST', body: formData });
+        if (!mergeRes.ok) {
+          const errBody = await mergeRes.json().catch(() => ({ error: mergeRes.statusText }));
+          throw new Error(errBody.error || 'Server merge failed');
+        }
+
+        setLoad(65, 'Loading server-merged character...');
+        const mergedBuf = await mergeRes.arrayBuffer();
+        console.log('[setupCharacter] Server merge OK:', (mergedBuf.byteLength / 1024 / 1024).toFixed(2), 'MB');
+
+        // No charRes to dispose — in Option B we skip the initial ImportMeshAsync
+        // and go straight to the server merge, so nothing needs cleaning up here.
+
+        const blob = new Blob([mergedBuf], { type: 'model/gltf-binary' });
+        const blobUrl = URL.createObjectURL(blob);
+        // Same pattern as builder.js _loadGlbIntoScene: ('', '', blobUrl, scene, null, '.glb')
+        const mergedRes = await BABYLON.SceneLoader.ImportMeshAsync('', '', blobUrl, scene, null, '.glb');
+        URL.revokeObjectURL(blobUrl);
+
+        if (!mergedRes.meshes || mergedRes.meshes.length === 0) {
+          throw new Error('Merged GLB loaded but contained no meshes');
+        }
+
+        serverMerged = true;
+
+        // Reassign charRoot/charRes from merged result
+        const mergedRoot = mergedRes.meshes[0];
+        mergedRoot.name = 'Character_Visual';
+        mergedRes.meshes.forEach(m => {
+          if (options.shadow) options.shadow.addShadowCaster(m, true);
+          m.receiveShadows = true;
+          m.isPickable = false;
+          m.checkCollisions = false;
+        });
+        mergedRes.animationGroups.forEach(ag => ag.stop());
+        scene.animationGroups.forEach(ag => ag.stop());
+
+        setLoad(75, 'Building controller...');
+
+        // Capsule
+        const capScale = options.capsuleScale || 1;
+        const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
+        const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
+        const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4 * capW, height: 1.8 * capY }, scene);
+        playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
+        playerCapsule.visibility = 0;
+        playerCapsule.isPickable = false;
+        playerCapsule.checkCollisions = !usePhysics;
+        playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35 * capW, 0.96 * capY, 0.35 * capW);
+        playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
+
+        mergedRoot.setParent(playerCapsule);
+        mergedRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
+        mergedRoot.rotation.set(0, 0, 0);
+
+        // Filter T-Pose
+        mergedRes.animationGroups.filter(ag => /t[\-_]?pose/i.test(ag.name)).forEach(ag => ag.dispose());
+        const filteredGroups = mergedRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
+
+        setLoad(90, 'Building controllers...');
+        const animCtrl = new AnimCtrl(filteredGroups, scene);
+        const charOptions = Object.assign({}, options.charOptions);
+        if (options.keys) charOptions.keys = options.keys;
+        if (options.config) charOptions.config = options.config;
+        const charCtrl = new CharCtrl(playerCapsule, mergedRoot, camera, animCtrl, scene, charOptions);
+        if (typeof options.configure === 'function') {
+          options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
+        }
+
+        const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const cameraYOffset = isMobileDev ? -0.25 : 0.4;
+        scene.registerBeforeRender(() => {
+          const dt = scene.getEngine().getDeltaTime() / 1000;
+          const clampedDt = Math.max(0.001, Math.min(0.1, dt));
+          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset, 0));
+          camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
+        });
+
+        setLoad(100, 'Ready!');
+        return { playerCapsule, charRoot: mergedRoot, animCtrl, charCtrl, scene };
+      }
+    } catch (serverErr) {
+      console.warn('[setupCharacter] Server merge failed, falling back to client retargeting:', serverErr.message);
+    }
+
+    if (!serverMerged) {
+      // ── Fallback: BabylonJS AnimatorAvatar (client-side, same-convention skeletons) ──
+      console.warn('[setupCharacter] Using client-side AnimatorAvatar fallback (may distort cross-convention skeletons)');
+    }
+  }
+
+  // ── Option A: single merged GLB, OR Option B client-side fallback ──
+  setLoad(10, 'Loading character...');
+  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
+
+  setLoad(75, 'Setting up character...');
+  const charRoot = mergedCharRes.meshes[0];
   charRoot.name = 'Character_Visual';
 
-  charRes.meshes.forEach(m => {
+  mergedCharRes.meshes.forEach(m => {
     if (options.shadow) options.shadow.addShadowCaster(m, true);
     m.receiveShadows = true;
     m.isPickable = false;
-    m.checkCollisions = false; // Prevent self-collision with the player capsule which causes jitter
+    m.checkCollisions = false;
   });
 
-  // Stop any auto-playing animations from character.glb
-  charRes.animationGroups.forEach(ag => ag.stop());
+  mergedCharRes.animationGroups.forEach(ag => ag.stop());
   scene.animationGroups.forEach(ag => ag.stop());
 
-  // Capsule Collider Structure
-  // capsuleScale: number or {x,y,z} — matches a visual scale baked into the exported GLB
   const capScale = options.capsuleScale || 1;
   const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
   const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
@@ -3215,23 +3361,98 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
-
   playerCapsule.checkCollisions = !usePhysics;
   playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35 * capW, 0.96 * capY, 0.35 * capW);
   playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
 
-  // Parent visual mesh to capsule
+  setLoad(90, 'Building controllers...');
+
+  mergedCharRes.animationGroups
+    .filter(ag => /t[\-_]?pose/i.test(ag.name))
+    .forEach(ag => ag.dispose());
+  let filteredGroups = mergedCharRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
+
+  if (options.animationsFilename) {
+    // Client-side fallback retargeting with AnimatorAvatar
+    setLoad(80, 'Client retargeting animations...');
+    const animRes = await BABYLON.SceneLoader.LoadAssetContainerAsync(options.assetsPath || 'assets/', options.animationsFilename, scene);
+
+    const skeleton = mergedCharRes.skeletons[0] || scene.skeletons[0];
+    const avatar = new BABYLON.AnimatorAvatar('avatar', charRoot);
+
+    const boneMap = new Map();
+    const targetBones = skeleton ? skeleton.bones : [];
+    const targetByName = new Map();
+    const targetByNorm = new Map();
+    targetBones.forEach(bone => {
+      targetByName.set(bone.name.toLowerCase(), bone.name);
+      const norm = normBone(bone.name);
+      if (norm) targetByNorm.set(norm, bone.name);
+    });
+    const boneAliases = {
+      'mixamorig:spine': 'cc_base_waist',
+      'mixamorig:spine1': 'cc_base_spine01',
+      'mixamorig:spine2': 'cc_base_spine02',
+      'mixamorig:neck': 'cc_base_necktwist01',
+      'mixamorig:neck1': 'cc_base_necktwist02',
+    };
+    animRes.animationGroups.forEach(sg => {
+      sg.targetedAnimations.forEach(ta => {
+        const srcNode = ta.target;
+        if (!srcNode || !srcNode.name) return;
+        const srcName = srcNode.name;
+        if (boneMap.has(srcName)) return;
+        let matchedName = targetByName.get(srcName.toLowerCase());
+        if (!matchedName) {
+          const alias = boneAliases[srcName.toLowerCase()];
+          if (alias) matchedName = targetByName.get(alias);
+        }
+        if (!matchedName) {
+          const norm = normBone(srcName);
+          matchedName = targetByNorm.get(norm);
+        }
+        if (matchedName) boneMap.set(srcName, matchedName);
+      });
+    });
+    console.log('[setupCharacter] Client fallback — Bone map size:', boneMap.size);
+
+    const retargetedGroups = [];
+    // Helper: find the source node name that plays a given skeleton role
+    const findSrcRole = (sg, norms) => {
+      for (const ta of sg.targetedAnimations) {
+        const node = ta.target;
+        if (!node || !node.name) continue;
+        const n = normBone(node.name);
+        if (norms.some(s => n.includes(s) || s.includes(n))) return node.name;
+      }
+      return null;
+    };
+
+    animRes.animationGroups.forEach(sg => {
+      const cleanName = cleanAnimName(sg.name);
+      const srcRootName      = findSrcRole(sg, ['hips', 'pelvis', 'hip'])     || 'mixamorig:Hips';
+      const srcGroundName    = findSrcRole(sg, ['leftfoot', 'footl', 'ankle_l']) || 'mixamorig:LeftFoot';
+      const retargeted = avatar.retargetAnimationGroup(sg, {
+        animationGroupName: cleanName,
+        retargetAnimationKeys: true,
+        fixRootPosition: true,
+        fixGroundReference: true,
+        rootNodeName: srcRootName,
+        groundReferenceNodeName: srcGroundName,
+        mapNodeNames: boneMap,
+        fixGroundReferenceDynamicRefNode: true
+      });
+      retargeted.stop();
+      scene.addAnimationGroup(retargeted);
+      retargetedGroups.push(retargeted);
+    });
+    animRes.dispose();
+    filteredGroups = retargetedGroups;
+  }
+
   charRoot.setParent(playerCapsule);
   charRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
   charRoot.rotation.set(0, 0, 0);
-
-  setLoad(90, 'Building controllers...');
-
-  // Remove T-Pose animation group before building controller
-  charRes.animationGroups
-    .filter(ag => /t[\-_]?pose/i.test(ag.name))
-    .forEach(ag => ag.dispose());
-  const filteredGroups = charRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
 
   const animCtrl = new AnimCtrl(filteredGroups, scene);
 

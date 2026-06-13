@@ -76,16 +76,16 @@
         <div class="tab-panel active" id="panel-model">
 
           <!-- Server offline banner -->
-          <div id="server-offline-banner" class="server-offline-banner" style="display:none;">
-            <div class="server-offline-banner-icon">
-              <svg viewBox="0 0 24 24">
+          <div id="server-offline-banner" class="server-offline-banner" style="display:none; border-color: rgba(245,158,11,0.25); background: rgba(245,158,11,0.03);">
+            <div class="server-offline-banner-icon" style="background: rgba(245,158,11,0.1); color: #fbbf24; border-color: rgba(245,158,11,0.25);">
+              <svg viewBox="0 0 24 24" style="fill: #fbbf24;">
                 <path
                   d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z" />
               </svg>
             </div>
             <div class="server-offline-banner-body">
-              <strong>Server offline — import &amp; merge disabled</strong>
-              <p>Character import and animation merging require the local Node.js server.</p>
+              <strong style="color: #fbbf24;">Server offline — GLB loading &amp; Client Retargeting active</strong>
+              <p>You can drag &amp; drop <strong>.glb</strong> meshes and animation files to load and retarget them completely in the browser! Start the local Node.js server to enable <strong>.fbx</strong> conversion and <strong>Auto-Rigging</strong>.</p>
               <ol>
                 <li>Install <strong>Node.js</strong> (nodejs.org)</li>
                 <li>Open terminal in project folder and run&nbsp;<code>npm install</code></li>
@@ -678,6 +678,20 @@
             <p style="margin-bottom:8px;">
               Copy-paste this code configuration into your project's <code>app.js</code> initialization:
             </p>
+            <!-- Export Mode Selection -->
+            <div class="control-group" style="margin-bottom:14px;">
+              <span style="font-size:0.75rem; color:var(--text-secondary); display:block; margin-bottom:6px;">Integration Mode</span>
+              <div style="display:flex; gap:8px;">
+                <label class="scenario-chip active" id="export-mode-merged" style="flex:1; text-align:center; cursor:pointer; padding:6px; font-size:0.75rem; user-select:none;">
+                  <input type="radio" name="export-mode" value="merged" checked style="display:none;">
+                  Pre-merged GLB
+                </label>
+                <label class="scenario-chip" id="export-mode-runtime" style="flex:1; text-align:center; cursor:pointer; padding:6px; font-size:0.75rem; user-select:none;">
+                  <input type="radio" name="export-mode" value="runtime" style="display:none;">
+                  Runtime Retargeting
+                </label>
+              </div>
+            </div>
             <div class="code-preview-container">
               <button id="btn-copy-code" class="btn-copy">Copy Code</button>
               <textarea id="export-code" class="code-preview" readonly></textarea>
@@ -767,12 +781,12 @@
       <canvas id="c"></canvas>
 
       <!-- Server offline viewport notice -->
-      <div id="viewport-offline-notice" class="viewport-offline-notice" style="display:none;">
-        <svg viewBox="0 0 24 24">
+      <div id="viewport-offline-notice" class="viewport-offline-notice" style="display:none; background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.25); color: #fbbf24;">
+        <svg viewBox="0 0 24 24" style="fill: #fbbf24;">
           <path
             d="M1 1l22 22-1.41 1.41-2.27-2.27C17.44 23.28 14.79 24 12 24c-5.52 0-10-4.48-10-10 0-2.79.72-5.44 1.86-7.32L1 1zm11 21c2.13 0 4.1-.66 5.72-1.77L5.77 8.28C4.66 9.9 4 11.87 4 14c0 4.42 3.58 8 8 8zm8-8c0-4.42-3.58-8-8-8-1.67 0-3.22.52-4.5 1.4L4.11 3.99A11.93 11.93 0 0 1 12 2c6.63 0 12 5.37 12 12 0 2.79-.96 5.35-2.55 7.38l-1.42-1.42C21.31 18.16 22 16.16 22 14z" />
         </svg>
-        <span>Server offline — import disabled &nbsp;·&nbsp; <code>npm start</code> to enable</span>
+        <span>Server offline — GLB loading active &nbsp;·&nbsp; <code>npm start</code> for FBX/Auto-Rig</span>
       </div>
 
       <!-- Auto-rig mode viewport UI -->
