@@ -2559,10 +2559,26 @@ function poseSkeletonArms(pose) {
   // Clean slate so alternating presses don't compound.
   scene.skeletons.forEach(sk => sk.returnToRest());
 
+  // Measure original foot directions at rest (bind pose)
+  const footRestDirs = new Map();
+  for (const side of ['Left', 'Right']) {
+    const foot = B(side + 'Foot');
+    const toe = B(side + 'ToeBase');
+    if (foot && toe) {
+      foot.computeWorldMatrix(true);
+      toe.computeWorldMatrix(true);
+      const v = toe.getAbsolutePosition().subtract(foot.getAbsolutePosition());
+      if (v.lengthSquared() > 1e-8) {
+        footRestDirs.set(side, v.normalizeToNew());
+      }
+    }
+  }
+
   const axes = bodyAxesFromBones();
   if (!axes) { showToast('Could not read arm bones for posing.', true); return; }
   const up = axes.up;
   const down = up.scale(-1);
+  const fwd = BABYLON.Vector3.Cross(up, axes.lateralL).normalize();
   const aOut = pose === 'a' ? Math.SQRT1_2 : 1;
   const aDown = pose === 'a' ? Math.SQRT1_2 : 0;
 
@@ -2576,10 +2592,18 @@ function poseSkeletonArms(pose) {
 
   // ── Legs: straighten DOWN (kills bent knees / crouch) ─────────────────────
   for (const side of ['Left', 'Right']) {
-    const upLeg = B(side + 'UpLeg'), leg = B(side + 'Leg'), foot = B(side + 'Foot');
+    const upLeg = B(side + 'UpLeg'), leg = B(side + 'Leg'), foot = B(side + 'Foot'), toe = B(side + 'ToeBase');
     if (upLeg && leg) aimBoneAlong(upLeg, leg, down);
     if (leg && foot) aimBoneAlong(leg, foot, down);
-    // foot→toe kept at bind (natural ankle); re-aiming would point toes oddly
+    
+    // Align foot bone to point forward while preserving original rest pitch
+    const restDir = footRestDirs.get(side);
+    if (foot && toe && restDir) {
+      const sin_theta = BABYLON.Vector3.Dot(restDir, up);
+      const cos_theta = Math.sqrt(Math.max(0, 1 - sin_theta * sin_theta));
+      const targetW = fwd.scale(cos_theta).add(up.scale(sin_theta)).normalize();
+      aimBoneAlong(foot, toe, targetW);
+    }
   }
 
   // ── Arms: T → straight out laterally;  A → 45° down-and-out ────────────────
