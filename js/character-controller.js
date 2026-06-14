@@ -1100,7 +1100,7 @@ class CharCtrl {
     this.dustPS.maxEmitPower = 0.6;
     this.dustPS.updateSpeed = 0.016;
 
-    this.dustPS.start();
+    this.dustPS.manualEmitCount = -1; // Default to continuous emission mode
   }
 
   _emitLandingDust() {
@@ -1625,25 +1625,23 @@ class CharCtrl {
         // No input, but has mid-air momentum: push in the direction of the momentum
         this._rollDir = currentFwdDir;
       }
-      const baseRollSpeed = this.grounded ? 3.5 : 4.8; // Stronger speed boost in the air (reduced to 4.8)
+      const baseRollSpeed = this.grounded ? 5.2 : 6.2; // Adjusted horizontal impulse/dash speed
       this.speed = Math.max(this.speed, baseRollSpeed * this.SPEED_MULTIPLIER);
     } else {
       this._rollDir = currentFwdDir;
       this.speed = 0;
     }
 
-    // Apply vertical push/boost when rolling in mid-air
-    if (!this.grounded) {
-      const verticalBoost = this.JUMP_PWR * 0.55; // Balanced upward hop boost
-      if (this.usePhysics && this.physicsBody) {
-        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(
-          this._rollDir.x * this.speed,
-          verticalBoost,
-          this._rollDir.z * this.speed
-        ));
-      } else {
-        this.jumpVel = verticalBoost;
-      }
+    // Apply vertical push/boost when rolling (hop/small jump)
+    const verticalBoost = this.JUMP_PWR * 0.55; // Increased upward hop boost (55% of jump power)
+    this.jumpVel = verticalBoost;
+    this.grounded = false;
+    if (this.usePhysics && this.physicsBody) {
+      this.physicsBody.setLinearVelocity(new BABYLON.Vector3(
+        this._rollDir.x * this.speed,
+        verticalBoost,
+        this._rollDir.z * this.speed
+      ));
     }
 
     this.anim.play('Roll', false, 0.5, null, 1.1);
@@ -1886,14 +1884,12 @@ class CharCtrl {
 
   // ── CAMERA HELPERS ─────────────────────────────────────
   _camForward() {
-    const f = this.camera.target.subtract(this.camera.position);
-    f.y = 0;
-    if (f.length() < 0.001) return new BABYLON.Vector3(0, 0, 1);
-    f.normalize();
-    return f;
+    const alpha = this.camera.alpha;
+    return new BABYLON.Vector3(-Math.cos(alpha), 0, -Math.sin(alpha)).normalize();
   }
   _camRight(fwd) {
-    return BABYLON.Vector3.Cross(BABYLON.Vector3.Up(), fwd).normalize();
+    const alpha = this.camera.alpha;
+    return new BABYLON.Vector3(-Math.sin(alpha), 0, Math.cos(alpha)).normalize();
   }
 
   // ── RAYCAST GROUND DETECT ──────────────────────────────
@@ -2054,9 +2050,9 @@ class CharCtrl {
 
     // Probing Ground via Raycasting (bypass when rising from a jump)
     const wasGrounded = this.grounded;
-    const isJumpingState = this.state === S.JUMP_START || this.state === S.JUMP_LOOP;
+    const isJumpingOrRolling = this.state === S.JUMP_START || this.state === S.JUMP_LOOP || this.state === S.ROLL;
     if (this.usePhysics) {
-      if (this.jumpVel > 0.1 || (isJumpingState && currentVelocity.y > 0.1)) {
+      if (this.jumpVel > 0.1 || (isJumpingOrRolling && currentVelocity.y > 0.1)) {
         this.grounded = false;
       } else {
         const rayGrounded = this._checkGrounded();
@@ -2070,7 +2066,7 @@ class CharCtrl {
           this._lastGroundedFrame = (this._lastGroundedFrame || 0) + 1;
           // Buffer only for ramp/stair micro-bounce — never during jump states.
           // Increased velocity threshold from 1.5 to 3.5 to prevent losing grounding while sprinting down slopes.
-          this.grounded = !isJumpingState && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 3.5;
+          this.grounded = !isJumpingOrRolling && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 3.5;
         }
       }
     } else {

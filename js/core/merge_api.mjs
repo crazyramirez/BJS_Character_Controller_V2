@@ -483,6 +483,19 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
+  // Dynamic helper to compute original world position of any bone (before corrections)
+  function getOriginalWorldPos(node) {
+    const parent = parentMap.get(node);
+    const localPos = node.getTranslation() || [0, 0, 0];
+    if (parent) {
+      const parentPos = getOriginalWorldPos(parent);
+      const parentRot = rotations.get(parent) || [0, 0, 0, 1];
+      return vec3Add(parentPos, rotateVec3(localPos, parentRot));
+    } else {
+      return localPos;
+    }
+  }
+
   // Find bones
   const hips = findMatchingBone({ getName: () => 'pelvis' }, charByName, charByNorm);
 
@@ -623,9 +636,63 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
   }
 
-  // 6. Left Foot (Foot -> Toe) — disabled to prevent pitch distortion
-  /*
+  // 6. Left & Right Foot (Foot -> Toe) - Symmetric Pitch Averaging
+  let leftFootVecNorm = null;
+  let rightFootVecNorm = null;
+
   if (leftFoot) {
+    let pToeOrig = leftToe ? getOriginalWorldPos(leftToe) : null;
+    if (!pToeOrig) {
+      const ch = leftFoot.listChildren();
+      if (ch.length > 0) pToeOrig = getOriginalWorldPos(ch[0]);
+    }
+    if (pToeOrig) {
+      const pFootOrig = getOriginalWorldPos(leftFoot);
+      const vFootOrig = vec3Subtract(pToeOrig, pFootOrig);
+      if (vec3Length(vFootOrig) > 0.001) {
+        leftFootVecNorm = vec3Normalize(vFootOrig);
+      }
+    }
+  }
+
+  if (rightFoot) {
+    let pToeOrig = rightToe ? getOriginalWorldPos(rightToe) : null;
+    if (!pToeOrig) {
+      const ch = rightFoot.listChildren();
+      if (ch.length > 0) pToeOrig = getOriginalWorldPos(ch[0]);
+    }
+    if (pToeOrig) {
+      const pFootOrig = getOriginalWorldPos(rightFoot);
+      const vFootOrig = vec3Subtract(pToeOrig, pFootOrig);
+      if (vec3Length(vFootOrig) > 0.001) {
+        rightFootVecNorm = vec3Normalize(vFootOrig);
+      }
+    }
+  }
+
+  // Calculate average pitch (Y component) for perfect symmetry
+  let avgFootY = 0;
+  let countFeet = 0;
+
+  if (leftFootVecNorm) {
+    avgFootY += leftFootVecNorm[1];
+    countFeet++;
+  }
+  if (rightFootVecNorm) {
+    avgFootY += rightFootVecNorm[1];
+    countFeet++;
+  }
+  if (countFeet > 0) {
+    avgFootY /= countFeet;
+  }
+
+  if (leftFoot && leftFootVecNorm) {
+    const leftZSign = leftFootVecNorm[2] >= 0 ? 1 : -1;
+    const vTargetLeft = [
+      0,
+      avgFootY,
+      leftZSign * Math.sqrt(Math.max(0, 1 - avgFootY * avgFootY))
+    ];
     const pFoot = getUpdatedWorldPos(leftFoot);
     let pToePos = leftToe ? getUpdatedWorldPos(leftToe) : null;
     if (!pToePos) {
@@ -634,20 +701,19 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const vFootXZ = [vFoot[0], 0, vFoot[2]];
-      const xzLen = vec3Length(vFootXZ);
-      if (xzLen > 0.001) {
-        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
-        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
-        applyCorrection(leftFoot, qAlignFoot);
-      }
+      const vFootNorm = vec3Normalize(vFoot);
+      const qAlignFoot = quatFromTwoVectors(vFootNorm, vTargetLeft);
+      applyCorrection(leftFoot, qAlignFoot);
     }
   }
-  */
 
-  // 7. Right Foot (Foot -> Toe) — disabled to prevent pitch distortion
-  /*
-  if (rightFoot) {
+  if (rightFoot && rightFootVecNorm) {
+    const rightZSign = rightFootVecNorm[2] >= 0 ? 1 : -1;
+    const vTargetRight = [
+      0,
+      avgFootY,
+      rightZSign * Math.sqrt(Math.max(0, 1 - avgFootY * avgFootY))
+    ];
     const pFoot = getUpdatedWorldPos(rightFoot);
     let pToePos = rightToe ? getUpdatedWorldPos(rightToe) : null;
     if (!pToePos) {
@@ -656,16 +722,11 @@ function adjustToVirtualTPose(doc, charByName, charByNorm, charWorldRots) {
     }
     if (pToePos) {
       const vFoot = vec3Subtract(pToePos, pFoot);
-      const vFootXZ = [vFoot[0], 0, vFoot[2]];
-      const xzLen = vec3Length(vFootXZ);
-      if (xzLen > 0.001) {
-        const vFootXZNorm = [vFootXZ[0] / xzLen, 0, vFootXZ[2] / xzLen];
-        const qAlignFoot = quatFromTwoVectors(vFootXZNorm, [0, 0, 1]);
-        applyCorrection(rightFoot, qAlignFoot);
-      }
+      const vFootNorm = vec3Normalize(vFoot);
+      const qAlignFoot = quatFromTwoVectors(vFootNorm, vTargetRight);
+      applyCorrection(rightFoot, qAlignFoot);
     }
   }
-  */
 
   // Compute local rotations in virtual T-pose
   const localRotT = new Map();
@@ -1915,26 +1976,39 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const Cinv = qInvert(C);
           const rAnimInv = qInvert(rAnim);
 
-          // ── Finger bones: exact world-preserving retarget ─────────────────
-          // The delta formula (rChar·C·δ·C⁻¹) is only chain-exact when C is the
-          // same for every bone in the chain. CC/AccuRig rigs orient each
-          // phalanx individually, so the per-bone C differs and the error
-          // accumulates down the 3-phalanx chain — fingertips end up bent.
-          // Exact form: local = Cp·qKey·C⁻¹ with Cp built from the STRUCTURAL
-          // char parent and the anim parent. Identical to the delta formula
-          // when the chain Cs agree (Mixamo→Mixamo), exact at bind by
-          // construction: Cp·rAnim·C⁻¹ = inv(WcharP)·Wchar = rChar.
+          // ── Finger bones: exact hand-space retarget ───────────────────────
+          // Using different C matrices for parent/child finger bones causes twisting
+          // when finger spreads differ between the character and animation.
+          // We use the hand's change-of-basis (C) matrix for all bones in the finger
+          // chain to ensure they curl and orient naturally relative to the hand.
           const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
             || /(thumb|index|middle|ring|pinky)/.test(srcName);
-          let CpFinger = null;
+          
+          let C_to_use = C;
+          let Cinv_to_use = Cinv;
+          
           if (isFinger) {
-            const srcParentName = animParentNameMap.get(srcName);
-            const WanimP = srcParentName ? (animWorldByName.get(srcParentName) || [0, 0, 0, 1]) : [0, 0, 0, 1];
-            const structParent = charParentMap.get(target);
-            const WcharP = structParent
-              ? (charWorldByNode.get(structParent) || [0, 0, 0, 1])
-              : [0, 0, 0, 1];
-            CpFinger = qMul(qInvert(WcharP), WanimP);
+            const isLeft = tgtName.includes('left') || tgtName.includes('_l') || tgtName.endsWith('l') ||
+                           srcName.includes('left') || srcName.includes('_l') || srcName.endsWith('l');
+            let handCharName = '';
+            for (const name of charWorldByName.keys()) {
+              const norm = normalizeName(name);
+              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handCharName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handCharName = name; break; }
+            }
+            let handAnimName = '';
+            for (const name of animWorldByName.keys()) {
+              const norm = normalizeName(name);
+              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handAnimName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handAnimName = name; break; }
+            }
+            
+            if (handCharName && handAnimName) {
+              const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
+              const Wanim_hand = animWorldByName.get(handAnimName) || [0, 0, 0, 1];
+              C_to_use = qMul(qInvert(Wchar_hand), Wanim_hand);
+              Cinv_to_use = qInvert(C_to_use);
+            }
           }
 
           // Posture/spread slider offset for this bone (precomputed above)
@@ -1949,14 +2023,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
                   const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
-                  let final;
-                  if (CpFinger) {
-                    final = qMul(qMul(CpFinger, qKey), Cinv);
-                  } else {
-                    const delta = qMul(rAnimInv, qKey);
-                    const rotated = qMul(qMul(C, delta), Cinv);
-                    final = qMul(rChar, rotated);
-                  }
+                  const delta = qMul(rAnimInv, qKey);
+                  const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
+                  const final = qMul(rChar, rotated);
 
                   // Manual per-bone overrides (raw-name keyed, local euler — legacy)
                   if (cfg.POSE_OFFSETS[tgtName]) {

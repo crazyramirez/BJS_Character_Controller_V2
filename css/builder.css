@@ -962,9 +962,9 @@ input[type="range"]::-moz-range-thumb {
   border-left: none;
 }
 
-.autorig-pose-bar {
+.autorig-pose-bar,
+.autorig-gizmo-bar {
   position: absolute;
-  bottom: 86px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -978,6 +978,14 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 999px;
   pointer-events: auto;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.autorig-pose-bar {
+  bottom: 86px;
+}
+
+.autorig-gizmo-bar {
+  bottom: 136px;
 }
 
 .autorig-pose-label {

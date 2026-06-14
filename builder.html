@@ -89,7 +89,8 @@
               <strong style="color: #fbbf24;">Server offline — GLB loading &amp; Client Retargeting active</strong>
               <p>You can drag &amp; drop <strong>.glb</strong> meshes and animation files to load and retarget them
                 completely in the browser! Start the local Node.js server to enable <strong>.fbx</strong> conversion and
-                <strong>Auto-Rigging</strong>.</p>
+                <strong>Auto-Rigging</strong>.
+              </p>
               <ol>
                 <li>Install <strong>Node.js</strong> (nodejs.org)</li>
                 <li>Open terminal in project folder and run&nbsp;<code>npm install</code></li>
@@ -305,6 +306,9 @@
                   </p>
                   <label class="autorig-symmetry-row">
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
+                  </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;" title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
+                    <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
                   </label>
                   <div class="autorig-btn-row">
                     <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>
@@ -850,6 +854,11 @@
             title="Force arms straight out — ideal for symmetric rigging (T)">T-Pose</button>
           <button id="btn-autorig-pose-a" class="autorig-pose-btn" data-pose="a"
             title="Force arms angled 45° down — natural relaxed rigging pose (A)">A-Pose</button>
+        </div>
+        <div class="autorig-gizmo-bar">
+          <span class="autorig-pose-label">Gizmo Mode</span>
+          <button id="btn-autorig-gizmo-trans" class="autorig-pose-btn active" title="Move Joint">Move</button>
+          <button id="btn-autorig-gizmo-rot" class="autorig-pose-btn" title="Rotate Joint">Rotate</button>
         </div>
         <div class="autorig-action-bar">
           <button id="btn-autorig-apply-vp" class="autorig-vp-apply">✓ Apply Rig</button>

@@ -1051,6 +1051,125 @@ export async function guessJoints(buffer) {
   return guess;
 }
 
+// ── Helper functions for matrix/quaternion operations ─────────────────────────
+function mat3ToQuat(m) {
+  const tr = m[0] + m[4] + m[8];
+  let x, y, z, w;
+  if (tr > 0) {
+    const s = Math.sqrt(tr + 1.0) * 2;
+    w = 0.25 * s;
+    x = (m[5] - m[7]) / s;
+    y = (m[6] - m[2]) / s;
+    z = (m[1] - m[3]) / s;
+  } else if ((m[0] > m[4]) && (m[0] > m[8])) {
+    const s = Math.sqrt(1.0 + m[0] - m[4] - m[8]) * 2;
+    w = (m[5] - m[7]) / s;
+    x = 0.25 * s;
+    y = (m[1] + m[3]) / s;
+    z = (m[6] + m[2]) / s;
+  } else if (m[4] > m[8]) {
+    const s = Math.sqrt(1.0 + m[4] - m[0] - m[8]) * 2;
+    w = (m[6] - m[2]) / s;
+    x = (m[1] + m[3]) / s;
+    y = 0.25 * s;
+    z = (m[5] + m[7]) / s;
+  } else {
+    const s = Math.sqrt(1.0 + m[8] - m[0] - m[4]) * 2;
+    w = (m[1] - m[3]) / s;
+    x = (m[6] + m[2]) / s;
+    y = (m[5] + m[7]) / s;
+    z = 0.25 * s;
+  }
+  return qNormalize([x, y, z, w]);
+}
+
+function composeMat4([tx, ty, tz], [qx, qy, qz, qw], [sx, sy, sz]) {
+  const out = new Float32Array(16);
+  const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+  const xx = qx * x2, xy = qx * y2, xz = qx * z2;
+  const yy = qy * y2, yz = qy * z2, zz = qz * z2;
+  const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+
+  out[0] = (1 - (yy + zz)) * sx;
+  out[1] = (xy + wz) * sx;
+  out[2] = (xz - wy) * sx;
+  out[3] = 0;
+
+  out[4] = (xy - wz) * sy;
+  out[5] = (1 - (xx + zz)) * sy;
+  out[6] = (yz + wx) * sy;
+  out[7] = 0;
+
+  out[8] = (xz + wy) * sz;
+  out[9] = (yz - wx) * sz;
+  out[10] = (1 - (xx + yy)) * sz;
+  out[11] = 0;
+
+  out[12] = tx;
+  out[13] = ty;
+  out[14] = tz;
+  out[15] = 1;
+
+  return out;
+}
+
+function qNormalize(q) {
+  const len = Math.sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+  return len > 0 ? [q[0]/len, q[1]/len, q[2]/len, q[3]/len] : [0, 0, 0, 1];
+}
+function vec3Subtract(a, b) {
+  return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+}
+function vec3Normalize(v) {
+  const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+  return len > 0 ? [v[0]/len, v[1]/len, v[2]/len] : [0, 0, 0];
+}
+function vec3Length(v) {
+  return Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+}
+function qInvert(q) {
+  return [-q[0], -q[1], -q[2], q[3]];
+}
+function qMul(a, b) {
+  return [
+    a[0] * b[3] + a[3] * b[0] + a[1] * b[2] - a[2] * b[1],
+    a[1] * b[3] + a[3] * b[1] + a[2] * b[0] - a[0] * b[2],
+    a[2] * b[3] + a[3] * b[2] + a[0] * b[1] - a[1] * b[0],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+function rotateVec3(v, q) {
+  const x = v[0], y = v[1], z = v[2];
+  const qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+  const ix = qw * x + qy * z - qz * y;
+  const iy = qw * y + qz * x - qx * z;
+  const iz = qw * z + qx * y - qy * x;
+  const iw = -qx * x - qy * y - qz * z;
+  return [
+    ix * qw + iw * -qx + iy * -qz - iz * -qy,
+    iy * qw + iw * -qy + iz * -qx - ix * -qz,
+    iz * qw + iw * -qz + ix * -qy - iy * -qx,
+  ];
+}
+function quatFromTwoVectors(a, b) {
+  const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  if (dot < -0.99999) {
+    let axis = [a[1], -a[0], 0];
+    if (Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1]) < 0.0001) {
+      axis = [0, a[2], -a[1]];
+    }
+    const len = Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
+    return qNormalize([axis[0]/len, axis[1]/len, axis[2]/len, 0]);
+  }
+  if (dot > 0.99999) return [0, 0, 0, 1];
+  const cross = [
+    a[1]*b[2] - a[2]*b[1],
+    a[2]*b[0] - a[0]*b[2],
+    a[0]*b[1] - a[1]*b[0]
+  ];
+  return qNormalize([cross[0], cross[1], cross[2], 1 + dot]);
+}
+
 // ── Adjust an existing rig in place ──────────────────────────────────────────
 // Moves matched joints to the requested world (skin-space) positions while
 // keeping hierarchy, bind orientations, extra bones (fingers, twist) and the
@@ -1064,34 +1183,51 @@ function adjustExistingRig(doc, targetJoints = {}) {
 
   const parentMap = buildParentMap(doc);
 
-  // Original bind world position per joint (from inverted IBMs) + pristine IBMs
-  const origWorld = new Map();
+  // Find skins and identify joint set
   const skinData = [];
+  const jointSet = new Set();
   for (const skin of root.listSkins()) {
     const joints = skin.listJoints();
     const acc = skin.getInverseBindMatrices();
     const arr = acc?.getArray();
     if (!arr) continue;
     skinData.push({ joints, acc, arr: Float32Array.from(arr) });
-    joints.forEach((j, i) => {
-      if (!origWorld.has(j)) {
-        const W = invertRigidMat4(arr.slice(i * 16, i * 16 + 16));
-        origWorld.set(j, [W[12], W[13], W[14]]);
-      }
-    });
+    joints.forEach(j => jointSet.add(j));
   }
-  if (origWorld.size === 0) throw new Error('Skin has no inverse bind matrices.');
+  if (skinData.length === 0) throw new Error('Skin has no inverse bind matrices.');
 
-  const jointSet = new Set(origWorld.keys());
-
-  // Markers arrive in render-world space (same space guessJoints reports);
-  // origWorld/IBMs live in skin space. S maps skin space → render world.
+  // S maps skin space → render world.
   const matCache0 = new Map();
   const S = mat4Mul(
     worldMatrixOf(skinData[0].joints[0], parentMap, matCache0),
     skinData[0].arr.slice(0, 16)
   );
   const invS = invertRigidMat4(S);
+
+  // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in skin space
+  const origWorldPos = new Map();
+  const origWorldRot = new Map();
+  const origWorldScale = new Map();
+  const matCache = new Map();
+  
+  for (const node of doc.getRoot().listNodes()) {
+    const W_render = worldMatrixOf(node, parentMap, matCache);
+    const B = mat4Mul(invS, W_render); // Node's bind matrix in skin space
+    
+    origWorldPos.set(node, [B[12], B[13], B[14]]);
+
+    const sx = Math.hypot(B[0], B[1], B[2]) || 1;
+    const sy = Math.hypot(B[4], B[5], B[6]) || 1;
+    const sz = Math.hypot(B[8], B[9], B[10]) || 1;
+    origWorldScale.set(node, [sx, sy, sz]);
+
+    const m = [
+      B[0] / sx, B[1] / sx, B[2] / sx,
+      B[4] / sy, B[5] / sy, B[6] / sy,
+      B[8] / sz, B[9] / sz, B[10] / sz
+    ];
+    origWorldRot.set(node, mat3ToQuat(m));
+  }
 
   // canonical marker name → joint node
   const normToNode = new Map();
@@ -1100,6 +1236,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
       if (n && !normToNode.has(n)) normToNode.set(n, j);
     }
   }
+
   const markerByNode = new Map();
   for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
     if (!targetJoints[canon]) continue;
@@ -1116,70 +1253,129 @@ function adjustExistingRig(doc, targetJoints = {}) {
     }
   }
 
-  const jointParentOf = (j) => {
-    let p = parentMap.get(j);
-    while (p && !jointSet.has(p)) p = parentMap.get(p);
-    return p || null;
-  };
-
-  // New world positions: markers win; others keep their offset to the parent
-  const newWorld = new Map();
-  function computeNew(j) {
-    if (newWorld.has(j)) return newWorld.get(j);
-    const marker = markerByNode.get(j);
-    if (marker) { newWorld.set(j, marker); return marker; }
-    const p = jointParentOf(j);
-    const o = origWorld.get(j);
-    if (!p) { newWorld.set(j, o); return o; }
-    const pNew = computeNew(p);
-    const pOld = origWorld.get(p);
+  // New world positions: markers win; others keep their offset to the parent (for ALL nodes in the scene)
+  const newWorldPos = new Map();
+  function computeNewPos(node) {
+    if (newWorldPos.has(node)) return newWorldPos.get(node);
+    const marker = markerByNode.get(node);
+    if (marker) { newWorldPos.set(node, marker); return marker; }
+    const p = parentMap.get(node);
+    const o = origWorldPos.get(node);
+    if (!p) { newWorldPos.set(node, o); return o; }
+    const pNew = computeNewPos(p);
+    const pOld = origWorldPos.get(p);
     const np = [o[0] + pNew[0] - pOld[0], o[1] + pNew[1] - pOld[1], o[2] + pNew[2] - pOld[2]];
-    newWorld.set(j, np);
+    newWorldPos.set(node, np);
     return np;
   }
-  for (const j of jointSet) computeNew(j);
+  for (const node of doc.getRoot().listNodes()) computeNewPos(node);
 
-  // Find a pristine IBM (linear part = world→local incl. rotation/scale) per joint
-  const ibmByJoint = new Map();
-  for (const { joints, arr } of skinData) {
-    joints.forEach((j, i) => {
-      if (!ibmByJoint.has(j)) ibmByJoint.set(j, arr.slice(i * 16, i * 16 + 16));
-    });
+  // Initialize newWorldRot with a copy of origWorldRot (for ALL nodes in the scene)
+  const newWorldRot = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    newWorldRot.set(node, [...origWorldRot.get(node)]);
   }
 
-  // Update node local translations (rotations/scales untouched)
-  const matCache = new Map();
-  for (const j of jointSet) {
-    const np = newWorld.get(j);
-    const directParent = parentMap.get(j) || null;
-    let local;
-    if (directParent && jointSet.has(directParent)) {
-      const M = ibmByJoint.get(directParent); // world → parent-local (rot+scale)
-      const d = [np[0] - newWorld.get(directParent)[0], np[1] - newWorld.get(directParent)[1], np[2] - newWorld.get(directParent)[2]];
-      local = [
-        M[0] * d[0] + M[4] * d[1] + M[8] * d[2],
-        M[1] * d[0] + M[5] * d[1] + M[9] * d[2],
-        M[2] * d[0] + M[6] * d[1] + M[10] * d[2],
-      ];
-    } else if (directParent) {
-      // np is skin-space; parent worlds are render-space → go through S
-      const inv = invertRigidMat4(worldMatrixOf(directParent, parentMap, matCache));
-      local = transformPoint(mat4Mul(inv, S), np);
-    } else {
-      local = transformPoint(S, np);
+  // canonical name → joint node (for fast lookup during alignment)
+  const canonToNode = new Map();
+  for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
+    for (const a of aliases) {
+      if (normToNode.has(a)) {
+        canonToNode.set(canon, normToNode.get(a));
+        break;
+      }
     }
-    j.setTranslation(local);
+  }
+  if (normToNode.has('waist') && normToNode.has('spine01') &&
+      normToNode.has('spine02') && !normToNode.has('spine03')) {
+    canonToNode.set('Spine', normToNode.get('waist'));
+    canonToNode.set('Spine1', normToNode.get('spine01'));
+    canonToNode.set('Spine2', normToNode.get('spine02'));
   }
 
-  // Update IBM translations: t = -(linear3x3 · newWorldPos); linear unchanged
+  function applyRotationCorrection(node, qCorr) {
+    const cur = newWorldRot.get(node) || [0, 0, 0, 1];
+    newWorldRot.set(node, qNormalize(qMul(qCorr, cur)));
+    for (const child of node.listChildren()) {
+      applyRotationCorrection(child, qCorr);
+    }
+  }
+
+  // Align limbs so bones look at their updated children, propagating corrections down.
+  const alignPairs = [
+    ['LeftShoulder', 'LeftArm'],
+    ['LeftArm', 'LeftForeArm'],
+    ['LeftForeArm', 'LeftHand'],
+    ['RightShoulder', 'RightArm'],
+    ['RightArm', 'RightForeArm'],
+    ['RightForeArm', 'RightHand'],
+    ['LeftUpLeg', 'LeftLeg'],
+    ['LeftLeg', 'LeftFoot'],
+    ['LeftFoot', 'LeftToeBase'],
+    ['RightUpLeg', 'RightLeg'],
+    ['RightLeg', 'RightFoot'],
+    ['RightFoot', 'RightToeBase'],
+  ];
+
+  for (const [parentName, childName] of alignPairs) {
+    const P = canonToNode.get(parentName);
+    const C = canonToNode.get(childName);
+    if (!P || !C) continue;
+
+    const vOldWorld = vec3Subtract(origWorldPos.get(C), origWorldPos.get(P));
+    const qDiff = qMul(newWorldRot.get(P), qInvert(origWorldRot.get(P)));
+    const vCurr = rotateVec3(vOldWorld, qDiff);
+    const vTarget = vec3Subtract(newWorldPos.get(C), newWorldPos.get(P));
+
+    const vCurrNorm = vec3Normalize(vCurr);
+    const vTargetNorm = vec3Normalize(vTarget);
+
+    if (vec3Length(vCurrNorm) > 0.001 && vec3Length(vTargetNorm) > 0.001) {
+      const qCorr = quatFromTwoVectors(vCurrNorm, vTargetNorm);
+      applyRotationCorrection(P, qCorr);
+    }
+  }
+
+  // Update node local translations and rotations
+  for (const j of jointSet) {
+    const np = newWorldPos.get(j);
+    const directParent = parentMap.get(j) || null;
+    let localT;
+    if (directParent) {
+      const pNewPos = newWorldPos.get(directParent);
+      const pNewRot = newWorldRot.get(directParent);
+      const d = vec3Subtract(np, pNewPos);
+      localT = rotateVec3(d, qInvert(pNewRot));
+
+      // Handle parent scale if present
+      const pScale = origWorldScale.get(directParent) || [1, 1, 1];
+      localT = [localT[0] / pScale[0], localT[1] / pScale[1], localT[2] / pScale[2]];
+    } else {
+      localT = np.slice();
+    }
+    j.setTranslation(localT);
+
+    // Set local rotation
+    const parent = parentMap.get(j);
+    let localR;
+    if (parent) {
+      const pNewRot = newWorldRot.get(parent);
+      localR = qNormalize(qMul(qInvert(pNewRot), newWorldRot.get(j)));
+    } else {
+      localR = qNormalize(newWorldRot.get(j));
+    }
+    j.setRotation(localR);
+  }
+
+  // Update Inverse Bind Matrices (IBMs)
   for (const { joints, acc, arr } of skinData) {
     const out = Float32Array.from(arr);
     joints.forEach((j, i) => {
-      const np = newWorld.get(j);
-      const o = i * 16;
-      out[o + 12] = -(out[o] * np[0] + out[o + 4] * np[1] + out[o + 8] * np[2]);
-      out[o + 13] = -(out[o + 1] * np[0] + out[o + 5] * np[1] + out[o + 9] * np[2]);
-      out[o + 14] = -(out[o + 2] * np[0] + out[o + 6] * np[1] + out[o + 10] * np[2]);
+      const W_new = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
+      const IBM_new = invertRigidMat4(W_new);
+      for (let k = 0; k < 16; k++) {
+        out[i * 16 + k] = IBM_new[k];
+      }
     });
     acc.setArray(out);
   }

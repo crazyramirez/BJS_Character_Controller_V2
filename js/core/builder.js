@@ -1446,7 +1446,7 @@ async function loadAnimationsOffline(arrayBuffer, filename) {
   // Save and temporarily adjust Character Creator A-pose arms to T-pose for sampling rest matrices
   const lUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_l_upperarm') : null;
   const rUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_r_upperarm') : null;
-  
+
   let lOrigRot = null, rOrigRot = null;
   if (lUpperArm) {
     lOrigRot = lUpperArm.rotation.clone();
@@ -1542,17 +1542,17 @@ async function loadAnimationsOffline(arrayBuffer, filename) {
       const targetNode = ta.target;
       if (!targetNode || !targetNode.name) return true;
       const property = ta.animation.targetProperty;
-      
+
       // 1. Remove scaling tracks entirely
       if (property === 'scaling') return false;
-      
+
       // 2. Remove position/translation tracks for all nodes except the root bone (Hips)
       if (property === 'position') {
         const nameLower = targetNode.name.toLowerCase();
         const isHips = nameLower.includes('hips') || nameLower.includes('pelvis') || nameLower.includes('hip');
         if (!isHips) return false;
       }
-      
+
       return true;
     });
     retargeted.targetedAnimations.length = 0;
@@ -2257,7 +2257,7 @@ function rotateRigCharacter(deltaYaw) {
   const baseQ = vm.prevCharQuat
     ? vm.prevCharQuat
     : BABYLON.Quaternion.RotationYawPitchRoll(
-        vm.prevCharEuler.y, vm.prevCharEuler.x, vm.prevCharEuler.z);
+      vm.prevCharEuler.y, vm.prevCharEuler.x, vm.prevCharEuler.z);
   root.rotationQuaternion = BABYLON.Quaternion
     .RotationYawPitchRoll(autoRigState.rigYaw, 0, 0)
     .multiply(baseQ);
@@ -2451,7 +2451,7 @@ function fitAffine3D(pairs) {
 
 // General 4×4 inverse (Gauss-Jordan). Returns null if singular.
 function invert4x4(m) {
-  const a = m.slice(), inv = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+  const a = m.slice(), inv = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   for (let col = 0; col < 4; col++) {
     let piv = col;
     for (let r = col + 1; r < 4; r++) if (Math.abs(a[r * 4 + col]) > Math.abs(a[piv * 4 + col])) piv = r;
@@ -2578,7 +2578,25 @@ function poseSkeletonArms(pose) {
   if (!axes) { showToast('Could not read arm bones for posing.', true); return; }
   const up = axes.up;
   const down = up.scale(-1);
-  const fwd = BABYLON.Vector3.Cross(up, axes.lateralL).normalize();
+  let fwd = new BABYLON.Vector3(0, 0, 1);
+  let sumFwd = new BABYLON.Vector3();
+  let countFwd = 0;
+  for (const side of ['Left', 'Right']) {
+    const rd = footRestDirs.get(side);
+    if (rd) {
+      const horiz = new BABYLON.Vector3(rd.x, 0, rd.z);
+      if (horiz.lengthSquared() > 1e-6) {
+        sumFwd.addInPlace(horiz.normalize());
+        countFwd++;
+      }
+    }
+  }
+  if (countFwd > 0) {
+    fwd = sumFwd.scale(1 / countFwd).normalize();
+  } else {
+    const cross = BABYLON.Vector3.Cross(up, axes.lateralL).normalize();
+    fwd = cross.z >= 0 ? cross : cross.scale(-1);
+  }
   const aOut = pose === 'a' ? Math.SQRT1_2 : 1;
   const aDown = pose === 'a' ? Math.SQRT1_2 : 0;
 
@@ -2595,7 +2613,7 @@ function poseSkeletonArms(pose) {
     const upLeg = B(side + 'UpLeg'), leg = B(side + 'Leg'), foot = B(side + 'Foot'), toe = B(side + 'ToeBase');
     if (upLeg && leg) aimBoneAlong(upLeg, leg, down);
     if (leg && foot) aimBoneAlong(leg, foot, down);
-    
+
     // Align foot bone to point forward while preserving original rest pitch
     const restDir = footRestDirs.get(side);
     if (foot && toe && restDir) {
@@ -2680,6 +2698,201 @@ function mirrorJointName(name) {
   if (name.startsWith('Left')) return 'Right' + name.slice(4);
   if (name.startsWith('Right')) return 'Left' + name.slice(5);
   return null;
+}
+
+// Map a dragged marker position to posture config angles in real-time
+function mapMarkerToPosture(name, localPos) {
+  const st = autoRigState;
+  if (!st || !st.restLayout) return;
+
+  const side = name.startsWith('Left') ? 'Left' : (name.startsWith('Right') ? 'Right' : null);
+  const sgn = side === 'Left' ? 1 : -1;
+
+  const axes = bodyAxesFromBones();
+  if (!axes) return;
+  const up = axes.up;
+  const lateralL = axes.lateralL;
+
+  // Compute fwd robustly from rest foot directions
+  let fwd = new BABYLON.Vector3(0, 0, 1);
+  let sumFwd = new BABYLON.Vector3();
+  let countFwd = 0;
+  const B = (n) => st.boneBindings.get(n);
+  for (const sideName of ['Left', 'Right']) {
+    const foot = B(sideName + 'Foot');
+    const toe = B(sideName + 'ToeBase');
+    if (foot && toe) {
+      const vFoot = toe.getAbsolutePosition().subtract(foot.getAbsolutePosition());
+      if (vFoot.lengthSquared() > 1e-8) {
+        sumFwd.addInPlace(new BABYLON.Vector3(vFoot.x, 0, vFoot.z).normalize());
+        countFwd++;
+      }
+    }
+  }
+  if (countFwd > 0) {
+    fwd = sumFwd.scale(1 / countFwd).normalize();
+  } else {
+    const cross = BABYLON.Vector3.Cross(up, lateralL).normalize();
+    fwd = cross.z >= 0 ? cross : cross.scale(-1);
+  }
+
+  const m = st.markers.get(name);
+  if (!m) return;
+
+  if (name.endsWith('Hand')) {
+    const rootNode = B(side + 'Arm');
+    if (rootNode) {
+      const worldPos = m.getAbsolutePosition();
+      const rootWorldPos = rootNode.getAbsolutePosition();
+      const v = worldPos.subtract(rootWorldPos).normalize();
+
+      const lateral = side === 'Left' ? lateralL : lateralL.scale(-1);
+      const lat = BABYLON.Vector3.Dot(v, lateral);
+      const vert = BABYLON.Vector3.Dot(v, up);
+      const fwdComp = BABYLON.Vector3.Dot(v, fwd);
+
+      const spread = Math.atan2(vert, lat) * 180 / Math.PI;
+      const splay = Math.atan2(fwdComp, lat) * 180 / Math.PI;
+
+      charTransformConfig.ARM_SPREAD_ANGLE = Math.max(-45, Math.min(45, spread / 2));
+      charTransformConfig.ARM_SPLAY_ANGLE = Math.max(-45, Math.min(45, splay / 2));
+      syncCharTransformToUI();
+      applyLiveTransformations();
+    }
+  } else if (name.endsWith('Foot')) {
+    const rootNode = B(side + 'UpLeg');
+    if (rootNode) {
+      const worldPos = m.getAbsolutePosition();
+      const rootWorldPos = rootNode.getAbsolutePosition();
+      const v = worldPos.subtract(rootWorldPos).normalize();
+
+      const lateral = side === 'Left' ? lateralL : lateralL.scale(-1);
+      const lat = BABYLON.Vector3.Dot(v, lateral);
+      const vert = -BABYLON.Vector3.Dot(v, up); // down is positive
+
+      const spread = Math.atan2(lat, vert) * 180 / Math.PI;
+      charTransformConfig.LEG_SPREAD_ANGLE = Math.max(-45, Math.min(45, spread));
+      syncCharTransformToUI();
+      applyLiveTransformations();
+    }
+  } else if (name === 'Head' || name === 'Spine' || name === 'Spine1' || name === 'Spine2') {
+    const rootNode = B('Hips');
+    if (rootNode) {
+      const worldPos = m.getAbsolutePosition();
+      const rootWorldPos = rootNode.getAbsolutePosition();
+      const v = worldPos.subtract(rootWorldPos).normalize();
+
+      const vert = BABYLON.Vector3.Dot(v, up);
+      const fwdComp = BABYLON.Vector3.Dot(v, fwd);
+
+      const tilt = Math.atan2(fwdComp, vert) * 180 / Math.PI;
+      charTransformConfig.SPINE_STRAIGHTEN_ANGLE = -Math.max(-45, Math.min(45, tilt / 3));
+      syncCharTransformToUI();
+      applyLiveTransformations();
+    }
+  } else if (name === 'Hips') {
+    const rootNode = B('Hips');
+    if (rootNode) {
+      const worldPos = m.getAbsolutePosition();
+      const originalHipsPos = st.restLayout.get('Hips');
+      const originalHipsWorld = BABYLON.Vector3.TransformCoordinates(originalHipsPos, st.markerParent.getWorldMatrix());
+
+      const diff = worldPos.subtract(originalHipsWorld);
+      const fwdComp = BABYLON.Vector3.Dot(diff, fwd);
+      const vert = Math.max(0.1, BABYLON.Vector3.Dot(worldPos, up));
+
+      const tilt = Math.atan2(fwdComp, vert) * 180 / Math.PI;
+      charTransformConfig.HIPS_TILT_ANGLE = -Math.max(-45, Math.min(45, tilt));
+      syncCharTransformToUI();
+      applyLiveTransformations();
+    }
+  }
+}
+
+// Map a rotated marker to posture config angles in real-time
+function mapMarkerRotationToPosture(name, rotationQuaternion) {
+  const st = autoRigState;
+  if (!st) return;
+
+  const side = name.startsWith('Left') ? 'Left' : (name.startsWith('Right') ? 'Right' : null);
+  const sgn = side === 'Left' ? 1 : -1;
+
+  const axes = bodyAxesFromBones();
+  if (!axes) return;
+  const up = axes.up;
+  const lateralL = axes.lateralL;
+
+  // Compute fwd robustly from rest foot directions
+  let fwd = new BABYLON.Vector3(0, 0, 1);
+  let sumFwd = new BABYLON.Vector3();
+  let countFwd = 0;
+  const B = (n) => st.boneBindings.get(n);
+  for (const sideName of ['Left', 'Right']) {
+    const foot = B(sideName + 'Foot');
+    const toe = B(sideName + 'ToeBase');
+    if (foot && toe) {
+      const vFoot = toe.getAbsolutePosition().subtract(foot.getAbsolutePosition());
+      if (vFoot.lengthSquared() > 1e-8) {
+        sumFwd.addInPlace(new BABYLON.Vector3(vFoot.x, 0, vFoot.z).normalize());
+        countFwd++;
+      }
+    }
+  }
+  if (countFwd > 0) {
+    fwd = sumFwd.scale(1 / countFwd).normalize();
+  } else {
+    const cross = BABYLON.Vector3.Cross(up, lateralL).normalize();
+    fwd = cross.z >= 0 ? cross : cross.scale(-1);
+  }
+
+  // Construct character orientation matrix and quaternion
+  const mChar = BABYLON.Matrix.Identity();
+  mChar.setRowFromFloats(0, lateralL.x, up.x, fwd.x, 0);
+  mChar.setRowFromFloats(1, lateralL.y, up.y, fwd.y, 0);
+  mChar.setRowFromFloats(2, lateralL.z, up.z, fwd.z, 0);
+  const qChar = BABYLON.Quaternion.FromRotationMatrix(mChar);
+
+  // Marker's world rotation
+  const m = st.markers.get(name);
+  if (!m) return;
+  const mWorld = m.getWorldMatrix();
+  const mScale = new BABYLON.Vector3();
+  const mRot = new BABYLON.Quaternion();
+  const mTrans = new BABYLON.Vector3();
+  mWorld.decompose(mScale, mRot, mTrans);
+
+  // Rotation relative to character orientation
+  const qRel = qChar.clone().invert().multiply(mRot);
+  const euler = qRel.toEulerAngles();
+
+  // Compensate for local coordinate system mirroring (reflection)
+  const det = st.markerParent.getWorldMatrix().determinant();
+  const detSign = det >= 0 ? 1 : -1;
+  euler.scaleInPlace(detSign);
+
+  if (name.endsWith('Hand')) {
+    const spread = euler.z * 180 / Math.PI * sgn;
+    const splay = euler.y * 180 / Math.PI;
+    charTransformConfig.ARM_SPREAD_ANGLE = Math.max(-45, Math.min(45, spread / 2));
+    charTransformConfig.ARM_SPLAY_ANGLE = Math.max(-45, Math.min(45, splay / 2));
+    syncCharTransformToUI();
+    applyLiveTransformations();
+  } else if (name.endsWith('Foot')) {
+    const spread = euler.z * 180 / Math.PI * sgn;
+    charTransformConfig.LEG_SPREAD_ANGLE = Math.max(-45, Math.min(45, spread));
+    syncCharTransformToUI();
+    applyLiveTransformations();
+  } else if (name === 'Head' || name === 'Spine' || name === 'Spine1' || name === 'Spine2') {
+    const tilt = euler.x * 180 / Math.PI;
+    charTransformConfig.SPINE_STRAIGHTEN_ANGLE = -Math.max(-45, Math.min(45, tilt / 3));
+    syncCharTransformToUI();
+    applyLiveTransformations();
+  } else if (name === 'Hips') {
+    const tilt = euler.x * 180 / Math.PI;
+    charTransformConfig.HIPS_TILT_ANGLE = -Math.max(-45, Math.min(45, tilt));
+    syncCharTransformToUI();
+    applyLiveTransformations();
+  }
 }
 
 async function startAutoRigAdjust() {
@@ -2788,6 +3001,29 @@ async function startAutoRigAdjust() {
   mpWorld.decompose(mpScaleV);
   const mpScale = Math.max(Math.abs(mpScaleV.x), 1e-4);
   const diameter = Math.max(0.03 * guess.height, 0.02) / mpScale;
+  const symmetric = document.getElementById('autorig-symmetry')?.checked;
+  if (symmetric && guess.joints) {
+    Object.keys(guess.joints).forEach(name => {
+      if (name.startsWith('Left')) {
+        const leftPos = guess.joints[name];
+        const rightName = 'Right' + name.slice(4);
+        const rightPos = guess.joints[rightName];
+        if (leftPos && rightPos) {
+          const avgY = (leftPos[1] + rightPos[1]) / 2;
+          const avgZ = (leftPos[2] + rightPos[2]) / 2;
+          const avgAbsX = (Math.abs(leftPos[0]) + Math.abs(rightPos[0])) / 2;
+          const signLeft = leftPos[0] >= 0 ? 1 : -1;
+          leftPos[0] = signLeft * avgAbsX;
+          leftPos[1] = avgY;
+          leftPos[2] = avgZ;
+          rightPos[0] = -signLeft * avgAbsX;
+          rightPos[1] = avgY;
+          rightPos[2] = avgZ;
+        }
+      }
+    });
+  }
+
   Object.entries(guess.joints).forEach(([name, pos]) => {
     const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
     m.material = matFor(name);
@@ -2915,12 +3151,43 @@ async function startAutoRigAdjust() {
 
   const gizmoManager = new BABYLON.GizmoManager(scene);
   gizmoManager.positionGizmoEnabled = true;
+  gizmoManager.rotationGizmoEnabled = true;
   gizmoManager.usePointerToAttachGizmos = true;
   gizmoManager.attachableMeshes = [...markers.values()];
+
+  if (gizmoManager.gizmos.positionGizmo) {
+    gizmoManager.gizmos.positionGizmo.updateGizmoRotationToMatchAttachedMesh = true;
+  }
+  if (gizmoManager.gizmos.rotationGizmo) {
+    gizmoManager.gizmos.rotationGizmo.updateGizmoRotationToMatchAttachedMesh = true;
+  }
+
+  const setGizmoMode = (mode) => {
+    if (mode === 'translate') {
+      gizmoManager.positionGizmoEnabled = true;
+      gizmoManager.rotationGizmoEnabled = false;
+      document.getElementById('btn-autorig-gizmo-trans')?.classList.add('active');
+      document.getElementById('btn-autorig-gizmo-rot')?.classList.remove('active');
+    } else if (mode === 'rotate') {
+      gizmoManager.positionGizmoEnabled = false;
+      gizmoManager.rotationGizmoEnabled = true;
+      document.getElementById('btn-autorig-gizmo-trans')?.classList.remove('active');
+      document.getElementById('btn-autorig-gizmo-rot')?.classList.add('active');
+    }
+  };
+  setGizmoMode('translate');
+
+  let isDraggingMarker = false;
 
   // Mirror drag onto the contralateral marker when symmetry is on
   const posGizmo = gizmoManager.gizmos.positionGizmo;
   if (posGizmo) {
+    [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
+      if (g && g.dragBehavior) {
+        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
+        g.dragBehavior.onDragEndObservable.add(() => { isDraggingMarker = false; });
+      }
+    });
     const syncMirror = () => {
       const symmetric = document.getElementById('autorig-symmetry')?.checked;
       if (!symmetric) return;
@@ -2939,25 +3206,120 @@ async function startAutoRigAdjust() {
     });
   }
 
+  const rotGizmo = gizmoManager.gizmos.rotationGizmo;
+  if (rotGizmo) {
+    [rotGizmo.xGizmo, rotGizmo.yGizmo, rotGizmo.zGizmo].forEach(g => {
+      if (g && g.dragBehavior) {
+        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
+        g.dragBehavior.onDragEndObservable.add(() => { isDraggingMarker = false; });
+      }
+    });
+    const syncMirrorRot = () => {
+      const symmetric = document.getElementById('autorig-symmetry')?.checked;
+      if (!symmetric) return;
+      const attached = gizmoManager.attachedMesh;
+      if (!attached?.metadata?.autorigJoint) return;
+      const twinName = mirrorJointName(attached.metadata.autorigJoint);
+      if (!twinName) return;
+      const twin = markers.get(twinName);
+      if (twin) {
+        if (!attached.rotationQuaternion) {
+          attached.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(attached.rotation.y, attached.rotation.x, attached.rotation.z);
+        }
+        const q = attached.rotationQuaternion;
+        if (!twin.rotationQuaternion) twin.rotationQuaternion = BABYLON.Quaternion.Identity();
+        twin.rotationQuaternion.set(q.x, -q.y, -q.z, q.w);
+        updateCanonicalFromMarker(twin);
+      }
+    };
+    [rotGizmo.xGizmo, rotGizmo.yGizmo, rotGizmo.zGizmo].forEach(g => {
+      g?.dragBehavior?.onDragObservable.add(syncMirrorRot);
+    });
+  }
+
   // Re-pose markers every frame from their bound bone (runs after the posture
   // offset observer, which was registered at character load). The attached
   // marker is the one the user may be dragging — treat ITS position as the
   // source of truth instead and back-derive its canonical coordinate.
   const followObserver = scene.onAfterAnimationsObservable.add(() => {
+    const profiling = document.getElementById('autorig-pose-profiling')?.checked;
+
+    // Helpers to extract pure rotation from world matrix (ignoring parent scale/mirroring)
+    const getPureRelativeRot = (boneNode) => {
+      const mpScale = new BABYLON.Vector3();
+      const mpRot = new BABYLON.Quaternion();
+      const mpTrans = new BABYLON.Vector3();
+      markerParent.getWorldMatrix().decompose(mpScale, mpRot, mpTrans);
+
+      const boneScale = new BABYLON.Vector3();
+      const boneRot = new BABYLON.Quaternion();
+      const boneTrans = new BABYLON.Vector3();
+      boneNode.getWorldMatrix().decompose(boneScale, boneRot, boneTrans);
+
+      return mpRot.clone().invert().multiply(boneRot);
+    };
+
     markers.forEach((m, name) => {
       const node = boneBindings.get(name);
       if (!node) return;
-      if (m === gizmoManager.attachedMesh) { updateCanonicalFromMarker(m); return; }
+
+      if (m === gizmoManager.attachedMesh) {
+        if (isDraggingMarker) {
+          if (profiling) {
+            if (gizmoManager.positionGizmoEnabled) {
+              mapMarkerToPosture(name, m.position);
+            } else if (gizmoManager.rotationGizmoEnabled) {
+              if (!m.rotationQuaternion) {
+                m.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(m.rotation.y, m.rotation.x, m.rotation.z);
+              }
+              mapMarkerRotationToPosture(name, m.rotationQuaternion);
+            }
+            updateCanonicalFromMarker(m);
+          } else {
+            updateCanonicalFromMarker(m);
+          }
+          return;
+        } else {
+          // Attached but not actively dragging
+          if (profiling) {
+            const toPosed = restRel.get(node).clone().invert().multiply(curRelOf(node));
+            const posed = BABYLON.Vector3.TransformCoordinates(canonical.get(name), toPosed);
+            m.position.copyFrom(posed);
+
+            const q = getPureRelativeRot(node);
+            if (!m.rotationQuaternion) m.rotationQuaternion = BABYLON.Quaternion.Identity();
+            m.rotationQuaternion.copyFrom(q);
+          } else {
+            updateCanonicalFromMarker(m);
+            if (m.rotationQuaternion) m.rotationQuaternion.copyFrom(BABYLON.Quaternion.Identity());
+          }
+          return;
+        }
+      }
+
       const toPosed = restRel.get(node).clone().invert().multiply(curRelOf(node));
       const posed = BABYLON.Vector3.TransformCoordinates(canonical.get(name), toPosed);
       m.position.copyFrom(posed);
+
+      if (profiling) {
+        const q = getPureRelativeRot(node);
+        if (!m.rotationQuaternion) m.rotationQuaternion = BABYLON.Quaternion.Identity();
+        m.rotationQuaternion.copyFrom(q);
+      } else {
+        if (m.rotationQuaternion) m.rotationQuaternion.copyFrom(BABYLON.Quaternion.Identity());
+      }
     });
+
+    if (profiling && scene.skeletons) {
+      scene.skeletons.forEach(sk => sk.prepare());
+    }
   });
 
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
     groupMats, hoverObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
+    setGizmoMode,
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
     serverGuess: { ...guess.joints },
