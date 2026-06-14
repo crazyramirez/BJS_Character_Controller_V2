@@ -307,7 +307,8 @@
                   <label class="autorig-symmetry-row">
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
                   </label>
-                  <label class="autorig-symmetry-row" style="margin-top: 6px;" title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
                   </label>
                   <div class="autorig-btn-row">
@@ -726,6 +727,21 @@
           </div>
 
           <div class="settings-section">
+            <h3>Download Complete File</h3>
+            <p style="margin-bottom:12px;">
+              Generate and download a tailored standalone <code>character-controller.js</code> with all settings baked
+              in as default.
+            </p>
+            <button class="btn-action" id="btn-download">
+              <svg style="width:20px;height:20px;fill:white;" viewBox="0 0 24 24">
+                <path
+                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
+              </svg>
+              Download custom-character-controller.js
+            </button>
+          </div>
+
+          <div class="settings-section">
             <h3>Download Builder Config</h3>
             <p style="margin-bottom:12px;">
               Save or restore the full Builder setup as a reusable <code>builder-config.json</code> preset for this
@@ -749,20 +765,6 @@
             </div>
           </div>
 
-          <div class="settings-section">
-            <h3>Download Complete File</h3>
-            <p style="margin-bottom:12px;">
-              Generate and download a tailored standalone <code>character-controller.js</code> with all settings baked
-              in as default.
-            </p>
-            <button class="btn-action" id="btn-download">
-              <svg style="width:20px;height:20px;fill:white;" viewBox="0 0 24 24">
-                <path
-                  d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" />
-              </svg>
-              Download custom-character-controller.js
-            </button>
-          </div>
         </div>
 
       </div>
