@@ -1779,9 +1779,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         const id = node.uniqueId;
         const isAnimated = animatedNodes.has(id);
         if (!isAnimated) {
-          const origRot = originalBoneRotations.get(id);
-          if (origRot) {
-            node.rotationQuaternion.copyFrom(origRot);
+          // In rig mode the Force-Pose (T/A) rotations become the base the
+          // posture sliders layer on top of; otherwise reset to the bind pose.
+          const base = autoRigState?.rigPoseBase?.get(id) || originalBoneRotations.get(id);
+          if (base) {
+            node.rotationQuaternion.copyFrom(base);
           }
         }
 
@@ -2223,7 +2225,10 @@ function setupAutoRigControls() {
   });
   document.getElementById('btn-autorig-rot-left')?.addEventListener('click', () => rotateRigCharacter(-Math.PI / 4));
   document.getElementById('btn-autorig-rot-right')?.addEventListener('click', () => rotateRigCharacter(Math.PI / 4));
-  // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, while in rig mode
+  document.querySelectorAll('.autorig-pose-btn').forEach(btn => {
+    btn.addEventListener('click', () => forceAutoRigPose(btn.dataset.pose));
+  });
+  // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, R/T/A poses, while in rig mode
   window.addEventListener('keydown', (e) => {
     if (!autoRigState) return;
     const activeEl = document.activeElement;
@@ -2233,6 +2238,9 @@ function setupAutoRigControls() {
     else if (e.code === 'Digit3') setRigView('top');
     else if (e.code === 'KeyQ') rotateRigCharacter(-Math.PI / 4);
     else if (e.code === 'KeyE') rotateRigCharacter(Math.PI / 4);
+    else if (e.code === 'KeyR') forceAutoRigPose('rest');
+    else if (e.code === 'KeyT') forceAutoRigPose('t');
+    else if (e.code === 'KeyA') forceAutoRigPose('a');
   });
 }
 
@@ -2389,6 +2397,260 @@ function setRigView(view) {
   camera.radius = radius;
 }
 
+// ── Force pose: Rest / T-Pose / A-Pose ───────────────────────────────────────
+// Reposition the joint MARKERS (and their rest-space canonical coords, which is
+// what the server actually rigs) into an ideal T- or A-pose layout derived from
+// the character's own proportions. When the mesh already has a skeleton, also
+// swing the arm bones so the mesh visibly assumes the pose and the markers,
+// which follow their bound bone, stay glued to the limbs.
+function setActivePoseButton(pose) {
+  document.querySelectorAll('.autorig-pose-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.pose === pose));
+}
+
+// Fit the affine [3×4] mapping local→server from point pairs via least squares
+// (normal equations on the 4×4 Gram matrix). Handles rotation, non-uniform
+// scale and mirror — enough to bridge Babylon scene space and the server's
+// render-world space on flipped/scaled rigs. Returns { apply(Vector3)->[x,y,z] }
+// or null when there aren't enough non-degenerate correspondences.
+function fitAffine3D(pairs) {
+  if (!pairs || pairs.length < 4) return null;
+  // Design rows: [lx, ly, lz, 1]; solve for each server axis independently.
+  // Normal matrix A (4×4) = Σ pᵀp ; rhs b_k (4) = Σ p·serverₖ
+  const A = new Array(16).fill(0);
+  const bx = [0, 0, 0, 0], by = [0, 0, 0, 0], bz = [0, 0, 0, 0];
+  for (const { local, server } of pairs) {
+    const p = [local.x, local.y, local.z, 1];
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) A[r * 4 + c] += p[r] * p[c];
+      bx[r] += p[r] * server[0];
+      by[r] += p[r] * server[1];
+      bz[r] += p[r] * server[2];
+    }
+  }
+  const inv = invert4x4(A);
+  if (!inv) return null;
+  const solve = (b) => [0, 1, 2, 3].map(r =>
+    inv[r * 4 + 0] * b[0] + inv[r * 4 + 1] * b[1] + inv[r * 4 + 2] * b[2] + inv[r * 4 + 3] * b[3]);
+  const cx = solve(bx), cy = solve(by), cz = solve(bz); // each: [a,b,c,d] for axis
+  return {
+    apply: (v) => [
+      cx[0] * v.x + cx[1] * v.y + cx[2] * v.z + cx[3],
+      cy[0] * v.x + cy[1] * v.y + cy[2] * v.z + cy[3],
+      cz[0] * v.x + cz[1] * v.y + cz[2] * v.z + cz[3],
+    ],
+    // Linear part only (no translation) — maps a markerParent-local DELTA into a
+    // server-space delta. Exact for the rotation/scale/mirror between the spaces.
+    applyDelta: (d) => [
+      cx[0] * d.x + cx[1] * d.y + cx[2] * d.z,
+      cy[0] * d.x + cy[1] * d.y + cy[2] * d.z,
+      cz[0] * d.x + cz[1] * d.y + cz[2] * d.z,
+    ],
+  };
+}
+
+// General 4×4 inverse (Gauss-Jordan). Returns null if singular.
+function invert4x4(m) {
+  const a = m.slice(), inv = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+  for (let col = 0; col < 4; col++) {
+    let piv = col;
+    for (let r = col + 1; r < 4; r++) if (Math.abs(a[r * 4 + col]) > Math.abs(a[piv * 4 + col])) piv = r;
+    if (Math.abs(a[piv * 4 + col]) < 1e-12) return null;
+    if (piv !== col) for (let k = 0; k < 4; k++) {
+      [a[col * 4 + k], a[piv * 4 + k]] = [a[piv * 4 + k], a[col * 4 + k]];
+      [inv[col * 4 + k], inv[piv * 4 + k]] = [inv[piv * 4 + k], inv[col * 4 + k]];
+    }
+    const d = a[col * 4 + col];
+    for (let k = 0; k < 4; k++) { a[col * 4 + k] /= d; inv[col * 4 + k] /= d; }
+    for (let r = 0; r < 4; r++) {
+      if (r === col) continue;
+      const f = a[r * 4 + col];
+      for (let k = 0; k < 4; k++) { a[r * 4 + k] -= f * a[col * 4 + k]; inv[r * 4 + k] -= f * inv[col * 4 + k]; }
+    }
+  }
+  return inv;
+}
+
+function forceAutoRigPose(pose) {
+  const st = autoRigState;
+  if (!st) return;
+
+  // ── Rest: undo Force-Pose bone rotations & restore the analyzed layout ──
+  if (pose === 'rest') {
+    st.rigPoseBase?.clear();   // posture observer falls back to the bind pose
+    if (scene.skeletons?.length) scene.skeletons.forEach(sk => sk.returnToRest());
+    st.appliedPose = null;
+    st.restLayout.forEach((p, name) => {
+      st.canonical.set(name, p.clone());
+      const m = st.markers.get(name);
+      // Bone-bound markers are re-placed by followObserver from canonical next
+      // frame (bones now at rest ⇒ posed == canonical); place the rest directly.
+      if (m) m.position.copyFrom(p);
+    });
+    setActivePoseButton('rest');
+    showToast('Reset to rest pose.');
+    return;
+  }
+
+  const skinned = !!scene.skeletons?.length && st.boneBindings.size > 0;
+  if (skinned) poseSkeletonArms(pose);
+  else poseMarkerLayout(pose);
+
+  setActivePoseButton(pose);
+  showToast(pose === 't' ? 'Forced T-Pose.' : 'Forced A-Pose.');
+}
+
+// Character body axes (world space). The mesh renders UPRIGHT and gravity-
+// aligned in the scene, so vertical = world +Y — NOT hips→head (the head can
+// jut forward, which tilted the whole pose). Lateral comes from the arm span,
+// orthogonalized against world up. Returns { up, lateralL } or null.
+function bodyAxesFromBones() {
+  const st = autoRigState;
+  const V = BABYLON.Vector3;
+  const armL = st.boneBindings.get('LeftArm');
+  const armR = st.boneBindings.get('RightArm');
+  if (!armL || !armR) return null;
+  [armL, armR].forEach(n => n.computeWorldMatrix(true));
+  const up = V.Up(); // true vertical — keeps spine/legs straight, no forward lean
+  const lateralL = armL.getAbsolutePosition().subtract(armR.getAbsolutePosition());
+  if (lateralL.lengthSquared() < 1e-10) return null;
+  up.normalize(); lateralL.normalize();
+  // orthogonalize lateral against up
+  lateralL.subtractInPlace(up.scale(V.Dot(lateralL, up)));
+  if (lateralL.lengthSquared() < 1e-10) return null;
+  lateralL.normalize();
+  return { up, lateralL };
+}
+
+// Skinless mesh: no bones — lay the MARKERS out in an ideal T/A geometry.
+// canonical (rest space) is what the server rigs.
+function poseMarkerLayout(pose) {
+  const st = autoRigState;
+  const V = BABYLON.Vector3;
+  const aDown = pose === 'a' ? Math.SQRT1_2 : 0;
+  const aOut = pose === 'a' ? Math.SQRT1_2 : 1;
+  for (const side of ['Left', 'Right']) {
+    const sgn = side === 'Left' ? 1 : -1;
+    const root = st.restLayout.get(side + 'Arm');
+    const hand0 = st.restLayout.get(side + 'Hand');
+    const fore0 = st.restLayout.get(side + 'ForeArm');
+    if (!root || !hand0) continue;
+    const armLen = V.Distance(root, hand0);
+    const foreFrac = fore0 ? V.Distance(root, fore0) / Math.max(armLen, 1e-4) : 0.5;
+    const dir = new V(sgn * aOut, -aDown, 0).normalize();
+    const hand = root.add(dir.scale(armLen));
+    const fore = root.add(dir.scale(armLen * foreFrac));
+    st.canonical.set(side + 'Hand', hand);
+    st.canonical.set(side + 'ForeArm', fore);
+    st.markers.get(side + 'Hand')?.position.copyFrom(hand);
+    st.markers.get(side + 'ForeArm')?.position.copyFrom(fore);
+  }
+}
+
+// Skinned (re-rig) mesh: rotate the actual upper-arm bones so each arm points
+// along the target direction in WORLD space, derived from the character's own
+// body axes:  T → straight out laterally;  A → 45° down-and-out. Markers are
+// bone-bound and follow via followObserver. canonical stays in rest space (the
+// server rigs the base unposed GLB). The boneOffsetObserver is paused during
+// rig mode (see startAutoRigAdjust) so these rotations are not reset each frame.
+function poseSkeletonArms(pose) {
+  const st = autoRigState;
+  const B = (n) => st.boneBindings.get(n);
+  // Clean slate so alternating presses don't compound.
+  scene.skeletons.forEach(sk => sk.returnToRest());
+
+  const axes = bodyAxesFromBones();
+  if (!axes) { showToast('Could not read arm bones for posing.', true); return; }
+  const up = axes.up;
+  const down = up.scale(-1);
+  const aOut = pose === 'a' ? Math.SQRT1_2 : 1;
+  const aDown = pose === 'a' ? Math.SQRT1_2 : 0;
+
+  // ── Spine: straighten the column UPRIGHT (kills the arched-back look) ──────
+  // Aim each segment toward its child along +up, parent→child.
+  const spineChain = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head'];
+  for (let i = 0; i < spineChain.length - 1; i++) {
+    const a = B(spineChain[i]), b = B(spineChain[i + 1]);
+    if (a && b) aimBoneAlong(a, b, up);
+  }
+
+  // ── Legs: straighten DOWN (kills bent knees / crouch) ─────────────────────
+  for (const side of ['Left', 'Right']) {
+    const upLeg = B(side + 'UpLeg'), leg = B(side + 'Leg'), foot = B(side + 'Foot');
+    if (upLeg && leg) aimBoneAlong(upLeg, leg, down);
+    if (leg && foot) aimBoneAlong(leg, foot, down);
+    // foot→toe kept at bind (natural ankle); re-aiming would point toes oddly
+  }
+
+  // ── Arms: T → straight out laterally;  A → 45° down-and-out ────────────────
+  for (const side of ['Left', 'Right']) {
+    const lateral = side === 'Left' ? axes.lateralL : axes.lateralL.scale(-1);
+    const upper = B(side + 'Arm'), fore = B(side + 'ForeArm'), hand = B(side + 'Hand');
+    if (!upper) continue;
+    const targetW = lateral.scale(aOut).add(down.scale(aDown));
+    if (targetW.lengthSquared() < 1e-10) continue;
+    targetW.normalize();
+    // Straight arm: aim EACH segment along targetW, parent → child, recomputing
+    // world between them. Upper arm uses shoulder→elbow; forearm uses elbow→hand.
+    aimBoneAlong(upper, fore || hand, targetW);
+    if (fore && hand) aimBoneAlong(fore, hand, targetW);
+  }
+
+  // Capture the posed LOCAL rotation of every bound bone as the Force-Pose base
+  // the posture observer resets to each frame (so sliders layer on top of the
+  // pose instead of the bind). Non-role bones keep their pose untouched.
+  st.rigPoseBase.clear();
+  const seen = new Set();
+  st.boneBindings.forEach((node) => {
+    if (!node || seen.has(node.uniqueId)) return;
+    seen.add(node.uniqueId);
+    if (!node.rotationQuaternion) {
+      node.rotationQuaternion = BABYLON.Quaternion.FromEulerVector(node.rotation);
+    }
+    st.rigPoseBase.set(node.uniqueId, node.rotationQuaternion.clone());
+  });
+  st.appliedPose = pose;
+}
+
+// Rotate `node` (a bone transform node) so the world segment node→tipNode points
+// along world unit vector `targetW`. Composes the swing with the node's CURRENT
+// absolute rotation, then converts back to parent-local — unambiguous ordering,
+// works for any bind orientation and is exactly mirror-symmetric across sides.
+function aimBoneAlong(node, tipNode, targetW) {
+  const Q = BABYLON.Quaternion, V = BABYLON.Vector3;
+  node.computeWorldMatrix(true);
+  tipNode.computeWorldMatrix(true);
+  const curW = tipNode.getAbsolutePosition().subtract(node.getAbsolutePosition());
+  if (curW.lengthSquared() < 1e-10) return;
+  curW.normalize();
+
+  let axis = V.Cross(curW, targetW);
+  const dot = Math.max(-1, Math.min(1, V.Dot(curW, targetW)));
+  let swing;
+  if (axis.lengthSquared() < 1e-12) {
+    if (dot > 0) return;                       // already aligned
+    axis = Math.abs(curW.x) < 0.9 ? V.Cross(curW, V.Right()) : V.Cross(curW, V.Up());
+    swing = Q.RotationAxis(axis.normalize(), Math.PI);
+  } else {
+    swing = Q.RotationAxis(axis.normalize(), Math.acos(dot));
+  }
+
+  // World rotation after the swing: Rworld_new = swing ∘ Rworld_old
+  const Rold = node.absoluteRotationQuaternion?.clone() || Q.Identity();
+  const Rnew = swing.multiply(Rold);           // (this*q) applies q first, then this
+  // Back to parent-local: Rlocal = Rparentⁱ ∘ Rworld_new
+  const parent = node.parent;
+  let Rlocal = Rnew;
+  if (parent) {
+    parent.computeWorldMatrix(true);
+    const Rp = Q.FromRotationMatrix(parent.getWorldMatrix().getRotationMatrix());
+    Rlocal = Rp.invert().multiply(Rnew);
+  }
+  if (!node.rotationQuaternion) node.rotationQuaternion = Q.Identity();
+  node.rotationQuaternion.copyFrom(Rlocal);
+  node.computeWorldMatrix(true);
+}
+
 // Left/right counterpart name, or null for center bones
 function mirrorJointName(name) {
   if (name.startsWith('Left')) return 'Right' + name.slice(4);
@@ -2439,6 +2701,9 @@ async function startAutoRigAdjust() {
   if (camLockObserver) {
     scene.onBeforeCameraRenderObservable.remove(camLockObserver);
   }
+  // Posture-offset observer stays ACTIVE during rig mode: the sliders (arm
+  // spread/splay, shoulder raise, leg spread, spine straighten, hips tilt) keep
+  // working and layer on top of the Force-Pose base (autoRigState.rigPoseBase).
   scene.animationGroups.forEach(ag => ag.stop());
   scene.skeletons.forEach(skel => skel.returnToRest());
 
@@ -2483,14 +2748,32 @@ async function startAutoRigAdjust() {
     return groupMats.get(key);
   };
 
-  const diameter = Math.max(0.03 * guess.height, 0.02);
+  // Server joints are in glTF RENDER-WORLD space. markerParent's world matrix is
+  // NOT always identity — Sketchfab/FBX exports carry an ancestor scale (e.g.
+  // Sketchfab_model scale 0.3, ‑0.3 Z mirror) above the skeleton root. Setting a
+  // world coord straight into m.position (local) would shrink/sink every marker
+  // by that scale. Parent the marker, then place it by ABSOLUTE position so the
+  // local m.position is derived correctly (world · markerParentⁱ); all the
+  // canonical/follow math below uses m.position, so it stays consistent.
+  markerParent.computeWorldMatrix(true);
+  const mpWorld = markerParent.getWorldMatrix();
+  const mpWorldInv = mpWorld.clone().invert();
+  // Marker size must be constant on-screen; markerParent may scale its children
+  // (Sketchfab 0.3), so divide that scale out of the local sphere diameter.
+  const mpScaleV = new BABYLON.Vector3();
+  mpWorld.decompose(mpScaleV);
+  const mpScale = Math.max(Math.abs(mpScaleV.x), 1e-4);
+  const diameter = Math.max(0.03 * guess.height, 0.02) / mpScale;
   Object.entries(guess.joints).forEach(([name, pos]) => {
     const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
     m.material = matFor(name);
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
     m.parent = markerParent;
-    m.position.set(pos[0], pos[1], pos[2]);
+    // world coord → markerParent-local
+    const local = BABYLON.Vector3.TransformCoordinates(
+      new BABYLON.Vector3(pos[0], pos[1], pos[2]), mpWorldInv);
+    m.position.copyFrom(local);
     m.metadata = { autorigJoint: name };
     markers.set(name, m);
   });
@@ -2506,27 +2789,62 @@ async function startAutoRigAdjust() {
   const boneBindings = new Map();  // joint name → transform node
   const restRel = new Map();       // node → bind matrix relative to markerParent
   const canonical = new Map();     // joint name → Vector3 (markerParent-local, rest space)
+  let localToServerAffine = null;  // (Vector3 local) → [x,y,z] server space, or null
   if (scene.skeletons?.length) {
     const mpInv0 = markerParent.getWorldMatrix().clone().invert();
     const nodes = [];
+    // canonical-name → bone node, so re-rig binds by NAME (robust to the server's
+    // joint space differing from Babylon's scene space on flipped/mirrored rigs)
+    const nodeByNorm = new Map();
     scene.skeletons.forEach(sk => sk.bones.forEach(b => {
       const n = b.getTransformNode();
       if (n && !restRel.has(n)) {
         n.computeWorldMatrix(true);
         restRel.set(n, n.getWorldMatrix().multiply(mpInv0));
         nodes.push(n);
+        const norm = boneRoleNorm(b.name || n.name || '');
+        if (norm && !nodeByNorm.has(norm)) nodeByNorm.set(norm, n);
       }
     }));
     markers.forEach((m, name) => {
-      m.computeWorldMatrix(true);
-      const mw = m.getAbsolutePosition();
-      let best = null, bestD = Infinity;
-      nodes.forEach(n => {
-        const d = BABYLON.Vector3.DistanceSquared(mw, n.getAbsolutePosition());
-        if (d < bestD) { bestD = d; best = n; }
-      });
-      if (best) boneBindings.set(name, best);
+      // 1) exact joint-name match (LeftArm → mixamorig:LeftArm_09)
+      let bound = nodeByNorm.get(boneRoleNorm(name));
+      // 2) fallback to nearest bone for unmatched / nonstandard names
+      if (!bound) {
+        m.computeWorldMatrix(true);
+        const mw = m.getAbsolutePosition();
+        let bestD = Infinity;
+        nodes.forEach(n => {
+          const d = BABYLON.Vector3.DistanceSquared(mw, n.getAbsolutePosition());
+          if (d < bestD) { bestD = d; bound = n; }
+        });
+      }
+      if (bound) boneBindings.set(name, bound);
     });
+
+    // Re-rig GROUND TRUTH: the server's joint world coords can land in a
+    // different space than Babylon's scene (FBX up-axis fixes, Sketchfab −Z
+    // mirror, armature scale) — that's what put the markers upside-down/sunk.
+    // For markers matched to a bone BY NAME, snap onto that bone's ACTUAL
+    // in-scene position (→ markerParent-local). Nearest-bone fallbacks and
+    // unmatched markers keep the server guess.
+    const mpInvSnap = markerParent.getWorldMatrix().clone().invert();
+    const fitPairs = []; // { local: Vector3 (markerParent-local), server: [x,y,z] }
+    markers.forEach((m, name) => {
+      const node = nodeByNorm.get(boneRoleNorm(name));
+      if (!node) return;
+      node.computeWorldMatrix(true);
+      const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
+      m.position.copyFrom(local);
+      const sv = guess.joints[name];
+      if (sv) fitPairs.push({ local, server: sv });
+    });
+    // Markers are now displayed in Babylon scene space (snapped to bones), but
+    // the server rigs in its own RENDER-WORLD space (guessJoints / autorig). On
+    // mirrored/flipped/scaled rigs the two differ. Fit the affine that maps
+    // markerParent-local → server space from the name-matched pairs so Apply
+    // sends correct coordinates regardless of the model's baked transform.
+    localToServerAffine = fitAffine3D(fitPairs);
   }
   markers.forEach((m, name) => canonical.set(name, m.position.clone()));
 
@@ -2615,10 +2933,19 @@ async function startAutoRigAdjust() {
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
     groupMats, hoverObserver, hideTip, canonical, followObserver,
+    boneBindings, restRel, markerParent, localToServerAffine,
+    // Server's original joint guess (its own render-world space) per name — the
+    // exact ground truth for un-dragged markers on Apply.
+    serverGuess: { ...guess.joints },
+    // Rest-space snapshot of the initial guess — restored by the "Rest" pose button
+    restLayout: new Map([...canonical].map(([n, v]) => [n, v.clone()])),
     pausedCtrlCallback: ctrlObserver?.callback || null,
     pausedCamLockCallback: camLockObserver?.callback || null,
+    rigPoseBase: new Map(), // node.uniqueId → posed local quaternion (Force-Pose)
   };
   enterRigViewportMode();
+  // Default selection reflects the analyzed layout
+  setActivePoseButton('rest');
 
   const startBtn = document.getElementById('btn-autorig-start');
   const adjustPanel = document.getElementById('autorig-adjust');
@@ -2652,6 +2979,10 @@ function cancelAutoRigAdjust() {
       activeCharacter.charCtrl._cameraLockObserver =
         scene.onBeforeCameraRenderObservable.add(autoRigState.pausedCamLockCallback);
     }
+    // Clear the Force-Pose base so the (still-running) posture observer returns
+    // to the bind pose, then drop to rest before idle restarts.
+    autoRigState.rigPoseBase?.clear();
+    if (scene.skeletons?.length) scene.skeletons.forEach(sk => sk.returnToRest());
     // Restart idle: rig mode stopped every animation group and froze the
     // skeleton in rest pose. AnimCtrl.play() short-circuits when the requested
     // group is already `cur` (it only re-weights, never restarts a stopped
@@ -2684,10 +3015,43 @@ async function applyAutoRig() {
   // Collect adjusted joint positions (local to charRoot = glTF space).
   // Use the canonical (rest-space) coordinates: displayed markers may be
   // posed by the posture sliders, but the server rigs the BASE unposed GLB.
+  // Markers are placed/displayed in Babylon scene space (canonical = markerParent
+  // -local), but the server rigs in its own render-world space. On mirrored/
+  // flipped/scaled rigs these differ. Strategy that stays EXACT for the common
+  // case (markers left where the analysis put them):
+  //   • un-dragged marker  → send the server's own original guess verbatim
+  //   • dragged marker     → server guess + linear-mapped drag delta
+  //   • no server guess    → full affine of the current local position
+  // For clean rigs (no skeleton / identity space) this reduces to raw coords.
+  const st = autoRigState;
+  const toServer = st.localToServerAffine;
+  const rest = st.restLayout;
+  const guessSrv = st.serverGuess || {};
+  // The rig server only repositions joints under the STATIC mesh (it doesn't
+  // re-deform the geometry), so baking the Force-Pose / slider posture into the
+  // joint positions would shear the skin. Force-Pose & sliders are therefore a
+  // VISUAL preview only — Apply always rigs at the mesh's actual rest shape:
+  //   • un-dragged marker → server's own ground-truth rest position
+  //   • dragged marker    → rest position + the user's drag delta
+  // `canonical` is kept in rest space (followObserver never writes it back from
+  // the posed bones), so it already holds the rest anatomy + any manual drags.
   const joints = {};
-  autoRigState.markers.forEach((m, name) => {
-    const p = autoRigState.canonical?.get(name) || m.position;
-    joints[name] = [p.x, p.y, p.z];
+  st.markers.forEach((m, name) => {
+    const p = st.canonical?.get(name) || m.position;
+    const r = rest?.get(name);
+    const g = guessSrv[name];
+    const delta = r ? p.subtract(r) : null;
+    const moved = delta ? delta.lengthSquared() > 1e-8 : true;
+    if (g && !moved) {
+      joints[name] = [g[0], g[1], g[2]];                 // exact rest ground truth
+    } else if (g && toServer && delta) {
+      const d = toServer.applyDelta(delta);
+      joints[name] = [g[0] + d[0], g[1] + d[1], g[2] + d[2]];
+    } else if (toServer) {
+      joints[name] = toServer.apply(p);
+    } else {
+      joints[name] = [p.x, p.y, p.z];
+    }
   });
 
   const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;

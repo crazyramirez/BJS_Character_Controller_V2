@@ -123,7 +123,7 @@ function lerpAngle(a, b, t) {
 function normBone(name) {
   if (!name) return '';
   let n = name.toLowerCase();
-  
+
   // 1. Determine side (left / right)
   let side = '';
   if (n.includes('left') || n.match(/\b_l\b/) || n.match(/_l_/) || n.startsWith('l_') || n.match(/[^a-z]l[a-z]/) || n.includes('lhand') || n.includes('lfoot') || n.includes('lthigh') || n.includes('lcalf') || n.includes('larm') || n.includes('lforearm') || n.includes('lclavicle')) {
@@ -131,11 +131,11 @@ function normBone(name) {
   } else if (n.includes('right') || n.match(/\b_r\b/) || n.match(/_r_/) || n.startsWith('r_') || n.match(/[^a-z]r[a-z]/) || n.includes('rhand') || n.includes('rfoot') || n.includes('rthigh') || n.includes('rcalf') || n.includes('rarm') || n.includes('rforearm') || n.includes('rclavicle')) {
     side = 'right';
   }
-  
+
   // Clean prefixes and punctuation
   n = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '')
-       .replace(/[:_ \-]/g, '');
-       
+    .replace(/[:_ \-]/g, '');
+
   // 2. Normalize synonyms
   if (n.includes('thigh')) n = n.replace('thigh', 'upleg');
   if (n.includes('calf')) n = n.replace('calf', 'leg');
@@ -145,13 +145,13 @@ function normBone(name) {
   if (n.includes('hip')) n = n.replace('hip', 'hips');
   if (n.includes('hand')) n = n.replace('hand', '');
   if (n.includes('middle')) n = n.replace('middle', 'mid');
-  
+
   // If we found a side, prepend it to ensure left/right are distinct
   if (side) {
     n = n.replace(/^(left|right|l|r)/, '');
     n = side + n;
   }
-  
+
   return n;
 }
 
@@ -1583,8 +1583,6 @@ class CharCtrl {
 
   _roll() {
     if (this._rollActive) return;
-    const isMovingBackward = this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2);
-    if (isMovingBackward) return;
     this._lastRollTime = performance.now();
     this._rollActive = true;
     this._setState(S.ROLL);
@@ -3433,8 +3431,8 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
     animRes.animationGroups.forEach(sg => {
       const cleanName = cleanAnimName(sg.name);
-      const srcRootName      = findSrcRole(sg, ['hips', 'pelvis', 'hip'])     || 'mixamorig:Hips';
-      const srcGroundName    = findSrcRole(sg, ['leftfoot', 'footl', 'ankle_l']) || 'mixamorig:LeftFoot';
+      const srcRootName = findSrcRole(sg, ['hips', 'pelvis', 'hip']) || 'mixamorig:Hips';
+      const srcGroundName = findSrcRole(sg, ['leftfoot', 'footl', 'ankle_l']) || 'mixamorig:LeftFoot';
       const retargeted = avatar.retargetAnimationGroup(sg, {
         animationGroupName: cleanName,
         retargetAnimationKeys: true,
