@@ -962,6 +962,7 @@ class CharCtrl {
         const minVal = slider ? parseFloat(slider.min) : 2;
         const maxVal = slider ? parseFloat(slider.max) : 15;
         this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
+        this._baseCamFollowDist = this.CAM_FOLLOW_DIST / (this._capScaleY || 1.0);
         localStorage.setItem('cam-follow-dist', this.CAM_FOLLOW_DIST);
 
         const label = document.getElementById('cam-dist-val');
@@ -1020,8 +1021,9 @@ class CharCtrl {
       }
 
       if (this.CAM_FOLLOW_LOCK) {
-        // Restore full mouse sensitivity
-        this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
+        // Restore full mouse sensitivity, adapted to character scale
+        const scaleY = this._capScaleY || 1.0;
+        this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
 
         // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
         const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
@@ -1062,6 +1064,22 @@ class CharCtrl {
 
       this._lastCameraRadius = this.camera.radius;
     });
+
+    // Scale-aware camera speed & limits initialization
+    const scaleY = this._capScaleY || 1.0;
+    this._baseCamFollowDist = this.CAM_FOLLOW_DIST / scaleY;
+
+    if (this.camera) {
+      this.camera.lowerRadiusLimit = 2 * scaleY;
+      this.camera.upperRadiusLimit = 20 * scaleY;
+      this.camera.radius = this.CAM_FOLLOW_DIST;
+
+      this.camera.wheelPrecision = 55 / scaleY;
+      this.camera.pinchPrecision = 55 / scaleY;
+      this.camera.panningSensibility = 1000 / scaleY;
+      this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+      this.camera.angularSensibilityY = (this.camera.angularSensibilityY || 1000) / scaleY;
+    }
 
     // Start idle
     this._idle();
@@ -1939,6 +1957,39 @@ class CharCtrl {
     return new BABYLON.Vector3(-Math.sin(alpha), 0, Math.cos(alpha)).normalize();
   }
 
+  _isMeshCharacter(mesh) {
+    if (!mesh) return false;
+    if (mesh === this.root || mesh === this.visualMesh) return true;
+    
+    // Check if it shares any skeleton in the scene that is currently active on our visual mesh
+    if (mesh.skeleton) {
+      const activeSkel = this.visualMesh.skeleton || 
+        (this.visualMesh.getChildMeshes && this.visualMesh.getChildMeshes().find(m => m.skeleton)?.skeleton);
+      if (activeSkel && mesh.skeleton === activeSkel) {
+        return true;
+      }
+    }
+
+    // Traverse parent hierarchy to see if it belongs to this character
+    let p = mesh.parent;
+    while (p) {
+      if (p === this.root || p === this.visualMesh) return true;
+      if (typeof p.getParent === 'function') {
+        p = p.getParent();
+      } else {
+        p = p.parent;
+      }
+    }
+    
+    // Check name pattern matching
+    const lowerName = (mesh.name || "").toLowerCase();
+    if (lowerName.includes("character") || lowerName.includes("playercapsule") || lowerName.includes("autorig") || lowerName.includes("wrapper")) {
+      return true;
+    }
+    
+    return false;
+  }
+
   // ── RAYCAST GROUND DETECT ──────────────────────────────
   _checkGrounded() {
     // Ray origin: derived from the ACTUAL current capsule/ellipsoid bottom so that the ray
@@ -1987,7 +2038,7 @@ class CharCtrl {
       const ray = new BABYLON.Ray(rayStart, downDir, rayLen);
       const pick = this.scene.pickWithRay(ray, (mesh) => {
         // Only collide with environment meshes
-        return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+        return mesh.checkCollisions && !this._isMeshCharacter(mesh);
       });
 
       if (pick && pick.hit) {
@@ -2036,7 +2087,7 @@ class CharCtrl {
     const upDir = new BABYLON.Vector3(0, 1, 0);
     const ray = new BABYLON.Ray(rayStart, upDir, rayLen);
     const pick = this.scene.pickWithRay(ray, (mesh) => {
-      return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+      return mesh.checkCollisions && !this._isMeshCharacter(mesh);
     });
 
     return !!(pick && pick.hit);
@@ -2231,7 +2282,7 @@ class CharCtrl {
           const snapRayStart = this.root.position.add(new BABYLON.Vector3(0, originYOffset, 0));
           const snapRay = new BABYLON.Ray(snapRayStart, new BABYLON.Vector3(0, -1, 0), 0.5);
           const snapPick = this.scene.pickWithRay(snapRay, (mesh) => {
-            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
           });
           if (snapPick && snapPick.hit) {
             _snapVelY = -2.5;
@@ -2376,7 +2427,7 @@ class CharCtrl {
       for (const h of heights) {
         const rayStart = this.root.position.add(new BABYLON.Vector3(0, h, 0));
         const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), (mesh) => {
-          return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+          return mesh.checkCollisions && !this._isMeshCharacter(mesh);
         });
         if (pick && pick.hit) {
           const availableSpace = Math.max(0, pick.distance - this._standEllipsoidWidth - margin);
@@ -2500,7 +2551,7 @@ class CharCtrl {
         const rayDist = this._standEllipsoidWidth + 0.15; // slightly ahead of capsule edge
         const ray = new BABYLON.Ray(rayStart, dir, rayDist);
         const pick = this.scene.pickWithRay(ray, (mesh) => {
-          return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+          return mesh.checkCollisions && !this._isMeshCharacter(mesh);
         });
         if (pick && pick.hit) {
           wallNormal = pick.getNormal(true);
@@ -2531,7 +2582,7 @@ class CharCtrl {
           const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, dir, rayDist);
           const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
-            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
           });
 
           if (lowPick && lowPick.hit) {
@@ -2539,7 +2590,7 @@ class CharCtrl {
             const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, dir, rayDist);
             const highPick = this.scene.pickWithRay(highRay, (mesh) => {
-              return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+              return mesh.checkCollisions && !this._isMeshCharacter(mesh);
             });
 
             // If the low obstacle is hit, but not the high one, we can climb it!
@@ -2644,14 +2695,14 @@ class CharCtrl {
           const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, this._rollDir, rayDist);
           const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
-            return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
           });
 
           if (lowPick && lowPick.hit) {
             const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, this._rollDir, rayDist);
             const highPick = this.scene.pickWithRay(highRay, (mesh) => {
-              return mesh.checkCollisions && mesh !== this.root && !this.root.getChildMeshes().includes(mesh);
+              return mesh.checkCollisions && !this._isMeshCharacter(mesh);
             });
 
             if (!highPick || !highPick.hit) {
@@ -3051,7 +3102,8 @@ class CharCtrl {
 
     // Lock camera behind the character if follow lock is active
     if (!this.CAM_FOLLOW_LOCK && this.camera.angularSensibilityX === 999999999) {
-      this.camera.angularSensibilityX = this._originalSensibilityX || 1000;
+      const scaleY = this._capScaleY || 1.0;
+      this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
     }
 
     // Save tracking states for next frame calculations
@@ -3369,7 +3421,8 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
           const dt = scene.getEngine().getDeltaTime() / 1000;
           const clampedDt = Math.max(0.001, Math.min(0.1, dt));
           const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
-          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset + deflection, 0));
+          const currentScaleY = playerCapsule.scaling.y;
+          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, (cameraYOffset + deflection) * currentScaleY, 0));
           camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
         });
 
@@ -3525,7 +3578,8 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
     const dt = scene.getEngine().getDeltaTime() / 1000;
     const clampedDt = Math.max(0.001, Math.min(0.1, dt));
     const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
-    const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, cameraYOffset + deflection, 0));
+    const currentScaleY = playerCapsule.scaling.y;
+    const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, (cameraYOffset + deflection) * currentScaleY, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
   });
 

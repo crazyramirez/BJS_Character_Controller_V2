@@ -198,14 +198,27 @@ function selectBodyMeshes(doc, skinXforms = new Map()) {
     if (e.count * e.height > main.count * main.height) main = e;
   }
   const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
+  // Fraction of [a,b] overlapping [c,d].
+  const overlap1D = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
   const keep = new Set();
   for (const e of entries) {
+    if (e === main) { keep.add(e.mesh); continue; }
     const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
     const inside =
       cx > main.min[0] - m && cx < main.max[0] + m &&
       cy > main.min[1] - m && cy < main.max[1] + m &&
       cz > main.min[2] - m && cz < main.max[2] + m;
-    if (e === main || (inside && e.footprint <= 2.5 * main.footprint)) keep.add(e.mesh);
+    if (!inside) continue; // far prop / light gizmo
+
+    // A ground plane / pedestal is a FLAT SLAB: tiny vertical extent but a large
+    // footprint. Clothing (capes, coats, robes, armor) is tall and overlaps the
+    // body's vertical span heavily, so it must be kept even with a big footprint.
+    const flat = e.height < 0.12 * main.height;
+    const wide = e.footprint > 1.5 * main.footprint;
+    const vOverlap = overlap1D(e.min[1], e.max[1], main.min[1], main.max[1]) / Math.max(e.height, 1e-6);
+    const isGround = flat && wide;                       // floor / base disc
+    const tooDetached = vOverlap < 0.25 && e.footprint > main.footprint; // big & barely shares the body's height
+    if (!isGround && !tooDetached) keep.add(e.mesh);
   }
   if (keep.size === entries.length) return null;
   const dropped = entries.filter(e => !keep.has(e.mesh)).length;
@@ -224,13 +237,18 @@ function selectBodyMeshes(doc, skinXforms = new Map()) {
  * Returns +1 (faces +Z, Mixamo convention) or -1 (faces -Z).
  */
 function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = null) {
+  if (global.MOCK_FORWARD_Z !== undefined) return global.MOCK_FORWARD_Z;
   const H = max[1] - min[1];
-  const cz = (min[2] + max[2]) / 2;
   const footY = min[1] + 0.12 * H;
+  const faceY = min[1] + 0.85 * H;   // head region: nose/chin protrude forward
   const parentMap = buildParentMap(doc);
   const cache = new Map();
-  let sum = 0, count = 0;
-
+  // Collect the foot and face vertex Z values so each cue can be measured by
+  // its ASYMMETRIC OVERHANG (how far the silhouette pokes past its own centre),
+  // not the mean. A foot has a short heel and a long toe: the mean is dominated
+  // by the dense heel/ankle mass and can point the wrong way, but the toe is the
+  // farther-protruding tip — that is the real forward direction.
+  const footZ = [], faceZ = [];
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
@@ -241,12 +259,37 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
       if (!arr) continue;
       for (let i = 0; i < arr.length; i += 3) {
         const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
-        if (p[1] <= footY) { sum += p[2] - cz; count++; }
+        if (p[1] <= footY) footZ.push(p[2]);
+        else if (p[1] >= faceY) faceZ.push(p[2]);
       }
     }
   }
-  if (count === 0) return 1;
-  return sum / count >= 0 ? 1 : -1;
+  const depth = max[2] - min[2] || 1;
+  const bodyCz = (min[2] + max[2]) / 2;
+  // Two ways to read a foot's facing, combined:
+  //  • offset:  how far the whole foot sits in front of the body centre — strong
+  //    when the foot is displaced forward (sitting/running poses).
+  //  • overhang: how far the toe TIP protrudes past the foot's own median — the
+  //    reliable cue for an upright foot planted under the body (heel↔toe).
+  // Summing both means a forward-displaced foot AND a toe overhang each vote,
+  // and neither alone has to be decisive.
+  const footVote = (zs) => {
+    if (zs.length < 4) return 0;
+    const med = median(zs);
+    let zmax = -Infinity, zmin = Infinity, sum = 0;
+    for (const z of zs) { if (z > zmax) zmax = z; if (z < zmin) zmin = z; sum += z; }
+    const overhang = ((zmax - med) - (med - zmin)) / depth;
+    const offset = ((sum / zs.length) - bodyCz) / depth;
+    return overhang + offset;
+  };
+  const fVote = footVote(footZ);
+  const faceVote = footVote(faceZ);
+  // Feet dominate; the face only breaks ties when the foot signal is weak
+  // (barefoot, perfectly symmetric, flat-foot meshes).
+  const footStrong = Math.abs(fVote) > 0.04;
+  const combined = footStrong ? fVote : (2.0 * fVote + 1.0 * faceVote);
+  if (combined === 0) return 1;
+  return combined >= 0 ? 1 : -1;
 }
 
 export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
@@ -268,25 +311,25 @@ export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
     Neck: J(0, y(0.85), 0),
     Head: J(0, y(0.89), 0),
 
-    LeftShoulder: J(0.10 * halfW, shoulderY, 0),
-    LeftArm: J(0.24 * halfW, shoulderY, 0),
-    LeftForeArm: J(0.58 * halfW, shoulderY, 0),
-    LeftHand: J(0.88 * halfW, shoulderY, 0),
+    LeftShoulder: J(0.10 * halfW * forwardZ, shoulderY, 0),
+    LeftArm: J(0.24 * halfW * forwardZ, shoulderY, 0),
+    LeftForeArm: J(0.58 * halfW * forwardZ, shoulderY, 0),
+    LeftHand: J(0.88 * halfW * forwardZ, shoulderY, 0),
 
-    RightShoulder: J(-0.10 * halfW, shoulderY, 0),
-    RightArm: J(-0.24 * halfW, shoulderY, 0),
-    RightForeArm: J(-0.58 * halfW, shoulderY, 0),
-    RightHand: J(-0.88 * halfW, shoulderY, 0),
+    RightShoulder: J(-0.10 * halfW * forwardZ, shoulderY, 0),
+    RightArm: J(-0.24 * halfW * forwardZ, shoulderY, 0),
+    RightForeArm: J(-0.58 * halfW * forwardZ, shoulderY, 0),
+    RightHand: J(-0.88 * halfW * forwardZ, shoulderY, 0),
 
-    LeftUpLeg: J(0.06 * H, y(0.50), 0),
-    LeftLeg: J(0.06 * H, y(0.27), 0),
-    LeftFoot: J(0.06 * H, y(0.06), 0),
-    LeftToeBase: J(0.06 * H, y(0.02), 0.10 * H * forwardZ),
+    LeftUpLeg: J(0.06 * H * forwardZ, y(0.50), 0),
+    LeftLeg: J(0.06 * H * forwardZ, y(0.27), 0),
+    LeftFoot: J(0.06 * H * forwardZ, y(0.06), 0),
+    LeftToeBase: J(0.06 * H * forwardZ, y(0.02), 0.10 * H * forwardZ),
 
-    RightUpLeg: J(-0.06 * H, y(0.50), 0),
-    RightLeg: J(-0.06 * H, y(0.27), 0),
-    RightFoot: J(-0.06 * H, y(0.06), 0),
-    RightToeBase: J(-0.06 * H, y(0.02), 0.10 * H * forwardZ),
+    RightUpLeg: J(-0.06 * H * forwardZ, y(0.50), 0),
+    RightLeg: J(-0.06 * H * forwardZ, y(0.27), 0),
+    RightFoot: J(-0.06 * H * forwardZ, y(0.06), 0),
+    RightToeBase: J(-0.06 * H * forwardZ, y(0.02), 0.10 * H * forwardZ),
   };
   return { joints, height: H, bounds: { min, max } };
 }
@@ -380,6 +423,49 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     if (split) crotchY = groundY + ((b + 1) / BINS) * H; // top of the split band
   }
 
+  // ── Skirt / robe / dress / coat fallback ──────────────────────────────────
+  // A garment fills the centerline so the split test never fires and the legs
+  // would default to the bounds guess (often wrong). Detect the garment by its
+  // silhouette: a robe FLARES — lower bins are markedly wider than the waist.
+  // When two feet still poke out below the hem they give a real leg X offset;
+  // otherwise fall back to anatomical defaults. Crotch is placed at the waist
+  // (where the width starts flaring) so UpLeg roots sit inside the garment.
+  let skirtMode = false, skirtLegDX = null;
+  if (crotchY === null) {
+    const widthAt = b => {
+      const bin = bins[b];
+      if (!bin || bin.n < 8) return null;
+      const all = bin.left.concat(bin.right);
+      return all.length ? median(all) : null;
+    };
+    // Hem = widest lower-body bin; waist = narrowest bin above the hem.
+    let hemB = -1, hemW = -1;
+    for (let b = lo; b <= Math.floor(0.45 * BINS); b++) {
+      const w = widthAt(b);
+      if (w !== null && w > hemW) { hemW = w; hemB = b; }
+    }
+    let waistB = -1, waistW = Infinity;
+    for (let b = (hemB >= 0 ? hemB : lo); b <= hi; b++) {
+      const w = widthAt(b);
+      if (w !== null && w < waistW) { waistW = w; waistB = b; }
+    }
+    // Flare ratio: a real skirt is clearly wider at the hem than the waist.
+    if (hemB >= 0 && waistB > hemB && hemW > 1.35 * waistW && hemW > 0.10 * H) {
+      skirtMode = true;
+      crotchY = groundY + ((waistB) / BINS) * H - 0.02 * H;
+      // Try to read leg X from feet sticking out below the hem (lowest bins).
+      for (let b = 0; b < lo; b++) {
+        const bin = bins[b];
+        if (bin && bin.center === 0 && bin.left.length >= 3 && bin.right.length >= 3) {
+          const l = median(bin.left), r = median(bin.right);
+          const m = (l + r) / 2;
+          if (Number.isFinite(m)) { skirtLegDX = Math.min(Math.max(m, 0.03 * H), 0.12 * H); break; }
+        }
+      }
+      console.log('[autorig] Skirt/robe silhouette detected — estimating legs from waist + hem.');
+    }
+  }
+
   if (crotchY !== null) {
     const hipsY = Math.min(crotchY + 0.05 * H, groundY + 0.62 * H);
     const upLegY = Math.min(crotchY + 0.015 * H, hipsY - 0.02 * H);
@@ -389,17 +475,20 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     // Per-leg X offset measured halfway down the legs
     const midLegBin = bins[Math.max(0, Math.floor(((crotchY - groundY) / H) * BINS * 0.5))];
     let legDX = 0.06 * H;
-    if (midLegBin && midLegBin.left.length >= 3 && midLegBin.right.length >= 3) {
+    if (skirtMode && skirtLegDX !== null) {
+      legDX = skirtLegDX; // measured from feet below the hem
+    } else if (!skirtMode && midLegBin && midLegBin.left.length >= 3 && midLegBin.right.length >= 3) {
       const l = median(midLegBin.left), r = median(midLegBin.right);
       const m = (l + r) / 2;
       if (Number.isFinite(m)) legDX = Math.min(Math.max(m, 0.03 * H), 0.15 * H);
     }
 
     for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
-      joints[side + 'UpLeg'] = [cx + sgn * legDX, upLegY, cz];
-      joints[side + 'Leg'] = [cx + sgn * legDX, kneeY, cz];
-      joints[side + 'Foot'] = [cx + sgn * legDX, ankleY, cz];
-      joints[side + 'ToeBase'] = [cx + sgn * legDX, joints[side + 'ToeBase'][1], cz + 0.10 * H * forwardZ];
+      const sgnAdjusted = sgn * forwardZ;
+      joints[side + 'UpLeg'] = [cx + sgnAdjusted * legDX, upLegY, cz];
+      joints[side + 'Leg'] = [cx + sgnAdjusted * legDX, kneeY, cz];
+      joints[side + 'Foot'] = [cx + sgnAdjusted * legDX, ankleY, cz];
+      joints[side + 'ToeBase'] = [cx + sgnAdjusted * legDX, joints[side + 'ToeBase'][1], cz + 0.10 * H * forwardZ];
     }
     joints.Hips = [cx, hipsY, cz];
   }
@@ -435,9 +524,10 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
       const hy = (handL[1] + handR[1]) / 2;
       const hz = ((handL[2] + handR[2]) / 2 + cz) / 2;
       for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
-        const shoulder = [cx + sgn * 0.4 * tw, shoulderY, cz];
-        const arm = [cx + sgn * tw, shoulderY, cz];
-        const hand = [cx + sgn * hx, hy, hz];
+        const sgnAdjusted = sgn * forwardZ;
+        const shoulder = [cx + sgnAdjusted * 0.4 * tw, shoulderY, cz];
+        const arm = [cx + sgnAdjusted * tw, shoulderY, cz];
+        const hand = [cx + sgnAdjusted * hx, hy, hz];
         const fore = [(arm[0] + hand[0]) / 2, (arm[1] + hand[1]) / 2, (arm[2] + hand[2]) / 2];
         joints[side + 'Shoulder'] = shoulder;
         joints[side + 'Arm'] = arm;
@@ -447,9 +537,39 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     }
   }
 
-  // ── Spine / neck / head anchored to measured hips & shoulders ─────────────
+  // ── Neck = narrowest band between the shoulders and the top ───────────────
+  // Anatomy, not a fixed fraction: the body has a clear width minimum at the
+  // neck (torso/shoulders widen below it, the skull widens above it). This is
+  // what makes big-headed/cartoon and stylised meshes work — the head can be
+  // 25% of the body and the neck is still found at the true pinch, instead of
+  // shoulderY + a constant offset that buries the head and neck.
+  const widthBins = Array.from({ length: BINS }, () => ({ minX: Infinity, maxX: -Infinity, n: 0 }));
+  for (const p of verts) {
+    const b = widthBins[binOf(p)];
+    if (p[0] < b.minX) b.minX = p[0];
+    if (p[0] > b.maxX) b.maxX = p[0];
+    b.n++;
+  }
+  const widthAtBin = b => (widthBins[b]?.n >= 4 ? widthBins[b].maxX - widthBins[b].minX : NaN);
+  // Search band: from just above the shoulders up to near the top.
+  const shoulderFrac = (shoulderY - groundY) / H;
+  const neckLo = Math.min(BINS - 2, Math.max(1, Math.floor((shoulderFrac + 0.02) * BINS)));
+  const neckHi = Math.min(BINS - 1, Math.floor(0.95 * BINS));
+  let neckBin = -1, neckW = Infinity;
+  for (let b = neckLo; b <= neckHi; b++) {
+    const w = widthAtBin(b);
+    if (Number.isFinite(w) && w < neckW) { neckW = w; neckBin = b; }
+  }
+  let neckY;
+  if (neckBin >= 0) {
+    neckY = groundY + ((neckBin + 0.5) / BINS) * H;
+  } else {
+    neckY = Math.min(shoulderY + 0.05 * H, groundY + 0.90 * H); // fallback
+  }
+  // Clamp so the neck can't collapse onto the shoulders or shoot past the top.
+  neckY = Math.min(Math.max(neckY, shoulderY + 0.02 * H), groundY + 0.93 * H);
+
   const hipsY2 = joints.Hips[1];
-  const neckY = Math.min(shoulderY + 0.05 * H, groundY + 0.90 * H);
   const spineZ = f => {
     const b = bins[Math.min(BINS - 1, Math.max(0, Math.floor(((f - groundY) / H) * BINS)))];
     return b && b.n >= 8 ? b.sumZ / b.n : cz; // follow hunched spines
@@ -460,10 +580,33 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   joints.Spine2 = [cx, lerpY(0.82), spineZ(lerpY(0.82))];
   joints.Neck = [cx, neckY, spineZ(neckY)];
 
-  const headPts = verts.filter(p => yf(p) > 0.92);
+  // ── Head = centroid of the skull blob ABOVE the neck ──────────────────────
+  // Everything above the neck pinch is the head; its centroid is the head joint
+  // regardless of skull size. This lifts the head marker to the real head
+  // centre on cartoon proportions instead of pinning it just above the neck.
+  const headPts = verts.filter(p => p[1] > neckY + 0.01 * H);
   const headC = centroidOf(headPts);
-  const headY = Math.min(neckY + 0.045 * H, groundY + 0.95 * H);
+  const headY = headC
+    ? Math.min(Math.max(headC[1], neckY + 0.03 * H), groundY + 0.98 * H)
+    : Math.min(neckY + 0.05 * H, groundY + 0.97 * H);
   joints.Head = [cx, headY, headC ? (headC[2] + cz) / 2 : cz];
+
+  // Shoulders sit just below the neck. If the width-based shoulder estimate
+  // landed well under the neck (common on big-headed meshes where the torso
+  // width search is polluted by the wide skull), lift the arm/shoulder chain to
+  // a sane clavicle height so arms don't droop down the ribcage.
+  const minShoulderY = neckY - 0.10 * H;
+  if (armsDetected && shoulderY < minShoulderY) {
+    const lift = minShoulderY - shoulderY;
+    for (const side of ['Left', 'Right']) {
+      for (const part of ['Shoulder', 'Arm']) {
+        if (joints[side + part]) joints[side + part][1] += lift;
+      }
+      // Raise the forearm/elbow by half the lift so the arm line stays straight.
+      if (joints[side + 'ForeArm']) joints[side + 'ForeArm'][1] += lift * 0.5;
+    }
+    shoulderY = minShoulderY;
+  }
 
   // Re-anchor shoulders to Spine2 height sanity (clavicles sit below the neck)
   for (const side of ['Left', 'Right']) {
@@ -472,7 +615,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 
   // Quality flags: when these fail the mesh is likely NOT in an upright
   // T/A-pose and the caller should try the pose-independent topology pass.
-  return { joints, height: H, bounds, flags: { crotch: crotchY !== null, arms: armsDetected } };
+  return { joints, height: H, bounds, flags: { crotch: crotchY !== null, arms: armsDetected, skirt: skirtMode } };
 }
 
 // ── Pose-independent topology pass (voxel curve-skeleton) ───────────────────
@@ -826,8 +969,18 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
   const H = Math.max(...[0, 1, 2].map(k => bounds.max[k] - bounds.min[k]));
   const norm = (v) => { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
   const up = norm([headTip[0] - crotch[0], headTip[1] - crotch[1], headTip[2] - crotch[2]]);
+  // Forward: start from the detected facing, but if it is (near-)parallel to up
+  // — e.g. a character lying on its back, up≈±Z — pick the world axis LEAST
+  // aligned with up so the cross product never degenerates. Then orthogonalize.
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   let fwd = [0, 0, forwardZ];
-  if (Math.abs(up[0] * fwd[0] + up[1] * fwd[1] + up[2] * fwd[2]) > 0.9) fwd = [0, 0, 1];
+  if (Math.abs(dot(up, fwd)) > 0.9) {
+    const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    fwd = axes.reduce((best, ax) => Math.abs(dot(up, ax)) < Math.abs(dot(up, best)) ? ax : best, axes[0]);
+  }
+  // Gram-Schmidt: remove the up component so fwd ⟂ up, then renormalize.
+  const fdotu = dot(fwd, up);
+  fwd = norm([fwd[0] - fdotu * up[0], fwd[1] - fdotu * up[1], fwd[2] - fdotu * up[2]]);
   const left = norm([up[1] * fwd[2] - up[2] * fwd[1], up[2] * fwd[0] - up[0] * fwd[2], up[0] * fwd[1] - up[1] * fwd[0]]);
   const sideOf = (p, ref) => (p[0] - ref[0]) * left[0] + (p[1] - ref[1]) * left[1] + (p[2] - ref[2]) * left[2];
 
@@ -884,6 +1037,20 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
   if (crotchBelowChest) confidence += 0.1;
   else confidence -= 0.3;
 
+  // Left/Right sanity: the assigned left & right feet (and hands) must sit on
+  // OPPOSITE sides of the body's left axis by a clear margin. If they don't,
+  // the side labeling is unreliable (degenerate left axis / wrong forward) and
+  // the resulting rig would retarget mirrored — drop confidence so the slicing
+  // skeleton or a manual marker pass takes over.
+  const sideMarginH = 0.04 * H;
+  const lrSane = (l, r, ref) => {
+    const sl = sideOf(worldOf(l.tip), ref), sr = sideOf(worldOf(r.tip), ref);
+    return sl - sr > sideMarginH; // L clearly on +left, R on −left
+  };
+  const legsLR = lrSane(legL, legR, crotch);
+  const armsLR = lrSane(armL, armR, chest);
+  if (!legsLR || !armsLR) confidence -= 0.25;
+
   return {
     joints, height: H, bounds, confidence, method: 'topology',
     debug: { extremities: picks.map(worldOf), headTip: worldOf(head.tip) },
@@ -906,6 +1073,14 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
     console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
   }
   if (!topo) return sliced;
+
+  // Skirt/robe: the garment cone fuses both legs into one voxel blob, so the
+  // topology pass mislabels feet/legs. The slicing silhouette analysis is
+  // purpose-built for this case — trust it, never let topology override.
+  if (sliced.flags?.skirt) {
+    console.log('[autorig] Skirt/robe — using upright slicing skeleton (topology unreliable on garments).');
+    return sliced;
+  }
 
   const standardPose = sliced.flags?.crotch && sliced.flags?.arms;
   if (process.env.AUTORIG_DEBUG) console.log(`[autorig] standardPose=${standardPose} (crotch=${sliced.flags?.crotch} arms=${sliced.flags?.arms}) topoConf=${topo.confidence.toFixed(2)}`);
@@ -1331,8 +1506,19 @@ function adjustExistingRig(doc, targetJoints = {}) {
     const vTargetNorm = vec3Normalize(vTarget);
 
     if (vec3Length(vCurrNorm) > 0.001 && vec3Length(vTargetNorm) > 0.001) {
-      const qCorr = quatFromTwoVectors(vCurrNorm, vTargetNorm);
-      applyRotationCorrection(P, qCorr);
+      // quatFromTwoVectors is the minimal-twist (roll-free) rotation between the
+      // two aim directions. The single ill-defined case is a ~180° flip, where
+      // the rotation axis is arbitrary and would inject random roll into the
+      // limb and everything below it. A re-rig marker move almost never inverts
+      // a limb, so treat that as a measurement error and skip the correction
+      // rather than twist the mesh.
+      const aim = vCurrNorm[0] * vTargetNorm[0] + vCurrNorm[1] * vTargetNorm[1] + vCurrNorm[2] * vTargetNorm[2];
+      if (aim > -0.98) {
+        const qCorr = quatFromTwoVectors(vCurrNorm, vTargetNorm);
+        applyRotationCorrection(P, qCorr);
+      } else {
+        console.warn(`[autorig] Skipping near-180° ${parentName}→${childName} alignment (would inject arbitrary roll).`);
+      }
     }
   }
 
@@ -1482,6 +1668,91 @@ function distPointSegment(p, a, b) {
   const dy = p[1] - (a[1] + ab[1] * t);
   const dz = p[2] - (a[2] + ab[2] * t);
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// ── Mesh vertex adjacency (for weight smoothing) ─────────────────────────────
+// Welds vertices by position (split UV/normal seams share one logical vertex so
+// smoothing crosses the seam) and returns, per logical vertex, the set of
+// logical neighbours from the triangle edges. Smoothing weights across this
+// graph removes the hard creases pure proximity weighting leaves at elbows,
+// knees, armpits and the crotch.
+function buildVertexAdjacency(positions, indices, weldEps) {
+  const count = positions.length / 3;
+  // Weld: quantize positions to a grid, map duplicate coords to one repId.
+  const inv = 1 / Math.max(weldEps, 1e-8);
+  const keyToRep = new Map();
+  const repOf = new Int32Array(count);
+  for (let v = 0; v < count; v++) {
+    const kx = Math.round(positions[v * 3] * inv);
+    const ky = Math.round(positions[v * 3 + 1] * inv);
+    const kz = Math.round(positions[v * 3 + 2] * inv);
+    const key = kx + ',' + ky + ',' + kz;
+    let rep = keyToRep.get(key);
+    if (rep === undefined) { rep = v; keyToRep.set(key, v); }
+    repOf[v] = rep;
+  }
+  // Adjacency over representatives (Set per rep, then flatten).
+  const adjSet = new Map();
+  const link = (a, b) => {
+    if (a === b) return;
+    let s = adjSet.get(a);
+    if (!s) { s = new Set(); adjSet.set(a, s); }
+    s.add(b);
+  };
+  const triCount = indices ? indices.length / 3 : count / 3;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = repOf[indices ? indices[t * 3] : t * 3];
+    const i1 = repOf[indices ? indices[t * 3 + 1] : t * 3 + 1];
+    const i2 = repOf[indices ? indices[t * 3 + 2] : t * 3 + 2];
+    link(i0, i1); link(i1, i0);
+    link(i1, i2); link(i2, i1);
+    link(i2, i0); link(i0, i2);
+  }
+  return { repOf, adjSet, count };
+}
+
+// Laplacian-smooth a dense per-vertex weight matrix (count × nBones) over the
+// welded vertex graph. Uniform weights, in place, `iters` passes, `lambda`
+// blend. Operates on representatives; non-representative duplicates copy their
+// rep afterwards so seams stay watertight.
+function smoothWeightField(W, nBones, adjacency, iters, lambda) {
+  const { repOf, adjSet, count } = adjacency;
+  // Collapse onto representatives first (average duplicates into their rep row).
+  const repCount = new Int32Array(count);
+  for (let v = 0; v < count; v++) {
+    const r = repOf[v];
+    if (r === v) continue;
+    repCount[r]++;
+    for (let b = 0; b < nBones; b++) W[r * nBones + b] += W[v * nBones + b];
+  }
+  for (let r = 0; r < count; r++) {
+    if (repCount[r] === 0) continue;
+    const inv = 1 / (repCount[r] + 1);
+    for (let b = 0; b < nBones; b++) W[r * nBones + b] *= inv;
+  }
+  const tmp = new Float32Array(W.length);
+  for (let it = 0; it < iters; it++) {
+    for (const [r, nbrs] of adjSet) {
+      const n = nbrs.size;
+      if (n === 0) continue;
+      const base = r * nBones;
+      for (let b = 0; b < nBones; b++) {
+        let acc = 0;
+        for (const nb of nbrs) acc += W[nb * nBones + b];
+        tmp[base + b] = W[base + b] * (1 - lambda) + (acc / n) * lambda;
+      }
+    }
+    for (const [r] of adjSet) {
+      const base = r * nBones;
+      for (let b = 0; b < nBones; b++) W[base + b] = tmp[base + b];
+    }
+  }
+  // Broadcast representative rows back to their duplicates (watertight seams).
+  for (let v = 0; v < count; v++) {
+    const r = repOf[v];
+    if (r === v) continue;
+    for (let b = 0; b < nBones; b++) W[v * nBones + b] = W[r * nBones + b];
+  }
 }
 
 // ── Main: rig a skinless GLB ─────────────────────────────────────────────────
@@ -1648,10 +1919,47 @@ export async function autoRigGLB(buffer, options = {}) {
   const segList = JOINT_ORDER.map(name => segments[name]);
   const boneSide = JOINT_ORDER.map(name =>
     name.startsWith('Left') ? 1 : name.startsWith('Right') ? -1 : 0);
-  const midX = joints.Hips[0];
-  const sideMargin = 0.02 * H;
+
+  // Anatomical "left" axis (positive side of the body). Upright +Z facing →
+  // left = +X; the Arm markers give it directly and survive any baked mirror.
+  const leftAxisRaw = [
+    joints.LeftArm[0] - joints.RightArm[0],
+    joints.LeftArm[1] - joints.RightArm[1],
+    joints.LeftArm[2] - joints.RightArm[2],
+  ];
+  const leftAxis = vec3Normalize(leftAxisRaw);
+  const leftAxisValid = vec3Length(leftAxisRaw) > 1e-4;
+
+  // Per-height body centerline: the central skeleton chain sampled by Y, so the
+  // side gate follows a leaning/seated torso instead of a fixed vertical plane
+  // at Hips[0]. Y-sorted; feet seed the low end so legs gate correctly.
+  const spineSamples = [
+    [joints.LeftFoot[1], [(joints.LeftFoot[0] + joints.RightFoot[0]) / 2, joints.LeftFoot[1], (joints.LeftFoot[2] + joints.RightFoot[2]) / 2]],
+    [joints.Hips[1], joints.Hips],
+    [joints.Spine[1], joints.Spine],
+    [joints.Spine1[1], joints.Spine1],
+    [joints.Spine2[1], joints.Spine2],
+    [joints.Neck[1], joints.Neck],
+    [joints.Head[1], joints.Head],
+  ].sort((a, b) => a[0] - b[0]);
+  const centerAtY = (y) => {
+    if (y <= spineSamples[0][0]) return spineSamples[0][1];
+    const last = spineSamples[spineSamples.length - 1];
+    if (y >= last[0]) return last[1];
+    for (let i = 1; i < spineSamples.length; i++) {
+      if (y <= spineSamples[i][0]) {
+        const [y0, c0] = spineSamples[i - 1], [y1, c1] = spineSamples[i];
+        const t = (y - y0) / Math.max(y1 - y0, 1e-6);
+        return [c0[0] + (c1[0] - c0[0]) * t, y, c0[2] + (c1[2] - c0[2]) * t];
+      }
+    }
+    return last[1];
+  };
+
+  const sideMargin = 0.02 * H;       // soft blend half-width around the midline
   const eps = (0.01 * H) ** 2;
   const CUTOFF = 2.2;
+  const nB = segList.length;
 
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
@@ -1659,44 +1967,79 @@ export async function autoRigGLB(buffer, options = {}) {
       if (!pos) continue;
       const arr = pos.getArray();
       const count = arr.length / 3;
-      const jointsOut = new Uint8Array(count * 4);
-      const weightsOut = new Float32Array(count * 4);
-      const dists = new Float32Array(segList.length);
+      const indices = prim.getIndices()?.getArray() || null;
+
+      // Dense per-vertex weight field (count × nB), built from proximity with a
+      // SOFT side gate, then Laplacian-smoothed across the mesh graph, then
+      // reduced to the glTF 4-influence limit.
+      const field = new Float32Array(count * nB);
+      const dists = new Float32Array(nB);
 
       for (let v = 0; v < count; v++) {
         const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
-        const dx = p[0] - midX;
+        const ctr = centerAtY(p[1]);
+        // Signed distance from the midline along the anatomical left axis.
+        const sd = leftAxisValid
+          ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
+          : p[0] - ctr[0];
 
-        // Pass 1: distances (side-gated) + nearest
         let dMin = Infinity;
-        for (let b = 0; b < segList.length; b++) {
-          const side = boneSide[b];
-          if ((side === 1 && dx < -sideMargin) || (side === -1 && dx > sideMargin)) {
-            dists[b] = Infinity;
-            continue;
-          }
+        for (let b = 0; b < nB; b++) {
           const d = distPointSegment(p, segList[b][0], segList[b][1]);
           dists[b] = d;
           if (d < dMin) dMin = d;
         }
-
-        // Pass 2: keep top 4 within relative cutoff
         const dMax = dMin * CUTOFF;
-        const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
-        for (let b = 0; b < segList.length; b++) {
+
+        let total = 0;
+        const base = v * nB;
+        for (let b = 0; b < nB; b++) {
           const d = dists[b];
           if (d > dMax) continue;
-          const w = 1 / ((d * d + eps) * (d * d + eps));
+          let w = 1 / ((d * d + eps) * (d * d + eps));
+          // Soft side gate: a Left bone fades out as the vertex crosses to the
+          // right of the midline (and vice-versa) over a 2·sideMargin band, so
+          // inner thighs / cross-body bleed vanish without a hard cut that the
+          // smoothing pass would otherwise have to fight.
+          const side = boneSide[b];
+          if (side !== 0) {
+            const signed = side * sd; // >0 = correct side
+            const g = (signed + sideMargin) / (2 * sideMargin);
+            const gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g); // smoothstep
+            w *= gate;
+          }
+          field[base + b] = w;
+          total += w;
+        }
+        // Fallback: no bone survived the gate (vertex far off to one side) →
+        // assign full weight to the unconditionally nearest bone, gate ignored.
+        if (total <= 0) {
+          let nb = 0, nd = Infinity;
+          for (let b = 0; b < nB; b++) if (dists[b] < nd) { nd = dists[b]; nb = b; }
+          field[base + nb] = 1;
+        }
+      }
+
+      // ── Laplacian weight smoothing (crease-free joints) ────────────────────
+      const weldEps = 1e-4 * H;
+      const adjacency = buildVertexAdjacency(arr, indices, weldEps);
+      smoothWeightField(field, nB, adjacency, 5, 0.6);
+
+      // ── Reduce to top-4 influences + normalize ─────────────────────────────
+      const jointsOut = new Uint8Array(count * 4);
+      const weightsOut = new Float32Array(count * 4);
+      for (let v = 0; v < count; v++) {
+        const base = v * nB;
+        const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
+        for (let b = 0; b < nB; b++) {
+          const w = field[base + b];
+          if (w <= 0) continue;
           for (let k = 0; k < 4; k++) {
-            if (w > best[k][1]) {
-              best.splice(k, 0, [b, w]);
-              best.pop();
-              break;
-            }
+            if (w > best[k][1]) { best.splice(k, 0, [b, w]); best.pop(); break; }
           }
         }
         let total = 0;
-        for (const [, w] of best) total += w;
+        for (const [bi, w] of best) if (bi >= 0) total += w;
         for (let k = 0; k < 4; k++) {
           const [b, w] = best[k];
           jointsOut[v * 4 + k] = b >= 0 ? b : 0;

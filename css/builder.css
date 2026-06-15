@@ -887,49 +887,118 @@ input[type="range"]::-moz-range-thumb {
   background: rgba(255, 255, 255, 0.07);
 }
 
-.autorig-legend {
+/* Left column wraps the joint legend + pose mockup, stacked with no gap */
+.autorig-left-col {
   position: absolute;
   left: 18px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 90px;
+  bottom: 18px;
+  width: 250px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 14px 16px;
-  background: rgba(10, 10, 18, 0.55);
+  gap: 10px;
+  pointer-events: none;
+  min-height: 0;
+}
+
+.autorig-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(10, 10, 18, 0.72);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  pointer-events: none;
+  pointer-events: auto;
+  /* shrink to fit content but never push the mockup off-screen */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.autorig-legend::-webkit-scrollbar {
+  width: 4px;
+}
+
+.autorig-legend::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.autorig-legend::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 99px;
 }
 
 .autorig-legend-title {
   font-size: 0.62rem;
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   color: var(--text-secondary);
   text-transform: uppercase;
   margin-bottom: 2px;
 }
 
-.autorig-legend-row {
+.autorig-legend-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.autorig-legend-group-header {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
+}
+
+.autorig-legend-group-label {
   font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.03em;
+}
+
+.autorig-legend-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 17px;
+}
+
+.autorig-joint-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 3px 8px;
   color: var(--text-secondary);
-  text-transform: uppercase;
+  font-family: var(--font);
+  font-size: 0.66rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-std);
+}
+
+.autorig-joint-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: var(--border-hover) !important;
+}
+
+.autorig-joint-btn.active {
+  background: var(--accent-dim);
+  color: #fff;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 8px var(--accent-glow);
 }
 
 .autorig-legend-dot {
-  width: 13px;
-  height: 13px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
   box-shadow: 0 0 8px currentColor;
   flex-shrink: 0;
 }
@@ -960,6 +1029,130 @@ input[type="range"]::-moz-range-thumb {
   border: 5px solid transparent;
   border-right-color: rgba(255, 255, 255, 0.18);
   border-left: none;
+}
+
+/* ── Pose reference mockup ─────────────────────────────────────────── */
+.autorig-mockup {
+  width: 100%;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 10, 18, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  pointer-events: auto;
+  overflow: hidden;
+  transition: width 0.35s var(--ease-expo);
+}
+
+.autorig-mockup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+}
+
+.autorig-mockup-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.autorig-mockup-icon {
+  font-size: 0.9rem;
+}
+
+.autorig-mockup-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.autorig-mockup-toggle:hover {
+  background: rgba(250, 204, 21, 0.12);
+  border-color: rgba(250, 204, 21, 0.35);
+  color: #fbbf24;
+}
+
+.autorig-mockup-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.autorig-mockup-toggle .ico-eye-off {
+  display: none;
+}
+
+.autorig-mockup-body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.autorig-mockup-img {
+  width: 100%;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+  display: block;
+}
+
+.autorig-mockup-hint {
+  margin: 0;
+  font-size: 0.66rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Collapsed: shrink to a compact pill showing only the toggle */
+.autorig-mockup.collapsed {
+  width: 48px;
+}
+
+.autorig-mockup.collapsed .autorig-mockup-title,
+.autorig-mockup.collapsed .autorig-mockup-body {
+  display: none;
+}
+
+.autorig-mockup.collapsed .autorig-mockup-head {
+  padding: 10px;
+  justify-content: center;
+}
+
+.autorig-mockup.collapsed .autorig-mockup-toggle .ico-eye {
+  display: none;
+}
+
+.autorig-mockup.collapsed .autorig-mockup-toggle .ico-eye-off {
+  display: block;
 }
 
 .autorig-pose-bar,

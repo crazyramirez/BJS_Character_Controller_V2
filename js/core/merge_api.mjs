@@ -1614,6 +1614,22 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         node.dispose();
       }
     }
+
+    // Update Inverse Bind Matrices of all skins to reflect the new Y-up world space hierarchy
+    const newParentMap = buildParentMap(charDoc);
+    const newCache = new Map();
+    for (const skin of charDoc.getRoot().listSkins()) {
+      const joints = skin.listJoints();
+      const ibmAcc = skin.getInverseBindMatrices();
+      if (!joints.length || !ibmAcc) continue;
+      const ibmData = new Float32Array(joints.length * 16);
+      joints.forEach((joint, i) => {
+        const W_new = worldMatrixOf(joint, newParentMap, newCache);
+        const IBM_new = invertRigidMat4(W_new);
+        ibmData.set(IBM_new, i * 16);
+      });
+      ibmAcc.setArray(ibmData);
+    }
   }
 
   // If no animation buffer is provided, serialize and return the cleaned character directly
@@ -2025,7 +2041,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                   const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
                   const delta = qMul(rAnimInv, qKey);
                   const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
-                  const final = qMul(rChar, rotated);
+                  let final = qMul(rChar, rotated);
 
                   // Manual per-bone overrides (raw-name keyed, local euler — legacy)
                   if (cfg.POSE_OFFSETS[tgtName]) {

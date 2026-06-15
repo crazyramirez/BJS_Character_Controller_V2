@@ -308,6 +308,16 @@
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
                   </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="After you drag a marker in the 2D view its depth (the axis you can't see) is auto-fitted to the middle of the body. Place markers flat on screen — depth solves itself.">
+                    <input type="checkbox" id="autorig-depth-snap" checked> Auto-depth (solve the hidden axis from the
+                    mesh)
+                  </label>
+                  <button id="btn-autorig-snap-body" class="btn-action btn-secondary"
+                    style="margin-top: 6px; width: 100%;"
+                    title="Re-center every marker to the middle of the body along the current view depth.">
+                    🧲 Snap all markers to body
+                  </button>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
                   </label>
@@ -809,7 +819,7 @@
         <div class="autorig-mode-badge">
           <span class="autorig-badge-icon">💀</span>
           <span>AUTO-RIG MODE</span>
-          <span class="autorig-badge-sub">drag markers onto joints · right-drag pans camera</span>
+          <span class="autorig-badge-sub">drag markers onto joints</span>
         </div>
         <div class="autorig-view-bar">
           <button class="autorig-view-btn active" data-view="front" title="Front view (1)">
@@ -866,8 +876,38 @@
           <button id="btn-autorig-apply-vp" class="autorig-vp-apply">✓ Apply Rig</button>
           <button id="btn-autorig-cancel-vp" class="autorig-vp-cancel">✕ Cancel</button>
         </div>
-        <!-- Marker color legend (populated from AUTORIG_JOINT_GROUPS) -->
-        <div id="autorig-legend" class="autorig-legend"></div>
+        <!-- Left column: joint legend + pose mockup stacked with no gap -->
+        <div class="autorig-left-col">
+          <!-- Marker color legend (populated from AUTORIG_JOINT_GROUPS) -->
+          <div id="autorig-legend" class="autorig-legend"></div>
+
+          <!-- Pose reference mockup: schematic of where each joint marker belongs -->
+          <div id="autorig-mockup" class="autorig-mockup">
+            <div class="autorig-mockup-head">
+              <span class="autorig-mockup-title">
+                <span class="autorig-mockup-icon">🧍</span>
+                Pose Reference
+              </span>
+              <button id="btn-autorig-mockup-toggle" class="autorig-mockup-toggle" title="Hide pose reference"
+                aria-label="Toggle pose reference">
+                <svg class="ico-eye" viewBox="0 0 24 24">
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <svg class="ico-eye-off" viewBox="0 0 24 24">
+                  <path
+                    d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <path d="M1 1l22 22" />
+                </svg>
+              </button>
+            </div>
+            <div class="autorig-mockup-body">
+              <img src="assets/pose.webp" alt="Character pose reference — joint marker positions"
+                class="autorig-mockup-img" draggable="false" />
+              <p class="autorig-mockup-hint">Drag each colored marker onto the matching joint.</p>
+            </div>
+          </div>
+        </div>
         <!-- Floating joint name tooltip (follows hovered/selected marker) -->
         <div id="autorig-joint-tip" class="autorig-joint-tip" style="display:none;"></div>
       </div>

@@ -272,6 +272,42 @@ function applyLiveTransformations() {
     ctrl._capScaleY = sy;
     ctrl._capScaleW = widthScale;
 
+    // Adapt camera settings dynamically to character scale
+    if (ctrl._baseCamFollowDist === undefined) {
+      ctrl._baseCamFollowDist = ctrl.CAM_FOLLOW_DIST / (ctrl._lastAppliedScaleY || 1.0);
+    }
+    ctrl.CAM_FOLLOW_DIST = ctrl._baseCamFollowDist * sy;
+    if (window.physicsConfig) {
+      window.physicsConfig.CAM_FOLLOW_DIST = ctrl.CAM_FOLLOW_DIST;
+    }
+
+    if (camera) {
+      camera.lowerRadiusLimit = 2 * sy;
+      camera.upperRadiusLimit = 20 * sy;
+      camera.radius = Math.max(camera.lowerRadiusLimit, Math.min(camera.upperRadiusLimit, ctrl.CAM_FOLLOW_DIST));
+
+      camera.wheelPrecision = 55 / sy;
+      camera.pinchPrecision = 55 / sy;
+      camera.panningSensibility = 1000 / sy;
+      camera.angularSensibilityX = (ctrl._originalSensibilityX || 1000) / sy;
+      camera.angularSensibilityY = (camera.angularSensibilityY || 1000) / sy;
+    }
+
+    // Sync camera distance HUD slider limits and value
+    const distSlider = document.getElementById('slider-cam-dist');
+    const distVal = document.getElementById('slider-cam-dist-val');
+    if (distSlider) {
+      distSlider.min = 2 * sy;
+      distSlider.max = 15 * sy;
+      distSlider.step = 0.1 * sy;
+      distSlider.value = ctrl.CAM_FOLLOW_DIST;
+    }
+    if (distVal) {
+      distVal.textContent = ctrl.CAM_FOLLOW_DIST.toFixed(1) + 'm';
+    }
+
+    ctrl._lastAppliedScaleY = sy;
+
     // Update Havok physics shapes dynamically if enabled
     if (ctrl.usePhysics && ctrl.physicsBody) {
       if (ctrl._standShape) ctrl._standShape.dispose();
@@ -1180,6 +1216,7 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   if (!preloadedBuffer) {
     resetCharacterTransform();
     animationsGlbBuffer = null;
+    lastAppliedRig = null; // genuine new import → drop any remembered rig
   }
   const readStep = document.getElementById('step-read');
   if (readStep && !readStep.classList.contains('completed')) {
@@ -1596,14 +1633,14 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   // Dispose existing character
   if (activeCharacter) {
-    if (activeCharacter.charCtrl._updateObserver) {
-      scene.onBeforeRenderObservable.remove(activeCharacter.charCtrl._updateObserver);
-    }
-    if (activeCharacter.charCtrl._cameraLockObserver) {
-      scene.onBeforeCameraRenderObservable.remove(activeCharacter.charCtrl._cameraLockObserver);
+    if (activeCharacter.charCtrl) {
+      activeCharacter.charCtrl.destroy();
     }
     if (activeCharacter.boneOffsetObserver) {
       scene.onAfterAnimationsObservable.remove(activeCharacter.boneOffsetObserver);
+    }
+    if (activeCharacter.cameraFollowObserver) {
+      scene.unregisterBeforeRender(activeCharacter.cameraFollowObserver);
     }
     activeCharacter.playerCapsule.dispose();
     activeCharacter.animCtrl.destroy();
@@ -1863,11 +1900,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   // Camera follow
   let hasMadeInitialWalk = false;
-  scene.registerBeforeRender(() => {
+  const cameraFollowObserver = () => {
     if (!activeCharacter) return;
     if (autoRigState) return; // rig mode: user pans freely (right-drag), don't recenter
     const deflection = activeCharacter.charCtrl.visualLocalY - activeCharacter.charCtrl.targetLocalY;
-    const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, 0.4 + deflection, 0));
+    const currentScaleY = activeCharacter.playerCapsule.scaling.y;
+    const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, (0.4 + deflection) * currentScaleY, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.1);
 
     if (activeCharacter.charCtrl.grounded && !hasMadeInitialWalk) {
@@ -1881,7 +1919,9 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         }
       }, 150);
     }
-  });
+  };
+  scene.registerBeforeRender(cameraFollowObserver);
+  activeCharacter.cameraFollowObserver = cameraFollowObserver;
 
   charCtrl.callbacks.onStateChange = (state) => {
     const el = document.getElementById('hud-state');
@@ -2163,6 +2203,13 @@ function renderSkeletonSectionFromBJS() {
 // AUTO-RIG (skeleton generation for skinless meshes)
 // ═══════════════════════════════════════════════════════════
 let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
+// Exact joint world coords the user last applied (server render-world space).
+// Re-entering Auto-Rig restores THESE verbatim instead of re-guessing from the
+// post-merge bind pose — the default-animation merge after Apply nudges the
+// bind (T-pose adjust, arm-droop), which otherwise made carefully-placed
+// markers jump on re-entry. Keyed nowhere: it's the whole joint map + a token
+// identifying which character buffer it belongs to.
+let lastAppliedRig = null; // { joints: {name:[x,y,z]}, forBuffer: ArrayBuffer }
 
 // Marker color groups (Mixamo-style legend: each anatomical group gets a color)
 const AUTORIG_JOINT_GROUPS = [
@@ -2190,15 +2237,49 @@ function autoRigGroupOf(jointName) {
   return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
 }
 
-function renderAutoRigLegend() {
+function renderAutoRigLegend(markers, gizmoManager) {
   const el = document.getElementById('autorig-legend');
   if (!el) return;
-  el.innerHTML = `<div class="autorig-legend-title">Joint markers</div>` +
-    AUTORIG_JOINT_GROUPS.map(g =>
-      `<div class="autorig-legend-row">
-        <span class="autorig-legend-dot" style="background:${g.color};color:${g.color};"></span>
-        <span>${g.label}</span>
-      </div>`).join('');
+
+  const activeMarkers = markers || autoRigState?.markers;
+  const activeGizmo = gizmoManager || autoRigState?.gizmoManager;
+  if (!activeMarkers) return;
+
+  const attachedJoint = activeGizmo?.attachedMesh?.metadata?.autorigJoint;
+
+  el.innerHTML = `<div class="autorig-legend-title" style="margin-bottom: 8px;">Joint Markers<br>(Ctrl+Click Mesh to Place)</div>` +
+    AUTORIG_JOINT_GROUPS.map(g => {
+      const jointButtons = g.joints.map(j => {
+        const activeClass = (j === attachedJoint) ? 'active' : '';
+        const label = AUTORIG_JOINT_LABELS[j] || j;
+        return `<button class="autorig-joint-btn ${activeClass}" data-joint="${j}" style="border-color:${g.color};">
+          ${label}
+        </button>`;
+      }).join('');
+
+      return `
+        <div class="autorig-legend-group">
+          <div class="autorig-legend-group-header">
+            <span class="autorig-legend-dot" style="background:${g.color};color:${g.color};"></span>
+            <span class="autorig-legend-group-label">${g.label}</span>
+          </div>
+          <div class="autorig-legend-buttons">
+            ${jointButtons}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+  el.querySelectorAll('.autorig-joint-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const jointName = btn.dataset.joint;
+      const m = activeMarkers.get(jointName);
+      if (m && activeGizmo) {
+        activeGizmo.attachToMesh(m);
+        renderAutoRigLegend(activeMarkers, activeGizmo);
+      }
+    });
+  });
 }
 
 function showAutoRigControls(show, hasExistingSkin = false) {
@@ -2208,8 +2289,8 @@ function showAutoRigControls(show, hasExistingSkin = false) {
   const startBtn = document.getElementById('btn-autorig-start');
   if (startBtn) {
     startBtn.textContent = hasExistingSkin
-      ? '💀 Re-Rig / Adjust Skeleton'
-      : '💀 Generate Skeleton (Auto-Rig)';
+      ? '💀 Re-Rig / Adjust Skeleton (BETA)'
+      : '💀 Generate Skeleton (Auto-Rig - BETA)';
   }
   if (!show) cancelAutoRigAdjust();
 }
@@ -2218,6 +2299,7 @@ function setupAutoRigControls() {
   document.getElementById('btn-autorig-start')?.addEventListener('click', startAutoRigAdjust);
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
+  document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
   document.getElementById('btn-autorig-apply-vp')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel-vp')?.addEventListener('click', cancelAutoRigAdjust);
   document.querySelectorAll('.autorig-view-btn').forEach(btn => {
@@ -2225,10 +2307,18 @@ function setupAutoRigControls() {
   });
   document.getElementById('btn-autorig-rot-left')?.addEventListener('click', () => rotateRigCharacter(-Math.PI / 4));
   document.getElementById('btn-autorig-rot-right')?.addEventListener('click', () => rotateRigCharacter(Math.PI / 4));
+  document.getElementById('btn-autorig-mockup-toggle')?.addEventListener('click', () => {
+    const m = document.getElementById('autorig-mockup');
+    if (!m) return;
+    const collapsed = m.classList.toggle('collapsed');
+    localStorage.setItem('builder_autorig_mockup_collapsed', collapsed ? '1' : '0');
+    const btn = document.getElementById('btn-autorig-mockup-toggle');
+    if (btn) btn.title = collapsed ? 'Show pose reference' : 'Hide pose reference';
+  });
   document.querySelectorAll('.autorig-pose-btn').forEach(btn => {
     btn.addEventListener('click', () => forceAutoRigPose(btn.dataset.pose));
   });
-  // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, R/T/A poses, while in rig mode
+  // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, R/T/A poses, F focus toggle, while in rig mode
   window.addEventListener('keydown', (e) => {
     if (!autoRigState) return;
     const activeEl = document.activeElement;
@@ -2286,6 +2376,11 @@ function enterRigViewportMode() {
   const prevHudDisplay = hud ? hud.style.display : null;
   if (hud) hud.style.display = 'none';
 
+  // Hide playground controls tooltip — irrelevant while rigging
+  const ctrlTip = document.querySelector('.keyboard-controls-tooltip');
+  const prevCtrlTipDisplay = ctrlTip ? ctrlTip.style.display : null;
+  if (ctrlTip) ctrlTip.style.display = 'none';
+
   const ui = document.getElementById('autorig-viewport-ui');
   if (ui) ui.style.display = 'flex';
 
@@ -2303,11 +2398,21 @@ function enterRigViewportMode() {
   // undone exactly — controller facing must survive the rig session.
   const charRoot = activeCharacter.charRoot;
   autoRigState.viewportMode = {
-    hiddenMeshes, prevClearColor, hud, prevHudDisplay, pointerObserver,
+    hiddenMeshes, prevClearColor, hud, prevHudDisplay, ctrlTip, prevCtrlTipDisplay, pointerObserver,
     prevPanningSensibility, prevTarget: camera.target.clone(),
     prevCharQuat: charRoot?.rotationQuaternion ? charRoot.rotationQuaternion.clone() : null,
     prevCharEuler: charRoot ? charRoot.rotation.clone() : new BABYLON.Vector3(0, 0, 0),
   };
+
+  // Restore persisted pose-reference mockup visibility
+  const mockup = document.getElementById('autorig-mockup');
+  if (mockup) {
+    const collapsed = localStorage.getItem('builder_autorig_mockup_collapsed') === '1';
+    mockup.classList.toggle('collapsed', collapsed);
+    const mbtn = document.getElementById('btn-autorig-mockup-toggle');
+    if (mbtn) mbtn.title = collapsed ? 'Show pose reference' : 'Hide pose reference';
+  }
+
   setRigView('front');
 }
 
@@ -2330,6 +2435,7 @@ function exitRigViewportMode(state) {
   if (vm.prevTarget) camera.target.copyFrom(vm.prevTarget); // undo any panning offset
   scene.clearColor = vm.prevClearColor;
   if (vm.hud) vm.hud.style.display = vm.prevHudDisplay || '';
+  if (vm.ctrlTip) vm.ctrlTip.style.display = vm.prevCtrlTipDisplay || '';
   const ui = document.getElementById('autorig-viewport-ui');
   if (ui) ui.style.display = 'none';
 }
@@ -2357,6 +2463,7 @@ function setRigView(view) {
   // Shortest rotation path — avoid full spins
   alpha += Math.round((camera.alpha - alpha) / (2 * Math.PI)) * 2 * Math.PI;
 
+  if (autoRigState) autoRigState.currentRigView = view;
   document.querySelectorAll('.autorig-view-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.view === view));
 
@@ -2924,6 +3031,16 @@ async function startAutoRigAdjust() {
   }
   hideLoading();
 
+  // Restore the user's last applied joints verbatim (P2). The server re-guesses
+  // from the post-merge bind, which drifts from what the user placed; if we have
+  // an exact memory for this character, use it and skip the bone-snap re-fit so
+  // markers land precisely where they were applied.
+  if (lastAppliedRig?.joints) {
+    guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
+    guess.restored = true;
+    showToast('Restored your last joint positions.');
+  }
+
   cancelAutoRigAdjust();
 
   // Freeze character in bind pose (T-pose) so markers line up with the mesh:
@@ -2995,6 +3112,9 @@ async function startAutoRigAdjust() {
   markerParent.computeWorldMatrix(true);
   const mpWorld = markerParent.getWorldMatrix();
   const mpWorldInv = mpWorld.clone().invert();
+  // Server joint coordinates are in glTF's character root local space.
+  // Transform them to markerParent's local space.
+  const toMarkerLocal = mpWorldInv.multiply(activeCharacter.charRoot.getWorldMatrix());
   // Marker size must be constant on-screen; markerParent may scale its children
   // (Sketchfab 0.3), so divide that scale out of the local sphere diameter.
   const mpScaleV = new BABYLON.Vector3();
@@ -3030,14 +3150,13 @@ async function startAutoRigAdjust() {
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
     m.parent = markerParent;
-    // world coord → markerParent-local
+    // glTF charRoot-local coord → markerParent-local
     const local = BABYLON.Vector3.TransformCoordinates(
-      new BABYLON.Vector3(pos[0], pos[1], pos[2]), mpWorldInv);
+      new BABYLON.Vector3(pos[0], pos[1], pos[2]), toMarkerLocal);
     m.position.copyFrom(local);
     m.metadata = { autorigJoint: name };
     markers.set(name, m);
   });
-  renderAutoRigLegend();
 
   // ── Marker ↔ bone follow (re-rig with live posture sliders) ───────────────
   // The posture-offset observer keeps deforming the skeleton while rig mode is
@@ -3094,10 +3213,16 @@ async function startAutoRigAdjust() {
       const node = nodeByNorm.get(boneRoleNorm(name));
       if (!node) return;
       node.computeWorldMatrix(true);
-      const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
-      m.position.copyFrom(local);
+      // Restored session (P2): the markers already hold the user's exact applied
+      // coords — do NOT snap them to the (drifted) merged bones. Still record the
+      // local↔server pair from the marker's current spot so the Apply affine
+      // round-trips correctly.
+      if (!guess.restored) {
+        const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
+        m.position.copyFrom(local);
+      }
       const sv = guess.joints[name];
-      if (sv) fitPairs.push({ local, server: sv });
+      if (sv) fitPairs.push({ local: m.position.clone(), server: sv });
     });
     // Markers are now displayed in Babylon scene space (snapped to bones), but
     // the server rigs in its own RENDER-WORLD space (guessJoints / autorig). On
@@ -3177,6 +3302,71 @@ async function startAutoRigAdjust() {
   };
   setGizmoMode('translate');
 
+  // Re-render legend when selection changes
+  gizmoManager.onAttachedToMeshObservable.add(() => {
+    renderAutoRigLegend(markers, gizmoManager);
+  });
+
+  // Tap-to-place selected marker on the model mesh with Ctrl+Click or Right-Click
+  const clickObserver = scene.onPointerObservable.add((pi) => {
+    if (pi.type !== BABYLON.PointerEventTypes.POINTERTAP) return;
+
+    const isRightClick = pi.event.button === 2;
+    const isCtrlClick = pi.event.ctrlKey || pi.event.metaKey;
+    if (!isCtrlClick && !isRightClick) {
+      // Deselect when clicking outside the markers
+      if (pi.event.button === 0) {
+        const pickInfo = pi.pickInfo;
+        const isMarker = pickInfo && pickInfo.hit && pickInfo.pickedMesh && pickInfo.pickedMesh.metadata?.autorigJoint;
+        const utilityScene = gizmoManager.utilityLayer?.utilityLayerScene;
+        const hitGizmo = utilityScene && utilityScene.pick(scene.pointerX, scene.pointerY)?.hit;
+
+        if (!isMarker && !hitGizmo) {
+          gizmoManager.attachToMesh(null);
+        }
+      }
+      return;
+    }
+
+    const activeMarker = gizmoManager.attachedMesh;
+    if (!activeMarker || !activeMarker.metadata?.autorigJoint) return;
+
+    const pickInfo = scene.pick(scene.pointerX, scene.pointerY, (mesh) => {
+      return activeCharacter && activeCharacter.rawMeshes && activeCharacter.rawMeshes.includes(mesh);
+    });
+
+    if (pickInfo && pickInfo.hit && pickInfo.pickedPoint) {
+      if (isRightClick) {
+        pi.event.preventDefault();
+      }
+
+      const localPos = BABYLON.Vector3.TransformCoordinates(pickInfo.pickedPoint, mpWorldInv);
+      activeMarker.position.copyFrom(localPos);
+
+      const snap = document.getElementById('autorig-depth-snap');
+      if ((!snap || snap.checked) && !document.getElementById('autorig-pose-profiling')?.checked) {
+        snapMarkerToMeshDepth(activeMarker);
+      }
+
+      updateCanonicalFromMarker(activeMarker);
+
+      if (document.getElementById('autorig-symmetry')?.checked) {
+        const twinName = mirrorJointName(activeMarker.metadata.autorigJoint);
+        const twin = twinName ? markers.get(twinName) : null;
+        if (twin) {
+          twin.position.set(-activeMarker.position.x, activeMarker.position.y, activeMarker.position.z);
+          if ((!snap || snap.checked) && !document.getElementById('autorig-pose-profiling')?.checked) {
+            snapMarkerToMeshDepth(twin);
+          }
+          updateCanonicalFromMarker(twin);
+        }
+      }
+    }
+  });
+
+  // Call legend render immediately now that gizmoManager is set up
+  renderAutoRigLegend(markers, gizmoManager);
+
   let isDraggingMarker = false;
 
   // Mirror drag onto the contralateral marker when symmetry is on
@@ -3185,7 +3375,25 @@ async function startAutoRigAdjust() {
     [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
       if (g && g.dragBehavior) {
         g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
-        g.dragBehavior.onDragEndObservable.add(() => { isDraggingMarker = false; });
+        g.dragBehavior.onDragEndObservable.add(() => {
+          isDraggingMarker = false;
+          // Auto-solve depth after a screen-plane drag so the user never has to
+          // fight the third axis (toggle: #autorig-depth-snap, default on).
+          const snap = document.getElementById('autorig-depth-snap');
+          const attached = gizmoManager.attachedMesh;
+          if ((!snap || snap.checked) && attached?.metadata?.autorigJoint &&
+            !document.getElementById('autorig-pose-profiling')?.checked) {
+            snapMarkerToMeshDepth(attached);
+            updateCanonicalFromMarker(attached);
+            if (document.getElementById('autorig-symmetry')?.checked) {
+              const twin = markers.get(mirrorJointName(attached.metadata.autorigJoint) || '');
+              if (twin) {
+                twin.position.set(-attached.position.x, attached.position.y, attached.position.z);
+                updateCanonicalFromMarker(twin);
+              }
+            }
+          }
+        });
       }
     });
     const syncMirror = () => {
@@ -3317,7 +3525,7 @@ async function startAutoRigAdjust() {
 
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
-    groupMats, hoverObserver, hideTip, canonical, followObserver,
+    groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
     setGizmoMode,
     // Server's original joint guess (its own render-world space) per name — the
@@ -3330,6 +3538,12 @@ async function startAutoRigAdjust() {
     rigPoseBase: new Map(), // node.uniqueId → posed local quaternion (Force-Pose)
   };
   enterRigViewportMode();
+  // First-time skinless guess: auto-solve marker depth against the mesh so the
+  // initial layout already sits inside the body (P1). Restored sessions and
+  // existing-skin re-rigs already hold exact positions — leave them.
+  if (!guess.restored && !scene.skeletons?.length) {
+    requestAnimationFrame(() => snapAllMarkersToBody());
+  }
   // Default selection reflects the analyzed layout
   setActivePoseButton('rest');
 
@@ -3351,6 +3565,7 @@ function cancelAutoRigAdjust() {
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
     if (autoRigState.hoverObserver) scene.onPointerObservable.remove(autoRigState.hoverObserver);
+    if (autoRigState.clickObserver) scene.onPointerObservable.remove(autoRigState.clickObserver);
     if (autoRigState.followObserver) scene.onAfterAnimationsObservable.remove(autoRigState.followObserver);
     autoRigState.hideTip?.();
     autoRigState.gizmoManager?.dispose();
@@ -3393,6 +3608,88 @@ function cancelAutoRigAdjust() {
   const adjustPanel = document.getElementById('autorig-adjust');
   if (startBtn) startBtn.style.display = '';
   if (adjustPanel) adjustPanel.style.display = 'none';
+}
+
+// ── Depth snap: solve the view-perpendicular axis from the mesh ──────────────
+// The single hardest part of 3D marker placement is the depth axis: in a front
+// view the user sets X/Y by eye but Z is invisible, so markers float in front
+// of or behind the body. This raycasts along the camera's forward direction
+// through each marker and re-centers it to the MIDDLE of the mesh it passes
+// through — so the user only ever places markers in the 2D screen plane and the
+// body depth is solved automatically. Limb markers (hands/feet/toes) are left
+// alone: they sit at the mesh tip, not its mid-thickness.
+const DEPTH_SNAP_SKIP = new Set(['LeftHand', 'RightHand', 'LeftToeBase', 'RightToeBase']);
+function snapMarkerToMeshDepth(marker) {
+  if (!activeCharacter?.rawMeshes?.length || !marker) return false;
+  const name = marker.metadata?.autorigJoint;
+  if (name && DEPTH_SNAP_SKIP.has(name)) return false;
+
+  marker.computeWorldMatrix(true);
+  const origin = marker.getAbsolutePosition();
+  // Camera forward (view-perpendicular): from camera position to its target.
+  // Force camera view matrix update so coordinates are current
+  camera.getViewMatrix(true);
+  const fwd = camera.getTarget().subtract(camera.position);
+  if (fwd.lengthSquared() < 1e-8) return false;
+  fwd.normalize();
+
+  // The character meshes are set isPickable=false at load (so the gizmo never
+  // grabs them), which makes scene.pick / multiPickWithRay skip them entirely —
+  // that is why the snap reported "no mesh hit". Ray.intersectsMesh is a direct
+  // geometric test and ignores the isPickable flag, so use it on each mesh.
+  // We only require that the mesh has geometry (subMeshes might not be initialized yet).
+  const meshes = activeCharacter.rawMeshes.filter(m => m.geometry);
+  const reach = (autoRigState?.sceneHeight || 1.8) * 1.2;
+
+  // Cast from well in front (gets the entry surface) and from well behind (gets
+  // the exit surface). Per mesh, intersectsMesh returns the nearest hit along
+  // the ray; combining both directions brackets the body so mid = its center.
+  let near = Infinity, far = -Infinity, hitAny = false;
+  for (const dir of [fwd, fwd.scale(-1)]) {
+    const start = origin.subtract(dir.scale(reach));
+    const ray = new BABYLON.Ray(start, dir, reach * 2);
+    for (const m of meshes) {
+      m.computeWorldMatrix(true);
+      const info = ray.intersectsMesh(m, false);
+      if (!info?.hit) continue;
+      // Hit point = start + dir·distance; project onto fwd from the origin.
+      const hit = start.add(dir.scale(info.distance));
+      const along = hit.subtract(origin).dot(fwd);
+      if (along < near) near = along;
+      if (along > far) far = along;
+      hitAny = true;
+    }
+  }
+  if (!hitAny || !Number.isFinite(near) || far < near) {
+    if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: NO HIT (meshes=${meshes.length}, fwd=${fwd.x.toFixed(2)},${fwd.y.toFixed(2)},${fwd.z.toFixed(2)}, reach=${reach.toFixed(2)})`);
+    return false;
+  }
+  const mid = (near + far) / 2;
+  if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: hit near=${near.toFixed(3)} far=${far.toFixed(3)} mid=${mid.toFixed(3)}`);
+  marker.position.addInPlace(
+    BABYLON.Vector3.TransformNormal(fwd.scale(mid), markerParentInvRot(marker)));
+  return true;
+}
+// Marker depth is moved in WORLD fwd but stored LOCAL — rotate the world delta
+// into the marker's parent space.
+function markerParentInvRot(marker) {
+  const parent = marker.parent;
+  if (!parent) return BABYLON.Matrix.Identity();
+  const inv = parent.getWorldMatrix().clone().invert();
+  // strip translation: we only rotate a direction
+  inv.setRow(3, new BABYLON.Vector4(0, 0, 0, 1));
+  return inv;
+}
+
+// Snap every (eligible) marker to the body mid-depth in one click.
+function snapAllMarkersToBody() {
+  if (!autoRigState) return;
+  let n = 0;
+  autoRigState.markers.forEach((m) => { if (snapMarkerToMeshDepth(m)) n++; });
+  autoRigState.markers.forEach((m, name) => {
+    autoRigState.canonical?.set(name, m.position.clone());
+  });
+  showToast(n > 0 ? `Snapped ${n} markers to body depth.` : 'No depth snap (no mesh hit).');
 }
 
 async function applyAutoRig() {
@@ -3441,6 +3738,11 @@ async function applyAutoRig() {
   });
 
   const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  // Remember exactly what the user applied so re-entering Auto-Rig restores
+  // these positions verbatim (the post-Apply animation merge nudges the bind
+  // pose, so re-guessing from the merged bones would move the markers). Tied to
+  // the base buffer it was rigged from.
+  lastAppliedRig = { joints: JSON.parse(JSON.stringify(joints)), forBuffer: baseBuffer };
   cancelAutoRigAdjust();
 
   showLoading('Generating skeleton & skin weights…');
@@ -3505,14 +3807,14 @@ function clearCharacter() {
   if (ctrl) ctrl.style.display = 'none';
 
   if (activeCharacter) {
-    if (activeCharacter.charCtrl._updateObserver) {
-      scene.onBeforeRenderObservable.remove(activeCharacter.charCtrl._updateObserver);
-    }
-    if (activeCharacter.charCtrl._cameraLockObserver) {
-      scene.onBeforeCameraRenderObservable.remove(activeCharacter.charCtrl._cameraLockObserver);
+    if (activeCharacter.charCtrl) {
+      activeCharacter.charCtrl.destroy();
     }
     if (activeCharacter.boneOffsetObserver) {
       scene.onAfterAnimationsObservable.remove(activeCharacter.boneOffsetObserver);
+    }
+    if (activeCharacter.cameraFollowObserver) {
+      scene.unregisterBeforeRender(activeCharacter.cameraFollowObserver);
     }
     activeCharacter.playerCapsule.dispose();
     activeCharacter.animCtrl.destroy();
@@ -4134,7 +4436,13 @@ function setupSidebarControls() {
       if (valSpan) {
         valSpan.textContent = (isFloat ? val.toFixed(configKey === 'CAM_FOLLOW_DIST' || configKey === 'SPEED_MULTIPLIER' ? 1 : 2) : val) + suffix;
       }
-      if (activeCharacter && activeCharacter.charCtrl) activeCharacter.charCtrl[configKey] = val;
+      if (activeCharacter && activeCharacter.charCtrl) {
+        activeCharacter.charCtrl[configKey] = val;
+        if (configKey === 'CAM_FOLLOW_DIST') {
+          const sy = charTransformConfig.SCALE_Y || 1.0;
+          activeCharacter.charCtrl._baseCamFollowDist = val / sy;
+        }
+      }
       updateExportCode();
     });
   };
