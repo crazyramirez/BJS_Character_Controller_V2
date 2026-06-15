@@ -1644,7 +1644,7 @@ class CharCtrl {
       ));
     }
 
-    this.anim.play('Roll', false, 0.5, null, 1.1);
+    this.anim.play('Roll', false, 0.4, null, 1.1);
 
     this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
@@ -1655,20 +1655,67 @@ class CharCtrl {
         this._forcedCrouchFromRoll = true;
       }
 
+      // Zero out horizontal momentum but preserve vertical velocity.
+      // Reset speed AND jumpVel: in Havok mode, jumpVel is never decremented by
+      // gravity (Havok handles that), so it still holds the verticalBoost value.
+      // Without this reset, the locomotion block would re-apply it as a sudden
+      // upward impulse the first frame JUMP_LOOP takes control.
+      this.speed = 0;
+      this.jumpVel = 0;
       if (this.usePhysics && this.physicsBody) {
         const cv = this.physicsBody.getLinearVelocity();
         this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
       }
 
-      // Force state out of ROLL immediately
-      this.grounded = this._checkGrounded();
-      if (!this.grounded) {
+      // Resolve post-roll state: wait for the hop arc to settle rather than
+      // immediately forcing JUMP_LOOP — this prevents premature fall-animation
+      // during jump + roll combos where the character is still ascending.
+      this._resolvePostRoll();
+    }, 820 / this.SPEED_MULTIPLIER);
+  }
+
+  // Called at the end of the roll timer. Polls each frame until the hop arc
+  // has settled, then picks the right next state without premature JUMP_LOOP.
+  _resolvePostRoll() {
+    // Safety: if we somehow left ROLL state already, do nothing
+    if (this.state !== S.ROLL) return;
+
+    const check = () => {
+      // Stop polling if state changed externally (e.g. landed via _update loop)
+      if (this.state !== S.ROLL) return;
+
+      const grounded = this._checkGrounded();
+      const fallingDown = this.usePhysics
+        ? (this.physicsBody ? this.physicsBody.getLinearVelocity().y < -0.5 : false)
+        : this.jumpVel < -0.5;
+
+      if (grounded) {
+        // Character has landed — seed a small speed so the run animation
+        // doesn't pop in from a dead stop, then return to locomotion.
+        this.grounded = true;
+        const hasInput = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
+          this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
+          (this.isTouch && (Math.abs(this.touchVector?.x) > 0.15 || Math.abs(this.touchVector?.y) > 0.15));
+        if (hasInput) {
+          // Seed speed at walk level so the locomotion blend starts from something
+          // non-zero — avoids the jarring snap from 0 → run speed.
+          this.speed = this.SPD_WALK * this.SPEED_MULTIPLIER * 0.6;
+        }
+        this._returnToLoco(0.38);
+      } else if (fallingDown) {
+        // Arc has peaked and we are now descending — hand off to JUMP_LOOP.
+        // speed is already 0 (reset in the timeout above) so no horizontal
+        // impulse will be re-injected by _update() on the next frame.
+        this.grounded = false;
         this._setState(S.JUMP_LOOP);
-        this.anim.play('Jump_Loop', true, 0.2);
+        this.anim.play('Jump_Loop', true, 0.7);
       } else {
-        this._returnToLoco(0.2);
+        // Still ascending or at peak — wait one more frame
+        requestAnimationFrame(check);
       }
-    }, 700 / this.SPEED_MULTIPLIER);
+    };
+
+    requestAnimationFrame(check);
   }
 
   _punch() {
@@ -1837,7 +1884,7 @@ class CharCtrl {
   }
 
   // ── RETURN TO LOCOMOTION (INTELLIGENT DECISION) ──────────
-  _returnToLoco(blend = 0.35) {
+  _returnToLoco(blend = 0.45) {
     const finalBlend = blend / this.SPEED_MULTIPLIER;
     // Check if there is movement input
     let inputX = 0;

@@ -4821,7 +4821,7 @@ async function importBuilderConfigFile(file) {
 async function downloadControllerFile() {
   showLoading('Generating custom character-controller.js…');
   try {
-    const response = await fetch('js/character-controller.js');
+    const response = await fetch('js/character-controller.js?t=' + Date.now());
     if (!response.ok) throw new Error('Could not load original character-controller.js base.');
     let sourceText = await response.text();
 
