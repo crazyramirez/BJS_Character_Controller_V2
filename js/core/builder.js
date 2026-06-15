@@ -288,6 +288,19 @@ function applyLiveTransformations() {
 
       camera.wheelPrecision = 55 / sy;
       camera.pinchPrecision = 55 / sy;
+      if (camera.inputs && camera.inputs.attached) {
+        const mw = camera.inputs.attached.mousewheel || camera.inputs.attached.mouseWheel;
+        if (mw) {
+          mw.wheelPrecision = 55 / sy;
+          if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55 / sy;
+          if (mw.wheelPrecisionX !== undefined) mw.wheelPrecisionX = 55 / sy;
+          if (mw.wheelPrecisionZ !== undefined) mw.wheelPrecisionZ = 55 / sy;
+        }
+        const ptrs = camera.inputs.attached.pointers || camera.inputs.attached.pointersInput;
+        if (ptrs) {
+          ptrs.pinchPrecision = 55 / sy;
+        }
+      }
       camera.panningSensibility = 1000 / sy;
       camera.angularSensibilityX = (ctrl._originalSensibilityX || 1000) / sy;
       camera.angularSensibilityY = (camera.angularSensibilityY || 1000) / sy;
@@ -1023,6 +1036,17 @@ async function initBabylonScene() {
   camera.wheelPrecision = 55; // Comfortable, precise wheel zoom speed
   camera.pinchPrecision = 55; // Comfortable, precise pinch zoom speed
   camera.attachControl(canvas, true);
+  if (camera.inputs && camera.inputs.attached) {
+    const mw = camera.inputs.attached.mousewheel || camera.inputs.attached.mouseWheel;
+    if (mw) {
+      mw.wheelPrecision = 55;
+      if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55;
+    }
+    const ptrs = camera.inputs.attached.pointers || camera.inputs.attached.pointersInput;
+    if (ptrs) {
+      ptrs.pinchPrecision = 55;
+    }
+  }
   camera.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
 
   const envTex = BABYLON.CubeTexture.CreateFromPrefilteredData('assets/environment_2.env', scene);
@@ -3287,20 +3311,9 @@ async function startAutoRigAdjust() {
     gizmoManager.gizmos.rotationGizmo.updateGizmoRotationToMatchAttachedMesh = true;
   }
 
-  const setGizmoMode = (mode) => {
-    if (mode === 'translate') {
-      gizmoManager.positionGizmoEnabled = true;
-      gizmoManager.rotationGizmoEnabled = false;
-      document.getElementById('btn-autorig-gizmo-trans')?.classList.add('active');
-      document.getElementById('btn-autorig-gizmo-rot')?.classList.remove('active');
-    } else if (mode === 'rotate') {
-      gizmoManager.positionGizmoEnabled = false;
-      gizmoManager.rotationGizmoEnabled = true;
-      document.getElementById('btn-autorig-gizmo-trans')?.classList.remove('active');
-      document.getElementById('btn-autorig-gizmo-rot')?.classList.add('active');
-    }
-  };
-  setGizmoMode('translate');
+  // Markers are placed with the move gizmo only — translate, no rotate.
+  gizmoManager.positionGizmoEnabled = true;
+  gizmoManager.rotationGizmoEnabled = false;
 
   // Re-render legend when selection changes
   gizmoManager.onAttachedToMeshObservable.add(() => {
@@ -3527,7 +3540,6 @@ async function startAutoRigAdjust() {
     markers, gizmoManager, height: guess.height, sceneHeight,
     groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
-    setGizmoMode,
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
     serverGuess: { ...guess.joints },
@@ -3619,6 +3631,19 @@ function cancelAutoRigAdjust() {
 // body depth is solved automatically. Limb markers (hands/feet/toes) are left
 // alone: they sit at the mesh tip, not its mid-thickness.
 const DEPTH_SNAP_SKIP = new Set(['LeftHand', 'RightHand', 'LeftToeBase', 'RightToeBase']);
+// Fixed front↔back (sagittal) world axis of the character, derived from its
+// facing yaw — independent of the camera. This is the horizontal direction the
+// FRONT view looks along, so snapping depth along it always means the same thing.
+function bodyDepthAxis() {
+  let rotY = 0;
+  const cap = activeCharacter?.playerCapsule;
+  if (cap?.rotationQuaternion) rotY = cap.rotationQuaternion.toEulerAngles().y;
+  else if (cap) rotY = cap.rotation.y;
+  const frontAlpha = -rotY + Math.PI / 2; // matches setRigView('front')
+  // Front camera look direction (cam→target), horizontal component only.
+  return new BABYLON.Vector3(-Math.cos(frontAlpha), 0, -Math.sin(frontAlpha));
+}
+
 function snapMarkerToMeshDepth(marker) {
   if (!activeCharacter?.rawMeshes?.length || !marker) return false;
   const name = marker.metadata?.autorigJoint;
@@ -3626,11 +3651,13 @@ function snapMarkerToMeshDepth(marker) {
 
   marker.computeWorldMatrix(true);
   const origin = marker.getAbsolutePosition();
-  // Camera forward (view-perpendicular): from camera position to its target.
-  // Force camera view matrix update so coordinates are current
-  camera.getViewMatrix(true);
-  const fwd = camera.getTarget().subtract(camera.position);
-  if (fwd.lengthSquared() < 1e-8) return false;
+  // Depth axis = the character's fixed sagittal (front↔back) axis, NOT the live
+  // camera direction. Using the camera made the snap depend on the current view,
+  // so repeated snaps from different angles dragged markers along ever-changing
+  // axes and the layout drifted. A fixed body axis makes the snap idempotent:
+  // it always centers depth the same way regardless of where the camera sits.
+  const fwd = bodyDepthAxis();
+  if (!fwd || fwd.lengthSquared() < 1e-8) return false;
   fwd.normalize();
 
   // The character meshes are set isPickable=false at load (so the gizmo never

@@ -819,8 +819,9 @@ class CharCtrl {
     const savedPlayParticles = localStorage.getItem('play-particles');
     this.PLAY_PARTICLES = savedPlayParticles !== null ? (savedPlayParticles === 'true') : (config.PLAY_PARTICLES !== undefined ? config.PLAY_PARTICLES : true);
 
-    this._originalSensibilityX = this.camera.angularSensibilityX;
-    this._originalRadius = this.camera.radius;
+    this._originalSensibilityX = this.camera ? this.camera.angularSensibilityX : 1000;
+    this._originalSensibilityY = this.camera ? this.camera.angularSensibilityY : 1000;
+    this._originalRadius = this.camera ? this.camera.radius : 8.0;
     // console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
     // Apply Hide Cursor state if persisted in localStorage
@@ -956,6 +957,33 @@ class CharCtrl {
       const isTouchPinchZooming = (this._touchCount !== undefined && this._touchCount >= 2);
       const isUserZooming = isWheelZooming || isTouchPinchZooming;
 
+      // Keep camera zoom speed, limits, and sensitivities in sync with character scale Y
+      const scaleY = this._capScaleY || 1.0;
+      if (this.camera) {
+        this.camera.lowerRadiusLimit = 2 * scaleY;
+        this.camera.upperRadiusLimit = 20 * scaleY;
+        this.camera.wheelPrecision = 55 / scaleY;
+        this.camera.pinchPrecision = 55 / scaleY;
+        if (this.camera.inputs && this.camera.inputs.attached) {
+          const mw = this.camera.inputs.attached.mousewheel || this.camera.inputs.attached.mouseWheel;
+          if (mw) {
+            mw.wheelPrecision = 55 / scaleY;
+            if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55 / scaleY;
+            if (mw.wheelPrecisionX !== undefined) mw.wheelPrecisionX = 55 / scaleY;
+            if (mw.wheelPrecisionZ !== undefined) mw.wheelPrecisionZ = 55 / scaleY;
+          }
+          const ptrs = this.camera.inputs.attached.pointers || this.camera.inputs.attached.pointersInput;
+          if (ptrs) {
+            ptrs.pinchPrecision = 55 / scaleY;
+          }
+        }
+        this.camera.panningSensibility = 1000 / scaleY;
+        if (!this.CAM_FOLLOW_LOCK) {
+          this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+        }
+        this.camera.angularSensibilityY = (this._originalSensibilityY || 1000) / scaleY;
+      }
+
       const radiusDelta = this.camera.radius - this._lastCameraRadius;
       if (isUserZooming && Math.abs(radiusDelta) > 0.0001) {
         const slider = document.getElementById('slider-cam-dist');
@@ -1076,6 +1104,19 @@ class CharCtrl {
 
       this.camera.wheelPrecision = 55 / scaleY;
       this.camera.pinchPrecision = 55 / scaleY;
+      if (this.camera.inputs && this.camera.inputs.attached) {
+        const mw = this.camera.inputs.attached.mousewheel || this.camera.inputs.attached.mouseWheel;
+        if (mw) {
+          mw.wheelPrecision = 55 / scaleY;
+          if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55 / scaleY;
+          if (mw.wheelPrecisionX !== undefined) mw.wheelPrecisionX = 55 / scaleY;
+          if (mw.wheelPrecisionZ !== undefined) mw.wheelPrecisionZ = 55 / scaleY;
+        }
+        const ptrs = this.camera.inputs.attached.pointers || this.camera.inputs.attached.pointersInput;
+        if (ptrs) {
+          ptrs.pinchPrecision = 55 / scaleY;
+        }
+      }
       this.camera.panningSensibility = 1000 / scaleY;
       this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
       this.camera.angularSensibilityY = (this.camera.angularSensibilityY || 1000) / scaleY;
