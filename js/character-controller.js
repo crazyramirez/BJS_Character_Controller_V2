@@ -2981,9 +2981,15 @@ class CharCtrl {
       this.camera.alpha += Math.cos(performance.now() * 0.054) * this._camShake * 0.04;
     }
 
-    // Dynamic FOV based on speed (tunnel vision expansion)
-    const targetFOV = this.DYNAMIC_FOV ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX) : this._initialCameraFOV;
-    this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+    // Dynamic FOV based on speed (tunnel vision expansion).
+    // Skip FOV update during the roll — keep the camera FOV frozen so the
+    // speed=0 reset at roll-end doesn't cause any visible zoom-in/out change.
+    if (this.state !== S.ROLL && !this._rollActive) {
+      const targetFOV = this.DYNAMIC_FOV
+        ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
+        : this._initialCameraFOV;
+      this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+    }
 
     // 5. Camera Angle Movement (Drone-style Banking)
     // Roll the camera slightly when moving laterally at speed, like a chase drone banking into the move
