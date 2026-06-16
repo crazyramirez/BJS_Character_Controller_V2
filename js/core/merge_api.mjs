@@ -1584,10 +1584,64 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
+    // Decide whether mesh vertices still need the ancestor coordinate rotation
+    // baked into them. Two source families:
+    //  - Sketchfab/BJS Sandbox: the exporter PRE-transforms vertices to Y-up and
+    //    leaves the convention on an ancestor node → verts already Y-up, skip.
+    //  - AccuRig / Character Creator / raw FBX: vertices stay Z-up and rely on the
+    //    ancestor's -90°X node to stand up → we just baked that rotation into the
+    //    skeleton (Hips), so the verts must be rotated by the SAME normRot or the
+    //    skinned mesh stays Z-up while the rig is Y-up (model lies down / deforms).
+    // Distinguish by the vertex bounding box of the skinned mesh: Z-up sources are
+    // taller in Z than Y. Only act when normRot is a real (non-identity) rotation.
+    const normRotIsIdentity = Math.abs(Math.abs(normRot[3]) - 1) < 1e-4;
+    let vertsAreZup = false;
+    if (!normRotIsIdentity) {
+      let minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const meshNode of meshNodes) {
+        const mesh = meshNode.getMesh();
+        if (!mesh) continue;
+        for (const prim of mesh.listPrimitives()) {
+          const pos = prim.getAttribute('POSITION');
+          if (!pos) continue;
+          const el = [0, 0, 0];
+          for (let i = 0; i < pos.getCount(); i++) {
+            pos.getElement(i, el);
+            if (el[1] < minY) minY = el[1]; if (el[1] > maxY) maxY = el[1];
+            if (el[2] < minZ) minZ = el[2]; if (el[2] > maxZ) maxZ = el[2];
+          }
+        }
+      }
+      const extY = maxY - minY, extZ = maxZ - minZ;
+      vertsAreZup = Number.isFinite(extY) && Number.isFinite(extZ) && extZ > extY * 1.3;
+    }
+    if (vertsAreZup) {
+      console.log('[merge] Z-up vertices detected — baking coordinate rotation into mesh geometry.');
+    }
+
     for (const meshNode of meshNodes) {
       const mTrans = meshNode.getTranslation() || [0, 0, 0];
-      // Mesh vertices are already in the correct coordinate space (pre-transformed by the
-      // original exporter). Only apply the pivot offset — no coordinate rotation needed.
+      // Apply the pivot offset. For Z-up sources also rotate the vertex/normal data
+      // by normRot so the geometry matches the now-Y-up skeleton.
+      if (vertsAreZup) {
+        const mesh = meshNode.getMesh();
+        if (mesh) {
+          for (const prim of mesh.listPrimitives()) {
+            for (const attr of ['POSITION', 'NORMAL', 'TANGENT']) {
+              const acc = prim.getAttribute(attr);
+              if (!acc) continue;
+              const dim = acc.getElementSize();
+              const el = new Array(dim).fill(0);
+              for (let i = 0; i < acc.getCount(); i++) {
+                acc.getElement(i, el);
+                const r = rotateVec3([el[0], el[1], el[2]], normRot);
+                el[0] = r[0]; el[1] = r[1]; el[2] = r[2]; // leave TANGENT.w sign untouched
+                acc.setElement(i, el);
+              }
+            }
+          }
+        }
+      }
       meshNode.setTranslation([
         mTrans[0] - px / finalScale[0],
         mTrans[1] - py / finalScale[1],
@@ -1997,8 +2051,17 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           // when finger spreads differ between the character and animation.
           // We use the hand's change-of-basis (C) matrix for all bones in the finger
           // chain to ensure they curl and orient naturally relative to the hand.
-          const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
-            || /(thumb|index|middle|ring|pinky)/.test(srcName);
+          // CC/AccuRig name toes 'IndexToe1', 'PinkyToe1', etc. — they contain
+          // finger keywords but are NOT hand fingers; exclude them so they don't
+          // get the hand change-of-basis (which would twist the feet).
+          const _isToe = /toe/.test(tgtName) || /toe/.test(srcName);
+          // The thumb's bind frame is rotated ~45° off the hand (it opposes the
+          // palm), so the hand change-of-basis twists it. Exclude thumbs from the
+          // hand-C override and let them use their own per-bone C (the default),
+          // which already aligns each thumb segment to its own bind orientation.
+          const _isThumb = /thumb/.test(tgtName) || /thumb/.test(srcName);
+          const isFinger = !_isToe && !_isThumb && (/(index|middle|ring|pinky|mid\d)/.test(tgtName)
+            || /(index|middle|ring|pinky)/.test(srcName));
           
           let C_to_use = C;
           let Cinv_to_use = Cinv;
@@ -2006,17 +2069,22 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           if (isFinger) {
             const isLeft = tgtName.includes('left') || tgtName.includes('_l') || tgtName.endsWith('l') ||
                            srcName.includes('left') || srcName.includes('_l') || srcName.endsWith('l');
+            // Hand bone normalized forms across rigs:
+            //   Mixamo/RPM LeftHand → lefthand;  UE5 hand_l → handl
+            //   CC/AccuRig CC_Base_L_Hand → lhand;  Unity LeftHand → lefthand
+            const isLeftHandNorm = (norm) => norm === 'handl' || norm === 'lefthand' || norm === 'lhand';
+            const isRightHandNorm = (norm) => norm === 'handr' || norm === 'righthand' || norm === 'rhand';
             let handCharName = '';
             for (const name of charWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handCharName = name; break; }
-              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handCharName = name; break; }
+              if (isLeft && isLeftHandNorm(norm)) { handCharName = name; break; }
+              if (!isLeft && isRightHandNorm(norm)) { handCharName = name; break; }
             }
             let handAnimName = '';
             for (const name of animWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handAnimName = name; break; }
-              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handAnimName = name; break; }
+              if (isLeft && isLeftHandNorm(norm)) { handAnimName = name; break; }
+              if (!isLeft && isRightHandNorm(norm)) { handAnimName = name; break; }
             }
             
             if (handCharName && handAnimName) {
