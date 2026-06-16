@@ -34,6 +34,10 @@ const DEFAULTS = {
   // Enabling this can corrupt the C matrix for characters re-exported from BabylonJS.
   AUTO_APOSE_CORRECTION: false,
   APOSE_THRESHOLD_DEG: 15,
+  // Empirical foot supination fix for CC/AccuRig rigs (feet rest on outer edge).
+  // Local roll applied to foot bones in retargeted clips; right side mirrored.
+  FOOT_ROLL_DEG: 0,
+  FOOT_ROLL_AXIS: 'y',
 };
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
@@ -1741,6 +1745,20 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const poseStyle = detectPoseStyle(charDoc, charByName, charByNorm);
   console.log(`[merge] Detected character pose style: ${poseStyle}`);
 
+  // Reallusion Character Creator / AccuRig rigs (CC_Base_* bones) bind the ankle
+  // rolled relative to Mixamo, so retargeted feet rest on their outer edge
+  // (supinated). Auto-enable the empirical foot-roll fix for these rigs unless the
+  // caller already set FOOT_ROLL_DEG. Other rigs (Mixamo, UE5, …) are unaffected.
+  if (cfg.FOOT_ROLL_DEG === DEFAULTS.FOOT_ROLL_DEG) {
+    const isCCRig = charDoc.getRoot().listNodes()
+      .some(n => /^cc_base_/i.test(n.getName() || ''));
+    if (isCCRig) {
+      cfg.FOOT_ROLL_DEG = 8;
+      cfg.FOOT_ROLL_AXIS = 'y';
+      console.log('[merge] CC/AccuRig rig detected — applying foot supination fix (8° roll).');
+    }
+  }
+
   let virtualPose = null;
   if (poseStyle !== 'T-POSE') {
     console.log(`[merge] Generating virtual T-pose alignment...`);
@@ -1995,7 +2013,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         if (path === 'rotation') {
           const rAnim = animRestByName.get(srcName) || [0, 0, 0, 1];
           const rChar = charRestByName.get(tgtName) || [0, 0, 0, 1];
-          const Wanim = animWorldByName.get(srcName) || [0, 0, 0, 1];
+          let Wanim = animWorldByName.get(srcName) || [0, 0, 0, 1];
           let Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
 
           // ── A-pose correction ────────────────────────────────────────────
@@ -2098,6 +2116,25 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           // Posture/spread slider offset for this bone (precomputed above)
           const offsetQ = postureOffsets.get(target) || null;
 
+          // ── Foot supination correction (empirical) ────────────────────────
+          // CC/AccuRig ankle bind is rolled vs Mixamo, so retargeted feet rest on
+          // their outer edge. Apply a per-side roll about the foot's local long
+          // axis. Tunable via cfg.FOOT_ROLL_DEG and cfg.FOOT_ROLL_AXIS ('x'|'y'|'z').
+          // Mirror the sign for the right foot. Set FOOT_ROLL_DEG=0 to disable.
+          let footRollQ = null;
+          {
+            const _isFootBone = /foot|ankle/.test(tgtName) && !/toe|ball/.test(tgtName);
+            const deg = cfg.FOOT_ROLL_DEG || 0;
+            if (_isFootBone && deg) {
+              const isRightFoot = tgtName.includes('right') || tgtName.includes('_r_') || /(^|[^a-z])r_/.test(tgtName);
+              const sign = isRightFoot ? -1 : 1;
+              const ax = (cfg.FOOT_ROLL_AXIS || 'y').toLowerCase();
+              const axis = ax === 'x' ? [1, 0, 0] : ax === 'z' ? [0, 0, 1] : [0, 1, 0];
+              const r = (sign * deg * Math.PI) / 180, s = Math.sin(r / 2);
+              footRollQ = [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(r / 2)];
+            }
+          }
+
           const sampler = ch.getSampler();
           if (sampler) {
             const output = sampler.getOutput();
@@ -2118,6 +2155,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                   }
                   // Posture/spread sliders (normalized-name matched, world-axis based)
                   if (offsetQ) final = qMul(final, offsetQ);
+                  // Empirical foot supination correction (local roll)
+                  if (footRollQ) final = qMul(final, footRollQ);
                   out[j] = final[0]; out[j + 1] = final[1]; out[j + 2] = final[2]; out[j + 3] = final[3];
                 }
                 output.setArray(out);
