@@ -1725,7 +1725,13 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   charRoot.setParent(charTransformWrapper);
   charRoot.position.set(0, -0.97, 0);
-  charRoot.rotation.set(0, 0, 0);
+  if (charRoot.rotationQuaternion) {
+    const euler = charRoot.rotationQuaternion.toEulerAngles();
+    charRoot.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(0, euler.x, euler.z);
+  } else {
+    const euler = charRoot.rotation.clone();
+    charRoot.rotation.set(euler.x, 0, euler.z);
+  }
 
   const animCtrl = new AnimCtrl(filteredGroups, scene);
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, {

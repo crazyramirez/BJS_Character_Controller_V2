@@ -38,6 +38,15 @@ const DEFAULTS = {
   // Local roll applied to foot bones in retargeted clips; right side mirrored.
   FOOT_ROLL_DEG: 0,
   FOOT_ROLL_AXIS: 'y',
+  // Finger retarget tuning for rigs whose bind pose is already pre-curled
+  // (CC/AccuRig fingers rest ~15-25° flexed, Mixamo fingers rest straight).
+  // The Mixamo curl delta is authored for straight-bind fingers; transplanting
+  // it whole onto a pre-curled bind over-closes the hand. Scale the per-key
+  // finger motion delta toward identity to compensate. 1 = no change.
+  FINGER_CURL_SCALE: 0.9,
+  // The thumb's distal segment (thumb3) twists worst under retarget because the
+  // CC thumb bind is rolled hard vs Mixamo. Dampen it harder than the rest.
+  THUMB_CURL_SCALE: 0.6,
 };
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
@@ -380,6 +389,19 @@ function eulerToQuat(pitch, yaw, roll) {
     cp * cy * sr + sp * sy * cr,
     cp * cy * cr - sp * sy * sr,
   ];
+}
+// Scale a rotation's angle by `s` about its own axis (nlerp from identity → q).
+// s=1 returns q unchanged; s<1 dampens; s>1 amplifies. Shortest-arc safe.
+function qScaleAngle([x, y, z, w], s) {
+  if (s === 1) return [x, y, z, w];
+  let q = [x, y, z, w];
+  if (q[3] < 0) q = [-q[0], -q[1], -q[2], -q[3]]; // force shortest arc
+  const ang = 2 * Math.acos(Math.min(1, Math.max(-1, q[3])));
+  if (ang < 1e-6) return [0, 0, 0, 1];
+  const sinHalf = Math.sqrt(Math.max(0, 1 - q[3] * q[3]));
+  const ax = [q[0] / sinHalf, q[1] / sinHalf, q[2] / sinHalf];
+  const h = (ang * s) / 2, sh = Math.sin(h);
+  return [ax[0] * sh, ax[1] * sh, ax[2] * sh, Math.cos(h)];
 }
 function buildParentMap(doc) {
   const map = new Map();
@@ -1002,8 +1024,8 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   }
 
   if ((norm === 'spine' || norm === 'spine1' || norm === 'spine2') &&
-      charByNorm.has('waist') && charByNorm.has('spine01') &&
-      charByNorm.has('spine02') && !charByNorm.has('spine03')) {
+    charByNorm.has('waist') && charByNorm.has('spine01') &&
+    charByNorm.has('spine02') && !charByNorm.has('spine03')) {
     return charByNorm.get({ spine: 'waist', spine1: 'spine01', spine2: 'spine02' }[norm]);
   }
 
@@ -1753,7 +1775,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     const isCCRig = charDoc.getRoot().listNodes()
       .some(n => /^cc_base_/i.test(n.getName() || ''));
     if (isCCRig) {
-      cfg.FOOT_ROLL_DEG = 8;
+      cfg.FOOT_ROLL_DEG = 20;
       cfg.FOOT_ROLL_AXIS = 'y';
       console.log('[merge] CC/AccuRig rig detected — applying foot supination fix (8° roll).');
     }
@@ -2073,20 +2095,33 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           // finger keywords but are NOT hand fingers; exclude them so they don't
           // get the hand change-of-basis (which would twist the feet).
           const _isToe = /toe/.test(tgtName) || /toe/.test(srcName);
-          // The thumb's bind frame is rotated ~45° off the hand (it opposes the
-          // palm), so the hand change-of-basis twists it. Exclude thumbs from the
-          // hand-C override and let them use their own per-bone C (the default),
-          // which already aligns each thumb segment to its own bind orientation.
+          // The thumb opposes the palm (bind ~45° off the hand). It still uses
+          // the shared hand-anchored C below (chain-consistent, no inter-segment
+          // tip twist); the extra rotation that change-of-basis would introduce
+          // is absorbed by THUMB_CURL_SCALE rather than by a per-bone C.
           const _isThumb = /thumb/.test(tgtName) || /thumb/.test(srcName);
           const isFinger = !_isToe && !_isThumb && (/(index|middle|ring|pinky|mid\d)/.test(tgtName)
             || /(index|middle|ring|pinky)/.test(srcName));
-          
+
+          // ── Curl-magnitude damping ────────────────────────────────────────
+          // Pre-curled binds (CC/AccuRig) over-close when fed Mixamo's
+          // straight-bind curl deltas. Scale the per-key motion delta toward
+          // identity. Thumbs damp harder (their distal twist is worst).
+          let curlScale = 1;
+          if (_isThumb) curlScale = cfg.THUMB_CURL_SCALE ?? 1;
+          else if (isFinger) curlScale = cfg.FINGER_CURL_SCALE ?? 1;
+
           let C_to_use = C;
           let Cinv_to_use = Cinv;
-          
-          if (isFinger) {
+
+          // Use ONE hand-anchored change-of-basis for the whole digit chain
+          // (all 3 segments share it). A per-segment C lets adjacent thumb
+          // segments twist independently → the distal tip visibly deforms.
+          // Anchoring every segment to the hand frame keeps the chain rigid in
+          // hand space; THUMB_CURL_SCALE then tames the residual over-rotation.
+          if (isFinger || _isThumb) {
             const isLeft = tgtName.includes('left') || tgtName.includes('_l') || tgtName.endsWith('l') ||
-                           srcName.includes('left') || srcName.includes('_l') || srcName.endsWith('l');
+              srcName.includes('left') || srcName.includes('_l') || srcName.endsWith('l');
             // Hand bone normalized forms across rigs:
             //   Mixamo/RPM LeftHand → lefthand;  UE5 hand_l → handl
             //   CC/AccuRig CC_Base_L_Hand → lhand;  Unity LeftHand → lefthand
@@ -2104,7 +2139,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               if (isLeft && isLeftHandNorm(norm)) { handAnimName = name; break; }
               if (!isLeft && isRightHandNorm(norm)) { handAnimName = name; break; }
             }
-            
+
             if (handCharName && handAnimName) {
               const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
               const Wanim_hand = animWorldByName.get(handAnimName) || [0, 0, 0, 1];
@@ -2144,7 +2179,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
                   const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
-                  const delta = qMul(rAnimInv, qKey);
+                  let delta = qMul(rAnimInv, qKey);
+                  if (curlScale !== 1) delta = qScaleAngle(delta, curlScale);
                   const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
                   let final = qMul(rChar, rotated);
 

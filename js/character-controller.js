@@ -3440,7 +3440,13 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
         mergedRoot.setParent(playerCapsule);
         mergedRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
-        mergedRoot.rotation.set(0, 0, 0);
+        if (mergedRoot.rotationQuaternion) {
+          const euler = mergedRoot.rotationQuaternion.toEulerAngles();
+          mergedRoot.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(0, euler.x, euler.z);
+        } else {
+          const euler = mergedRoot.rotation.clone();
+          mergedRoot.rotation.set(euler.x, 0, euler.z);
+        }
 
         // Filter T-Pose
         mergedRes.animationGroups.filter(ag => /t[\-_]?pose/i.test(ag.name)).forEach(ag => ag.dispose());
@@ -3596,7 +3602,13 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
   charRoot.setParent(playerCapsule);
   charRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
-  charRoot.rotation.set(0, 0, 0);
+  if (charRoot.rotationQuaternion) {
+    const euler = charRoot.rotationQuaternion.toEulerAngles();
+    charRoot.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(0, euler.x, euler.z);
+  } else {
+    const euler = charRoot.rotation.clone();
+    charRoot.rotation.set(euler.x, 0, euler.z);
+  }
 
   const animCtrl = new AnimCtrl(filteredGroups, scene);
 
