@@ -160,7 +160,8 @@ let charTransformConfig = {
   SHOULDER_RAISE_ANGLE: 0.0,
   LEG_SPREAD_ANGLE: 0.0,
   SPINE_STRAIGHTEN_ANGLE: 0.0,
-  HIPS_TILT_ANGLE: 0.0
+  HIPS_TILT_ANGLE: 0.0,
+  FOOT_TOE_OUT_ANGLE: 0.0   // +deg toes-out: R about +Y, L about -Y (fixes CC supinated feet)
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
 
@@ -187,6 +188,8 @@ const BONE_ROLE_SETS = {
   armR: new Set(['rightarm', 'rightupperarm', 'upperarmr', 'rupperarm', 'armr', 'rarm']),
   legL: new Set(['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'leftthigh', 'hipl']),
   legR: new Set(['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'rightthigh', 'hipr']),
+  footL: new Set(['leftfoot', 'footl', 'lfoot', 'leftankle', 'anklel']),
+  footR: new Set(['rightfoot', 'footr', 'rfoot', 'rightankle', 'ankler']),
   spine: new Set(['spine', 'spine1', 'spine2', 'spine3', 'spine01', 'spine02', 'spine03',
     'waist', 'chest', 'upperchest', 'lowerback']),
   hips: new Set(['hips', 'hip', 'pelvis']),
@@ -399,6 +402,7 @@ function syncCharTransformToUI() {
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
   setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
   setSlider('slider-hips-tilt', charTransformConfig.HIPS_TILT_ANGLE, '°');
+  setSlider('slider-foot-toe-out', charTransformConfig.FOOT_TOE_OUT_ANGLE, '°');
 }
 
 function resetCharacterTransform() {
@@ -427,12 +431,14 @@ function resetCharacterTransform() {
   const legS = document.getElementById('slider-leg-spread');
   const spineS = document.getElementById('slider-spine-straighten');
   const hipsT = document.getElementById('slider-hips-tilt');
+  const footT = document.getElementById('slider-foot-toe-out');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
   if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
   if (shoulderR) { shoulderR.min = "-15"; shoulderR.max = "15"; }
   if (legS) { legS.min = "-10"; legS.max = "10"; }
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
   if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
+  if (footT) { footT.min = "-45"; footT.max = "45"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -455,6 +461,7 @@ function setupCharTransformControls() {
   const legSpreadSlider = document.getElementById('slider-leg-spread');
   const spineStraightenSlider = document.getElementById('slider-spine-straighten');
   const hipsTiltSlider = document.getElementById('slider-hips-tilt');
+  const footToeOutSlider = document.getElementById('slider-foot-toe-out');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -486,6 +493,7 @@ function setupCharTransformControls() {
     charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
     charTransformConfig.HIPS_TILT_ANGLE = hipsTiltSlider ? parseFloat(hipsTiltSlider.value) : 0.0;
+    charTransformConfig.FOOT_TOE_OUT_ANGLE = footToeOutSlider ? parseFloat(footToeOutSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -507,6 +515,7 @@ function setupCharTransformControls() {
   legSpreadSlider?.addEventListener('input', onSliderChange);
   spineStraightenSlider?.addEventListener('input', onSliderChange);
   hipsTiltSlider?.addEventListener('input', onSliderChange);
+  footToeOutSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -568,7 +577,9 @@ function setupCharTransformControls() {
 }
 
 function getMergeOptions(extra = {}) {
+  const dracoEl = document.getElementById('export-draco');
   return {
+    COMPRESS_OUTPUT: dracoEl ? dracoEl.checked : true,
     SCALE_X: charTransformConfig.SCALE_X,
     SCALE_Y: charTransformConfig.SCALE_Y,
     SCALE_Z: charTransformConfig.SCALE_Z,
@@ -1804,6 +1815,20 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     });
   });
 
+  // CC/AccuRig rigs bind with supinated (toed-in) feet. Auto-apply a default
+  // toe-out so they load straight; the user can still override via the slider.
+  // Only seed when the value is still at rest (0) so a saved/manual value wins.
+  {
+    let isCC = false;
+    scene.skeletons.forEach(skel => skel.bones.forEach(b => {
+      if (/cc_base/i.test(b.name || '')) isCC = true;
+    }));
+    if (isCC && (charTransformConfig.FOOT_TOE_OUT_ANGLE || 0) === 0) {
+      charTransformConfig.FOOT_TOE_OUT_ANGLE = -10;
+      syncCharTransformToUI();
+    }
+  }
+
   // Set up observable to apply real-time bone rotation offsets (posture sliders)
   // Per-bone smoothing state: when a bone flips between "driven by animation"
   // and "resting at bind+offset" (clip with track ↔ clip without), the pose
@@ -1834,6 +1859,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
     const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
     const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
+    const toeOut = charTransformConfig.FOOT_TOE_OUT_ANGLE || 0;
 
     // 2. Loop through character bones and apply offsets about bind-world axes
     scene.skeletons.forEach(skel => {
@@ -1885,6 +1911,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
           case 'legR':
             apply(axes.z, legAngle);
             apply(axes.x, -hipsTilt);
+            break;
+          case 'footL':
+            apply(axes.y, -toeOut); // toes point outward (left)
+            break;
+          case 'footR':
+            apply(axes.y, toeOut);  // toes point outward (right)
             break;
           case 'spine':
             apply(axes.x, spineAngle);
