@@ -43,10 +43,10 @@ const DEFAULTS = {
   // The Mixamo curl delta is authored for straight-bind fingers; transplanting
   // it whole onto a pre-curled bind over-closes the hand. Scale the per-key
   // finger motion delta toward identity to compensate. 1 = no change.
-  FINGER_CURL_SCALE: 0.9,
+  FINGER_CURL_SCALE: 0.7,
   // The thumb's distal segment (thumb3) twists worst under retarget because the
   // CC thumb bind is rolled hard vs Mixamo. Dampen it harder than the rest.
-  THUMB_CURL_SCALE: 0.6,
+  THUMB_CURL_SCALE: 0.5,
 };
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
