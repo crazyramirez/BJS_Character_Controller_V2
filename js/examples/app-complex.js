@@ -45,8 +45,9 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     // filename: 'character.glb',
     // animationsFilename: 'animations.glb',
 
-    spawnPosition: new BABYLON.Vector3(0, 3, 0),
-    ellipsoid: new BABYLON.Vector3(0.75, 0.96, 0.75)
+    spawnPosition: new BABYLON.Vector3(0, 2, 0)
+    // ellipsoid omitted → uses the default 0.35 radius (the wide 0.75 ellipsoid
+    // wedged the capsule into the backyard collision mesh and blocked movement).
   });
 }
 
@@ -103,11 +104,12 @@ async function createDemoScene() {
   sun.intensity = 1.2;
   sun.diffuse = C3(1, 0.97, 0.9);
   sun.specular = C3(0.5, 0.5, 0.4);
-  sun.autoCalcShadowZBounds = false;
-  sun.autoUpdateExtends = false;
-  sun.shadowMinZ = 5;
-  sun.shadowMaxZ = 60;
-  sun.shadowOrthoScale = 1.2;
+  // Backyard geometry spans a large/irregular volume, so let Babylon fit the
+  // shadow frustum to the scene automatically instead of fixed manual bounds
+  // (fixed bounds produced an empty/oversized frustum → no shadows at all).
+  sun.autoCalcShadowZBounds = true;
+  sun.autoUpdateExtends = true;
+  sun.shadowOrthoScale = 0.1;
 
   const fill = new BABYLON.PointLight('fill', V3(-8, 4, -4), scene);
   fill.intensity = 0.1;
@@ -233,6 +235,8 @@ function bindCharacterSwapUI(switchCharacter) {
   const importBtn = $('char-import-btn');
   const fileInput = $('char-import-file');
   let busy = false;
+  // Object URL of the last imported mesh, so "Merge Anims" can re-feed it.
+  let lastMeshUrl = null;
 
   const run = async (fn) => {
     if (busy) return;
@@ -242,18 +246,35 @@ function bindCharacterSwapUI(switchCharacter) {
     finally { busy = false; }
   };
 
+  // Preset model from assets/
   select?.addEventListener('change', () => {
+    lastMeshUrl = null; // back to a preset — drop the imported mesh reference
     run(() => switchCharacter({ assetsPath: 'assets/', filename: select.value }));
   });
 
+  // External GLB import — loaded as-is (Option A). Use it for GLBs that already
+  // carry their animations. For a raw mesh, load it then press "Merge Anims".
   importBtn?.addEventListener('click', () => fileInput?.click());
   fileInput?.addEventListener('change', () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
+    lastMeshUrl = url; // remember it so Merge Anims can re-merge this mesh
     run(async () => {
       try { await switchCharacter({ glbUrl: url }); }
-      finally { URL.revokeObjectURL(url); fileInput.value = ''; }
+      finally { fileInput.value = ''; }
+    });
+  });
+
+  // Merge assets/animations.glb into the current character (Option B, server).
+  // Works on the imported mesh (or, if none, the current preset filename).
+  const mergeBtn = $('char-merge-anim-btn');
+  mergeBtn?.addEventListener('click', () => {
+    run(async () => {
+      const opts = { animationsFilename: 'animations.glb', assetsPath: 'assets/' };
+      if (lastMeshUrl) opts.glbUrl = lastMeshUrl;
+      else opts.filename = select ? select.value : 'character_animated_1.glb';
+      await switchCharacter(opts);
     });
   });
 }

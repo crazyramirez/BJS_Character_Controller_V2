@@ -60,9 +60,10 @@ async function createMinimalScene() {
     bindHUDControls(charCtrl, camera, usePhysics);
   }
 
-  // 7. OPTIONAL: Runtime character swap (no page reload).
-  //    Console:  await switchCharacter({ filename: 'character_animated_2.glb' })
-  //    External: await switchCharacter({ glbUrl: URL.createObjectURL(file) })
+  // 7. OPTIONAL: Runtime character swap (no page reload). Console examples:
+  //    Preset (anims embedded):  await switchCharacter({ filename: 'character_animated_2.glb' })
+  //    Imported GLB as-is:       await switchCharacter({ glbUrl: URL.createObjectURL(file) })
+  //    Merge anims into a mesh:  await switchCharacter({ glbUrl, animationsFilename: 'animations.glb' })  // needs server
   window.switchCharacter = async (options) => {
     const merged = Object.assign({ shadow: null, assetsPath: 'assets/' }, options);
     charHandle = await loadCharacterRuntime(scene, camera, usePhysics, merged, charHandle);

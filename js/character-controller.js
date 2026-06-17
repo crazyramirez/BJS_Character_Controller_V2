@@ -868,6 +868,7 @@ class CharCtrl {
     this._rollActive = false;
     this._lastRollTime = 0;
     this._rollTimeoutId = null;
+    this._rollExitSpeed = 0;
     this._wasClimbingStep = false;
 
     // State
@@ -1714,16 +1715,26 @@ class CharCtrl {
         this._forcedCrouchFromRoll = true;
       }
 
-      // Zero out horizontal momentum but preserve vertical velocity.
-      // Reset speed AND jumpVel: in Havok mode, jumpVel is never decremented by
+      // Preserve a fraction of the roll's horizontal momentum instead of a
+      // hard stop — the locomotion DECEL lerp then bleeds it off smoothly,
+      // avoiding the abrupt snap at roll exit. The carried speed is recorded so
+      // _resolvePostRoll can seed it into loco on landing.
+      // Reset jumpVel though: in Havok mode jumpVel is never decremented by
       // gravity (Havok handles that), so it still holds the verticalBoost value.
       // Without this reset, the locomotion block would re-apply it as a sudden
       // upward impulse the first frame JUMP_LOOP takes control.
-      this.speed = 0;
+      this._rollExitSpeed = this._rollMoving ? this.speed * 0.55 : 0;
+      this.speed = this._rollExitSpeed;
       this.jumpVel = 0;
       if (this.usePhysics && this.physicsBody) {
         const cv = this.physicsBody.getLinearVelocity();
-        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
+        // Carry the damped horizontal momentum in physics too, so the visual
+        // and physical body stay in sync during the blend.
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(
+          this._rollDir.x * this._rollExitSpeed,
+          cv.y,
+          this._rollDir.z * this._rollExitSpeed
+        ));
       }
 
       // Resolve post-roll state: wait for the hop arc to settle rather than
@@ -1755,19 +1766,26 @@ class CharCtrl {
         const hasInput = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
           this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
           (this.isTouch && (Math.abs(this.touchVector?.x) > 0.15 || Math.abs(this.touchVector?.y) > 0.15));
+        // Seed loco speed from the carried roll momentum so the blend starts from
+        // a non-zero value matching the roll's exit pace — avoids the jarring snap.
+        // With input, seed at least walk level so the run anim doesn't pop from a
+        // dead stop. Without input, the carried momentum simply decays via DECEL.
+        const carried = this._rollExitSpeed || 0;
         if (hasInput) {
-          // Seed speed at walk level so the locomotion blend starts from something
-          // non-zero — avoids the jarring snap from 0 → run speed.
-          this.speed = this.SPD_WALK * this.SPEED_MULTIPLIER * 0.6;
+          this.speed = Math.max(carried, this.SPD_WALK * this.SPEED_MULTIPLIER * 0.6);
+        } else {
+          this.speed = carried;
         }
-        this._returnToLoco(0.38);
+        this._rollExitSpeed = 0;
+        this._returnToLoco(1);
       } else if (fallingDown) {
         // Arc has peaked and we are now descending — hand off to JUMP_LOOP.
-        // speed is already 0 (reset in the timeout above) so no horizontal
-        // impulse will be re-injected by _update() on the next frame.
+        // The carried roll-exit speed is kept so the air-dash arc continues
+        // smoothly; with AIR_CONTROL it decays via the air DECEL lerp, otherwise
+        // it preserves the dash momentum until landing.
         this.grounded = false;
         this._setState(S.JUMP_LOOP);
-        this.anim.play('Jump_Loop', true, 0.7);
+        this.anim.play('Jump_Loop', true, 1);
       } else {
         // Still ascending or at peak — wait one more frame
         requestAnimationFrame(check);
@@ -3074,14 +3092,19 @@ class CharCtrl {
     }
 
     // Dynamic FOV based on speed (tunnel vision expansion).
-    // Skip FOV update during the roll — keep the camera FOV frozen so the
-    // speed=0 reset at roll-end doesn't cause any visible zoom-in/out change.
+    // Drive FOV from a smoothed speed value (_fovSpeed) instead of raw speed.
+    // The roll briefly spikes speed and then resets it to ~0 at roll-end; using
+    // raw speed there causes a sharp FOV jump. While rolling, hold _fovSpeed
+    // steady (don't chase the roll's speed spike/reset), and let it ease back to
+    // the real speed once the roll finishes — so no aggressive zoom snap.
+    if (this._fovSpeed === undefined) this._fovSpeed = this.speed;
     if (this.state !== S.ROLL && !this._rollActive) {
-      const targetFOV = this.DYNAMIC_FOV
-        ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
-        : this._initialCameraFOV;
-      this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+      this._fovSpeed = lerp(this._fovSpeed, this.speed, 1 - Math.exp(-6 * dt));
     }
+    const targetFOV = this.DYNAMIC_FOV
+      ? (this._initialCameraFOV + (this._fovSpeed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
+      : this._initialCameraFOV;
+    this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
 
     // 5. Camera Angle Movement (Drone-style Banking)
     // Roll the camera slightly when moving laterally at speed, like a chase drone banking into the move
