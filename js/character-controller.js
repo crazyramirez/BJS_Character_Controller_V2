@@ -3127,8 +3127,8 @@ class CharCtrl {
     if (Math.abs(this._camTilt) > 0.0005) {
       // Derive viewDir from rotY + CAM_FOLLOW_PITCH — controller-owned values that are
       // never contaminated by the tilted upVector feeding back into Babylon's alpha/beta.
-      const yaw = -this.rotY - Math.PI / 2;
-      const pitch = this.CAM_FOLLOW_PITCH;
+      const yaw = this.CAM_FOLLOW_LOCK ? (-this.rotY - Math.PI / 2) : this.camera.alpha;
+      const pitch = this.CAM_FOLLOW_LOCK ? this.CAM_FOLLOW_PITCH : this.camera.beta;
       const sinP = Math.sin(pitch);
       const viewDir = new BABYLON.Vector3(
         -Math.cos(yaw) * sinP,

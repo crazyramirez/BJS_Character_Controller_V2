@@ -592,6 +592,7 @@ function getMergeOptions(extra = {}) {
     LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
+    FOOT_TOE_OUT_ANGLE: charTransformConfig.FOOT_TOE_OUT_ANGLE,
     removeExistingAnimations: true,
     ...extra
   };
@@ -1687,6 +1688,16 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     [...scene.skeletons].forEach(skel => skel.dispose());
   }
 
+  // Dispose ALL existing animation groups too. A previous load (e.g. raw
+  // animations.glb, or an earlier character) leaves its groups in
+  // scene.animationGroups; since AnimCtrl resolves clips by NAME, a stale
+  // group (targeting phantom mixamorig:* nodes that don't exist on the new
+  // skeleton) can shadow the freshly-merged, correctly-retargeted one and
+  // leave the new bones (legs/arms) un-animated → mesh deforms.
+  if (scene && scene.animationGroups) {
+    [...scene.animationGroups].forEach(ag => ag.dispose());
+  }
+
   const blob = new Blob([arrayBuffer]);
   const blobUrl = URL.createObjectURL(blob);
 
@@ -1965,10 +1976,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   const cameraFollowObserver = () => {
     if (!activeCharacter) return;
     if (autoRigState) return; // rig mode: user pans freely (right-drag), don't recenter
+    const dt = scene.getEngine().getDeltaTime() / 1000;
+    const clampedDt = Math.max(0.001, Math.min(0.1, dt));
     const deflection = activeCharacter.charCtrl.visualLocalY - activeCharacter.charCtrl.targetLocalY;
     const currentScaleY = activeCharacter.playerCapsule.scaling.y;
     const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, (0.4 + deflection) * currentScaleY, 0));
-    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.1);
+    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
 
     if (activeCharacter.charCtrl.grounded && !hasMadeInitialWalk) {
       hasMadeInitialWalk = true;

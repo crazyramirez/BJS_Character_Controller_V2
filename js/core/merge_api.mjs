@@ -27,6 +27,7 @@ const DEFAULTS = {
   LEG_SPREAD_ANGLE: 0,
   SPINE_STRAIGHTEN_ANGLE: 0,
   HIPS_TILT_ANGLE: 0,
+  FOOT_TOE_OUT_ANGLE: 0,
   POSE_OFFSETS: {},
   COMPRESS_OUTPUT: true,
   // A-pose correction is disabled: the world-space change-of-basis C = inv(Wchar)·Wanim
@@ -43,7 +44,7 @@ const DEFAULTS = {
   // The Mixamo curl delta is authored for straight-bind fingers; transplanting
   // it whole onto a pre-curled bind over-closes the hand. Scale the per-key
   // finger motion delta toward identity to compensate. 1 = no change.
-  FINGER_CURL_SCALE: 0.7,
+  FINGER_CURL_SCALE: 0.9,
   // The thumb's distal segment (thumb3) twists worst under retarget because the
   // CC thumb bind is rolled hard vs Mixamo. Dampen it harder than the rest.
   THUMB_CURL_SCALE: 0.5,
@@ -1419,6 +1420,35 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   const charDoc = await io.readBinary(new Uint8Array(charBuffer));
 
+  // ── Sanitize malformed morph targets ───────────────────────────────────────
+  // Some source GLBs ship a morph target whose attribute vertex count differs
+  // from the base primitive (e.g. Pete: base POSITION=39525, target=32673).
+  // This is invalid per the glTF spec (a morph target MUST match the base
+  // vertex count) — gltf-transform tolerates it on read, but BabylonJS rejects
+  // the mesh at load time: "Mesh is incompatible with morph targets. Targets
+  // and mesh must all have the same vertices count." Drop the mismatched
+  // targets so the rest of the mesh still loads; a target with the wrong count
+  // is unusable anyway.
+  {
+    let dropped = 0;
+    for (const mesh of charDoc.getRoot().listMeshes()) {
+      for (const prim of mesh.listPrimitives()) {
+        const baseCount = prim.getAttribute('POSITION')?.getCount();
+        if (baseCount == null) continue;
+        for (const target of prim.listTargets()) {
+          const bad = target.listSemantics().some(sem => {
+            const c = target.getAttribute(sem)?.getCount();
+            return c != null && c !== baseCount;
+          });
+          if (bad) { prim.removeTarget(target); target.dispose(); dropped++; }
+        }
+      }
+    }
+    if (dropped > 0) {
+      console.log(`[merge] Dropped ${dropped} malformed morph target(s) (vertex count ≠ base mesh) — would crash BabylonJS on load.`);
+    }
+  }
+
   if (cfg.removeExistingAnimations) {
     charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
   }
@@ -1522,12 +1552,23 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
     let syntheticRootNode = null;
 
-    // Strip synthetic root joints from all skins
+    // Strip synthetic root joints from all skins.
+    // Some rigs stack MULTIPLE synthetic roots above the real skeleton, e.g.
+    // AccuRig/Fortnite Sketchfab exports: _rootJoint → root → pelvis. Each is a
+    // skin joint AND an ancestor of Hips, so it would otherwise be disposed later
+    // as a "non-skeleton" node — dropping it from skin.listJoints() WITHOUT
+    // remapping JOINTS_0/1 → every weight points one bone too high → the mesh
+    // skins to the wrong bones and deforms once animated (bind still looks OK
+    // because neighbouring bones share a near-identical rest transform).
+    // Loop so ALL leading synthetic roots are removed here, each time shifting
+    // the joint indices down by one and dropping the matching IBM row.
     const SYNTHETIC_ROOTS = /^(gltf_created_\d+_rootjoint|armature|root|rig|deformationrig|_rootjoint)$/i;
     for (const skin of charDoc.getRoot().listSkins()) {
-      const joints = skin.listJoints();
-      if (joints.length > 0 && SYNTHETIC_ROOTS.test(joints[0].getName())) {
-        const rootJointNode = joints[0];
+      // Stop before the hips so we never strip the real skeleton root.
+      while (skin.listJoints().length > 0
+        && SYNTHETIC_ROOTS.test(stripBJSSuffix(skin.listJoints()[0].getName() || ''))
+        && skin.listJoints()[0] !== hipsNode) {
+        const rootJointNode = skin.listJoints()[0];
         console.log(`[merge] Stripping synthetic root joint: "${rootJointNode.getName()}" from skin: "${skin.getName()}"`);
 
         skin.removeJoint(rootJointNode);
@@ -1535,6 +1576,14 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           skin.setSkeleton(hipsNode);
         }
 
+        // Re-parent any children up to the stripped node's parent so the
+        // hierarchy stays intact, then dispose the synthetic root itself.
+        const parentMap = buildParentMap(charDoc);
+        const rootParent = parentMap.get(rootJointNode) || null;
+        for (const child of [...rootJointNode.listChildren()]) {
+          if (rootParent) rootParent.addChild(child);
+          else for (const scene of charDoc.getRoot().listScenes()) scene.addChild(child);
+        }
         rootJointNode.dispose();
 
         for (const node of charDoc.getRoot().listNodes()) {
@@ -1542,26 +1591,15 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             const mesh = node.getMesh();
             if (mesh) {
               for (const primitive of mesh.listPrimitives()) {
-                const joints0 = primitive.getAttribute('JOINTS_0');
-                if (joints0) {
-                  const arr = joints0.getArray();
+                for (const semantic of ['JOINTS_0', 'JOINTS_1']) {
+                  const acc = primitive.getAttribute(semantic);
+                  const arr = acc?.getArray();
                   if (arr) {
                     const newArr = new Uint16Array(arr.length);
                     for (let i = 0; i < arr.length; i++) {
                       newArr[i] = Math.max(0, Math.round(arr[i]) - 1);
                     }
-                    joints0.setArray(newArr);
-                  }
-                }
-                const joints1 = primitive.getAttribute('JOINTS_1');
-                if (joints1) {
-                  const arr = joints1.getArray();
-                  if (arr) {
-                    const newArr = new Uint16Array(arr.length);
-                    for (let i = 0; i < arr.length; i++) {
-                      newArr[i] = Math.max(0, Math.round(arr[i]) - 1);
-                    }
-                    joints1.setArray(newArr);
+                    acc.setArray(newArr);
                   }
                 }
               }
@@ -1709,6 +1747,68 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         ibmData.set(IBM_new, i * 16);
       });
       ibmAcc.setArray(ibmData);
+    }
+
+    // ── Bake RootNode scale into the geometry ────────────────────────────────
+    // Until here the character's size (unit conversion × user SCALE_X/Y/Z) lives
+    // on RootNode.scale — a node-level transform. Fold it into vertex data, bone
+    // translations and IBMs so the exported model carries its true size in the
+    // geometry and RootNode ends up scale-free. Uniform scale commutes through
+    // joint rotations so the bake is exact; warn (but still apply) on non-uniform.
+    {
+      const [bx, by, bz] = rootNode.getScale() || [1, 1, 1];
+      const isUnit = Math.abs(bx - 1) < 1e-9 && Math.abs(by - 1) < 1e-9 && Math.abs(bz - 1) < 1e-9;
+      if (!isUnit) {
+        const nonUniform = Math.abs(bx - by) > 1e-6 || Math.abs(bx - bz) > 1e-6;
+        if (nonUniform) {
+          console.warn('[merge] Non-uniform scale bake — shear may appear on rotated joints. Prefer uniform scale.');
+        }
+        const scaleVec = (v) => [v[0] * bx, v[1] * by, v[2] * bz];
+
+        // 1) Mesh vertices (POSITION). NORMAL/TANGENT are scale-invariant for
+        //    uniform scale; non-uniform would need inverse-transpose — skipped
+        //    (defaults are uniform) to avoid corrupting tangent.w handedness.
+        for (const meshNode of meshNodes) {
+          const mesh = meshNode.getMesh();
+          if (!mesh) continue;
+          for (const prim of mesh.listPrimitives()) {
+            const pos = prim.getAttribute('POSITION');
+            if (!pos) continue;
+            const el = [0, 0, 0];
+            for (let i = 0; i < pos.getCount(); i++) {
+              pos.getElement(i, el);
+              const s = scaleVec(el);
+              el[0] = s[0]; el[1] = s[1]; el[2] = s[2];
+              pos.setElement(i, el);
+            }
+          }
+        }
+
+        // 2) Every descendant translation (mesh nodes + whole skeleton tree).
+        for (const node of [...meshNodes, ...skeletonNodes]) {
+          const t = node.getTranslation() || [0, 0, 0];
+          node.setTranslation(scaleVec(t));
+        }
+
+        // 3) RootNode is now scale-free; size is baked into the geometry above.
+        rootNode.setScale([1, 1, 1]);
+
+        // 4) Recompute IBMs from the rescaled hierarchy so skinning stays valid.
+        const bakeParentMap = buildParentMap(charDoc);
+        const bakeCache = new Map();
+        for (const skin of charDoc.getRoot().listSkins()) {
+          const joints = skin.listJoints();
+          const ibmAcc = skin.getInverseBindMatrices();
+          if (!joints.length || !ibmAcc) continue;
+          const ibmData = new Float32Array(joints.length * 16);
+          joints.forEach((joint, i) => {
+            const W_new = worldMatrixOf(joint, bakeParentMap, bakeCache);
+            const IBM_new = invertRigidMat4(W_new);
+            ibmData.set(IBM_new, i * 16);
+          });
+          ibmAcc.setArray(ibmData);
+        }
+      }
     }
   }
 
@@ -1965,6 +2065,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     {
       const anyPosture = cfg.ARM_SPREAD_ANGLE || cfg.ARM_SPLAY_ANGLE || cfg.SHOULDER_RAISE_ANGLE
         || cfg.LEG_SPREAD_ANGLE || cfg.SPINE_STRAIGHTEN_ANGLE || cfg.HIPS_TILT_ANGLE
+        || cfg.FOOT_TOE_OUT_ANGLE
         || Object.keys(cfg.POSE_OFFSETS || {}).length;
       if (anyPosture) {
         for (const node of charDoc.getRoot().listNodes()) {
@@ -2000,6 +2101,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             // Counter the hips tilt on the FIRST spine bone so only the
             // pelvis reorients — torso keeps its world orientation.
             if (cfg.HIPS_TILT_ANGLE && canon === 'spine_01') addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+          } else if (canon === 'foot_l') {
+            if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], -cfg.FOOT_TOE_OUT_ANGLE); // toes outward (left)
+          } else if (canon === 'foot_r') {
+            if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);  // toes outward (right)
           } else if (canon === 'pelvis') {
             // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
             // tilt only the root so the offset doesn't double down the chain.

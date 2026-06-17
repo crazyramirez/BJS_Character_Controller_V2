@@ -100,10 +100,35 @@ function worldMatrixOf(node, parentMap, cache) {
 
 // ── Skin space → render world ────────────────────────────────────────────────
 // Skinned vertices are authored in skin space and rendered as jointWorld·IBM·v.
-// At bind pose jointWorld·IBM is the same matrix S for every joint, but S is
-// NOT always identity: FBX-sourced exports (UE, Blender, 3ds Max, AccuRig)
-// keep vertices Z-up and put the up-axis fix on an armature ancestor, so
-// S is that rotation. Returns Map<mesh, mat4> for every skinned mesh.
+// At bind pose jointWorld·IBM is the same matrix S for every joint that actually
+// skins the mesh — but S is NOT always identity: FBX-sourced exports (UE, Blender,
+// 3ds Max, AccuRig) keep vertices Z-up and put the up-axis fix on an armature
+// ancestor, so S is that rotation. Returns Map<mesh, mat4> for every skinned mesh.
+//
+// The reference joint must be one that REALLY skins the mesh. joints[0] is often
+// a synthetic root (_rootJoint, Armature) whose jointWorld·IBM does NOT match the
+// body joints' S (e.g. Sketchfab Jill: _rootJoint·IBM₀ misses the -90°X that every
+// body joint carries) — using it flips the whole mesh back to Z-up and scatters
+// the auto-rig markers on the floor. So pick the most-weighted joint of the mesh.
+function dominantJointIndex(mesh) {
+  const counts = new Map();
+  for (const prim of mesh.listPrimitives()) {
+    const J = prim.getAttribute('JOINTS_0');
+    const W = prim.getAttribute('WEIGHTS_0');
+    if (!J || !W) continue;
+    const ji = [0, 0, 0, 0], wi = [0, 0, 0, 0];
+    for (let i = 0; i < J.getCount(); i++) {
+      J.getElement(i, ji); W.getElement(i, wi);
+      for (let k = 0; k < 4; k++) {
+        if (wi[k] > 0) counts.set(ji[k], (counts.get(ji[k]) || 0) + wi[k]);
+      }
+    }
+  }
+  let best = -1, bestW = -1;
+  for (const [idx, w] of counts) { if (w > bestW) { bestW = w; best = idx; } }
+  return best;
+}
+
 function skinWorldXforms(doc) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
@@ -118,8 +143,11 @@ function skinWorldXforms(doc) {
       byMesh.set(mesh, MAT4_IDENTITY);
       continue;
     }
-    const W = worldMatrixOf(joints[0], parentMap, cache);
-    byMesh.set(mesh, mat4Mul(W, ibm.slice(0, 16)));
+    // Reference on a joint that actually weights this mesh (fall back to 0).
+    let ref = dominantJointIndex(mesh);
+    if (ref < 0 || ref * 16 + 16 > ibm.length || !joints[ref]) ref = 0;
+    const W = worldMatrixOf(joints[ref], parentMap, cache);
+    byMesh.set(mesh, mat4Mul(W, ibm.slice(ref * 16, ref * 16 + 16)));
   }
   return byMesh;
 }
@@ -1104,10 +1132,23 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
     // foot as the head, producing an inverted skeleton with high self-reported
     // confidence. Disagreement then means topology broke, not the pose.
     const topoUpright = topo.joints.Head[1] > topo.joints.Hips[1];
-    if (process.env.AUTORIG_DEBUG) console.log(`[autorig] cross-check: topoConf=${topo.confidence.toFixed(2)} disagree=${(disagree * 100).toFixed(0)}% topoUpright=${topoUpright}`);
-    if (disagree > 0.22 && topoUpright) {
+    // Even an "upright" topology skeleton can be broken on an action pose: a
+    // spurious 6th extremity (bent elbow/knee spur) corrupts the pair matching,
+    // collapsing both UpLeg roots onto the SAME side. Slicing already proved the
+    // mesh is a clean upright stance (real crotch + arm span), so before letting
+    // topology overrule it, demand topology's own legs be anatomically sane:
+    // the two thighs must straddle the body — opposite sides, clearly apart.
+    const ulL = topo.joints.LeftUpLeg, ulR = topo.joints.RightUpLeg;
+    const legSpread = Math.abs(ulL[0] - ulR[0]);
+    const straddle = (ulL[0] - topo.joints.Hips[0]) * (ulR[0] - topo.joints.Hips[0]) < 0;
+    const topoLegsSane = straddle && legSpread > 0.06 * H;
+    if (process.env.AUTORIG_DEBUG) console.log(`[autorig] cross-check: topoConf=${topo.confidence.toFixed(2)} disagree=${(disagree * 100).toFixed(0)}% topoUpright=${topoUpright} topoLegsSane=${topoLegsSane} (spread=${(legSpread / H).toFixed(2)}H straddle=${straddle})`);
+    if (disagree > 0.22 && topoUpright && topoLegsSane) {
       console.log(`[autorig] Detectors disagree (${(disagree * 100).toFixed(0)}% of height) — pose is non-standard, using topology skeleton.`);
       return topo;
+    }
+    if (disagree > 0.22 && topoUpright && !topoLegsSane) {
+      console.log('[autorig] Topology legs collapsed to one side (broken pair-matching on an action pose) — keeping upright slicing skeleton.');
     }
   }
   return sliced;
@@ -1177,15 +1218,15 @@ function seedJointsFromSkins(doc) {
   const worldByNorm = new Map();
   for (const skin of doc.getRoot().listSkins()) {
     const joints = skin.listJoints();
-    const ibmAcc = skin.getInverseBindMatrices();
-    const ibmArray = ibmAcc?.getArray();
-    if (!ibmArray || !joints.length) continue;
-    // Skin space → render world (FBX-sourced rigs keep IBMs Z-up)
-    const S = mat4Mul(worldMatrixOf(joints[0], parentMap, cache), ibmArray.slice(0, 16));
-    joints.forEach((joint, i) => {
-      if (i * 16 + 16 > ibmArray.length) return;
-      const W = invertRigidMat4(ibmArray.slice(i * 16, i * 16 + 16));
-      const p = transformPoint(S, [W[12], W[13], W[14]]);
+    if (!joints.length) continue;
+    // Bind position = the joint's NODE world transform. This is the render-world
+    // ground truth and already includes any ancestor coordinate fix (e.g. the
+    // -90°X on Sketchfab_model/.fbx wrappers). The earlier S = jointWorld₀·IBM₀
+    // approach double-applied that rotation on rigs whose IBMs are authored in
+    // render space (UE5/Fortnite Sketchfab exports), flipping markers to Z-up.
+    joints.forEach((joint) => {
+      const W = worldMatrixOf(joint, parentMap, cache);
+      const p = [W[12], W[13], W[14]];
       for (const n of seedNormVariants(joint.getName())) {
         if (n && !worldByNorm.has(n)) worldByNorm.set(n, p);
       }
@@ -1366,16 +1407,31 @@ function adjustExistingRig(doc, targetJoints = {}) {
     const acc = skin.getInverseBindMatrices();
     const arr = acc?.getArray();
     if (!arr) continue;
-    skinData.push({ joints, acc, arr: Float32Array.from(arr) });
+    skinData.push({ skin, joints, acc, arr: Float32Array.from(arr) });
     joints.forEach(j => jointSet.add(j));
   }
   if (skinData.length === 0) throw new Error('Skin has no inverse bind matrices.');
 
-  // S maps skin space → render world.
+  // S maps skin space → render world. It must be anchored on a joint that REALLY
+  // skins the mesh: joints[0] is frequently a synthetic root (_rootJoint) whose
+  // jointWorld·IBM does NOT carry the same coordinate fix (e.g. the -90°X on
+  // Sketchfab wrappers) as the body joints — using it lays the rig flat on its
+  // back. Pick the most-weighted joint of the skin's mesh instead (same logic as
+  // skinWorldXforms), so the markers↔skin-space round-trip stays upright.
   const matCache0 = new Map();
+  let sRefJoint = skinData[0].joints[0];
+  let sRefIdx = 0;
+  {
+    let refMesh = null;
+    for (const node of root.listNodes()) {
+      if (node.getSkin() === skinData[0].skin && node.getMesh()) { refMesh = node.getMesh(); break; }
+    }
+    const dom = refMesh ? dominantJointIndex(refMesh) : -1;
+    if (dom >= 0 && dom < skinData[0].joints.length) { sRefIdx = dom; sRefJoint = skinData[0].joints[dom]; }
+  }
   const S = mat4Mul(
-    worldMatrixOf(skinData[0].joints[0], parentMap, matCache0),
-    skinData[0].arr.slice(0, 16)
+    worldMatrixOf(sRefJoint, parentMap, matCache0),
+    skinData[0].arr.slice(sRefIdx * 16, sRefIdx * 16 + 16)
   );
   const invS = invertRigidMat4(S);
 
@@ -1579,16 +1635,68 @@ function stripExistingRig(doc) {
     for (const j of skin.listJoints()) jointSet.add(j);
   }
 
-  const skinnedMeshes = new Set();
+  // Bake each skinned mesh's skin-space → render-world transform (S) into its
+  // vertices BEFORE clearing the skin, then reparent the mesh to the scene root
+  // so no stale ancestor rotation (e.g. Sketchfab's -90°X) is applied on top.
+  // Skinned verts live in skin space; the node transform is ignored by glTF
+  // skinning, so without this the rebuilt rig would lie down (raw skin space is
+  // usually Z-up). S is anchored on the mesh's dominant (most-weighted) joint —
+  // a synthetic _rootJoint at index 0 does NOT carry the body's coordinate fix.
+  const parentMap = buildParentMap(doc);
+  const sCache = new Map();
+  const skinXformByMesh = new Map();
   for (const node of root.listNodes()) {
+    const skin = node.getSkin();
+    const mesh = node.getMesh();
+    if (!skin || !mesh || skinXformByMesh.has(mesh)) continue;
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices()?.getArray();
+    if (!joints.length || !ibm || ibm.length < 16) { skinXformByMesh.set(mesh, MAT4_IDENTITY); continue; }
+    let ref = dominantJointIndex(mesh);
+    if (ref < 0 || ref * 16 + 16 > ibm.length || !joints[ref]) ref = 0;
+    skinXformByMesh.set(mesh, mat4Mul(worldMatrixOf(joints[ref], parentMap, sCache), ibm.slice(ref * 16, ref * 16 + 16)));
+  }
+
+  const skinnedMeshes = new Set();
+  const bakedForStrip = new Set();
+  const scene0 = root.listScenes()[0];
+  for (const node of [...root.listNodes()]) {
     if (node.getSkin()) {
-      if (node.getMesh()) skinnedMeshes.add(node.getMesh());
+      const mesh = node.getMesh();
+      if (mesh) {
+        skinnedMeshes.add(mesh);
+        if (!bakedForStrip.has(mesh)) {
+          bakedForStrip.add(mesh);
+          const S = skinXformByMesh.get(mesh) || MAT4_IDENTITY;
+          for (const prim of mesh.listPrimitives()) {
+            const pos = prim.getAttribute('POSITION');
+            if (pos) {
+              const arr = pos.getArray().slice();
+              for (let i = 0; i < arr.length; i += 3) {
+                const p = transformPoint(S, [arr[i], arr[i + 1], arr[i + 2]]);
+                arr[i] = p[0]; arr[i + 1] = p[1]; arr[i + 2] = p[2];
+              }
+              pos.setArray(arr);
+            }
+            const nrm = prim.getAttribute('NORMAL');
+            if (nrm) {
+              const arr = nrm.getArray().slice();
+              for (let i = 0; i < arr.length; i += 3) {
+                const d = transformDirection(S, [arr[i], arr[i + 1], arr[i + 2]]);
+                arr[i] = d[0]; arr[i + 1] = d[1]; arr[i + 2] = d[2];
+              }
+              nrm.setArray(arr);
+            }
+          }
+        }
+      }
       node.setSkin(null);
-      // Skinned node transforms are ignored by the glTF skinning path —
-      // neutralize so the now-static mesh doesn't pick up a stale transform.
+      // Verts are now in render world; neutralize the node transform AND lift the
+      // node to the scene root so ancestor coordinate rotations no longer apply.
       node.setTranslation([0, 0, 0]);
       node.setRotation([0, 0, 0, 1]);
       node.setScale([1, 1, 1]);
+      if (scene0) scene0.addChild(node);
     }
   }
   for (const mesh of skinnedMeshes) {
@@ -1637,8 +1745,22 @@ function boneSegments(joints, H) {
     Spine: seg('Spine', 'Spine1'),
     Spine1: seg('Spine1', 'Spine2'),
     Spine2: seg('Spine2', 'Neck'),
-    Neck: seg('Neck', 'Head'),
-    Head: ext('Head', [0, 0.11 * H, 0]),
+    // Neck only spans the lower half of neck→head so it does not out-compete the
+    // Head bone for skull vertices (which sit above the Head joint). Without this
+    // most of the skull weighted to Neck and the head tore off when the neck/spine
+    // moved.
+    Neck: [joints.Neck, [
+      joints.Neck[0] + (joints.Head[0] - joints.Neck[0]) * 0.5,
+      joints.Neck[1] + (joints.Head[1] - joints.Neck[1]) * 0.5,
+      joints.Neck[2] + (joints.Head[2] - joints.Neck[2]) * 0.5,
+    ]],
+    // Head segment must cover the WHOLE skull. The Head marker sits at the skull
+    // base (~chin/jaw height), so extend generously upward (skull is ~0.13·H tall)
+    // and start a little below the joint so the jaw/face also bind to Head, not Neck.
+    Head: [
+      [joints.Head[0], joints.Head[1] - 0.03 * H, joints.Head[2]],
+      [joints.Head[0], joints.Head[1] + 0.16 * H, joints.Head[2]],
+    ],
     LeftShoulder: seg('LeftShoulder', 'LeftArm'),
     LeftArm: seg('LeftArm', 'LeftForeArm'),
     LeftForeArm: seg('LeftForeArm', 'LeftHand'),
@@ -1767,13 +1889,52 @@ export async function autoRigGLB(buffer, options = {}) {
   const doc = await io.readBinary(new Uint8Array(buffer));
   const root = doc.getRoot();
 
+  // Drop malformed morph targets (attribute vertex count ≠ base mesh). Invalid
+  // per the glTF spec; BabylonJS rejects the mesh on load ("Targets and mesh
+  // must all have the same vertices count"). A rebuilt rig also bakes POSITION
+  // into world space, so a stale-count target could never align anyway.
+  for (const mesh of root.listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      const baseCount = prim.getAttribute('POSITION')?.getCount();
+      if (baseCount == null) continue;
+      for (const target of prim.listTargets()) {
+        const bad = target.listSemantics().some(sem => {
+          const c = target.getAttribute(sem)?.getCount();
+          return c != null && c !== baseCount;
+        });
+        if (bad) { prim.removeTarget(target); target.dispose(); }
+      }
+    }
+  }
+
   // Already rigged → ADJUST the existing skeleton instead of rebuilding it.
   // Keeps hierarchy, bind orientations, extra bones (fingers/twist) and the
   // original artist skin weights; only joint positions move to the markers.
+  // BUT only when the existing bones carry anatomical names we can map markers
+  // to. Some rigs use opaque names (e.g. _rootJoint, 0_01, 1_02 …) that match no
+  // canonical joint — adjusting them moves a handful of bones and scatters the
+  // rest, producing a broken pose. For those, strip the useless rig and build a
+  // fresh Mixamo skeleton from the markers (same as the skinless path).
   if (root.listSkins().length > 0) {
-    adjustExistingRig(doc, options.joints || {});
-    await doc.transform(prune({ keepLeaves: true }));
-    return io.writeBinary(doc);
+    let mappable = 0;
+    const allNorms = new Set();
+    for (const skin of root.listSkins()) {
+      for (const j of skin.listJoints()) {
+        for (const n of seedNormVariants(j.getName())) if (n) allNorms.add(n);
+      }
+    }
+    for (const aliases of Object.values(SEED_ALIASES)) {
+      if (aliases.some(a => allNorms.has(a))) mappable++;
+    }
+    // Need a usable core (hips/spine/limbs ≈ 20 canon joints). < 8 → not a real
+    // named humanoid rig; rebuild fresh instead of adjusting.
+    if (mappable >= 8) {
+      adjustExistingRig(doc, options.joints || {});
+      await doc.transform(prune({ keepLeaves: true }));
+      return io.writeBinary(doc);
+    }
+    console.log(`[autorig] Existing skeleton has non-anatomical bone names (only ${mappable} canonical joints mappable) — stripping and rebuilding a fresh skeleton.`);
+    stripExistingRig(doc);
   }
   const previouslySkinned = new Map(); // mesh → skin-space xform (none: file is unskinned here)
 

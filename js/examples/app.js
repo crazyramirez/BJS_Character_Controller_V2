@@ -30,21 +30,191 @@ const engine = new BABYLON.Engine(canvas, true, {
 // ═══════════════════════════════════════════════════════════
 // CHARACTER INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
+// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS
+// Copy and paste this loadCharacter function replacement in your app.js:
+
 async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
-    // Integration Mode options:
-    // Option A: Pre-merged GLB (Embedded animations, standard)
-    filename: 'character_animated.glb'
+    filename: 'character_animated_3.glb',
+    capsuleScale: { x: 1, y: 1, z: 1 },
+    keys: {
+      "MOVE_FORWARD": [
+        "KeyW",
+        "ArrowUp"
+      ],
+      "MOVE_BACKWARD": [
+        "KeyS",
+        "ArrowDown"
+      ],
+      "MOVE_LEFT": [
+        "KeyA",
+        "ArrowLeft"
+      ],
+      "MOVE_RIGHT": [
+        "KeyD",
+        "ArrowRight"
+      ],
+      "SPRINT": [
+        "ShiftLeft",
+        "ShiftRight"
+      ],
+      "CROUCH": [
+        "ControlLeft",
+        "ControlRight",
+        "KeyC"
+      ],
+      "JUMP": [
+        "Space"
+      ],
+      "ROLL": [
+        "KeyR"
+      ],
+      "PUNCH": [
+        "KeyQ"
+      ],
+      "SPELL": [
+        "KeyE"
+      ],
+      "INTERACT": [
+        "KeyF"
+      ]
+    },
+    config: {
+      "GRAV": 22,
+      "JUMP_PWR": 9.5,
+      "SPD_WALK": 2.5,
+      "SPD_JOG": 3,
+      "SPD_SPRINT": 5,
+      "SPD_CROUCH": 2,
+      "SPD_CROUCH_RUN": 3.2,
+      "ACCEL": 14,
+      "DECEL": 16,
+      "ROT_SPD": 40,
+      "AIR_CONTROL": false,
+      "DYNAMIC_FOV": true,
+      "DYNAMIC_FOV_MAX": 0.54,
+      "CAM_TILT": false,
+      "CAM_TILT_AMOUNT": 0.34,
+      "CAM_FOLLOW_LOCK": false,
+      "CAM_FOLLOW_PITCH": 1.047,
+      "CAM_FOLLOW_DIST": 8,
+      "CAM_LOCK_PITCH": false,
+      "JOYSTICK_LOCK_X": false,
+      "DOUBLE_JUMP_ENABLED": true,
+      "SPEED_MULTIPLIER": 1,
+      "PLAY_PARTICLES": true
+    },
+    configure: ({ animCtrl, charCtrl, filteredGroups }) => {
+      // Remap Idle_Loop
+      const anim_Idle_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Idle_Loop');
+      if (anim_Idle_Loop) {
+        animCtrl.setAnimation('Idle_Loop', anim_Idle_Loop);
+        animCtrl.setAnimationRanges('Idle_Loop', 0, 150);
+      }
 
-    // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
-    // filename: 'pete_base.glb',
-    // animationsFilename: 'animations.glb'
+      // Remap Walk_Loop
+      const anim_Walk_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Walk_Loop');
+      if (anim_Walk_Loop) {
+        animCtrl.setAnimation('Walk_Loop', anim_Walk_Loop);
+        animCtrl.setAnimationRanges('Walk_Loop', 0, 80);
+      }
 
+      // Remap Sprint_Loop
+      const anim_Sprint_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Sprint_Loop');
+      if (anim_Sprint_Loop) {
+        animCtrl.setAnimation('Sprint_Loop', anim_Sprint_Loop);
+        animCtrl.setAnimationRanges('Sprint_Loop', 0, 40);
+      }
+
+      // Remap Crouch_Idle_Loop
+      const anim_Crouch_Idle_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Crouch_Idle_Loop');
+      if (anim_Crouch_Idle_Loop) {
+        animCtrl.setAnimation('Crouch_Idle_Loop', anim_Crouch_Idle_Loop);
+        animCtrl.setAnimationRanges('Crouch_Idle_Loop', 0, 176);
+      }
+
+      // Remap Crouch_Fwd_Loop
+      const anim_Crouch_Fwd_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Crouch_Fwd_Loop');
+      if (anim_Crouch_Fwd_Loop) {
+        animCtrl.setAnimation('Crouch_Fwd_Loop', anim_Crouch_Fwd_Loop);
+        animCtrl.setAnimationRanges('Crouch_Fwd_Loop', 0, 120);
+      }
+
+      // Remap Jump_Start
+      const anim_Jump_Start = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Start');
+      if (anim_Jump_Start) {
+        animCtrl.setAnimation('Jump_Start', anim_Jump_Start);
+        animCtrl.setAnimationRanges('Jump_Start', 0, 80);
+      }
+
+      // Remap Jump_Loop
+      const anim_Jump_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Loop');
+      if (anim_Jump_Loop) {
+        animCtrl.setAnimation('Jump_Loop', anim_Jump_Loop);
+        animCtrl.setAnimationRanges('Jump_Loop', 0, 150);
+      }
+
+      // Remap Jump_Land
+      const anim_Jump_Land = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Land');
+      if (anim_Jump_Land) {
+        animCtrl.setAnimation('Jump_Land', anim_Jump_Land);
+        animCtrl.setAnimationRanges('Jump_Land', 0, 76);
+      }
+
+      // Remap Roll
+      const anim_Roll = filteredGroups.find(g => cleanAnimName(g.name) === 'Roll');
+      if (anim_Roll) {
+        animCtrl.setAnimation('Roll', anim_Roll);
+        animCtrl.setAnimationRanges('Roll', 0, 88);
+      }
+
+      // Remap Punch_Jab
+      const anim_Punch_Jab = filteredGroups.find(g => cleanAnimName(g.name) === 'Punch_Jab');
+      if (anim_Punch_Jab) {
+        animCtrl.setAnimation('Punch_Jab', anim_Punch_Jab);
+        animCtrl.setAnimationRanges('Punch_Jab', 0, 52);
+      }
+
+      // Remap Punch_Cross
+      const anim_Punch_Cross = filteredGroups.find(g => cleanAnimName(g.name) === 'Punch_Cross');
+      if (anim_Punch_Cross) {
+        animCtrl.setAnimation('Punch_Cross', anim_Punch_Cross);
+        animCtrl.setAnimationRanges('Punch_Cross', 0, 60);
+      }
+
+      // Remap Spell_Simple_Enter
+      const anim_Spell_Simple_Enter = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Enter');
+      if (anim_Spell_Simple_Enter) {
+        animCtrl.setAnimation('Spell_Simple_Enter', anim_Spell_Simple_Enter);
+        animCtrl.setAnimationRanges('Spell_Simple_Enter', 0, 32);
+      }
+
+      // Remap Spell_Simple_Shoot
+      const anim_Spell_Simple_Shoot = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Shoot');
+      if (anim_Spell_Simple_Shoot) {
+        animCtrl.setAnimation('Spell_Simple_Shoot', anim_Spell_Simple_Shoot);
+        animCtrl.setAnimationRanges('Spell_Simple_Shoot', 0, 30);
+      }
+
+      // Remap Spell_Simple_Exit
+      const anim_Spell_Simple_Exit = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Exit');
+      if (anim_Spell_Simple_Exit) {
+        animCtrl.setAnimation('Spell_Simple_Exit', anim_Spell_Simple_Exit);
+        animCtrl.setAnimationRanges('Spell_Simple_Exit', 0, 26);
+      }
+
+      // Remap Interact
+      const anim_Interact = filteredGroups.find(g => cleanAnimName(g.name) === 'Interact');
+      if (anim_Interact) {
+        animCtrl.setAnimation('Interact', anim_Interact);
+        animCtrl.setAnimationRanges('Interact', 0, 120);
+      }
+
+    }
   });
 }
-
 // Setup Character with custom controls and animations
 // async function loadCharacter(scene, shadow, camera, usePhysics) {
 //   return setupCharacter(scene, camera, usePhysics, {
