@@ -601,6 +601,35 @@ function getMergeOptions(extra = {}) {
 // ═══════════════════════════════════════════════════════════
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// SLIDER RESET — double-click or right-click resets a range
+// slider to its default (HTML `value` attribute) value.
+// Delegated so it covers every current and future range input.
+// ═══════════════════════════════════════════════════════════
+function setupSliderReset() {
+  function resetSlider(slider) {
+    const def = slider.defaultValue; // original HTML `value` attribute
+    if (slider.value === def) return;
+    slider.value = def;
+    // Fire input + change so existing handlers update the value label,
+    // the model transform, autorig pose, etc.
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  document.addEventListener('dblclick', (e) => {
+    const slider = e.target.closest('input[type="range"]');
+    if (slider) resetSlider(slider);
+  });
+
+  document.addEventListener('contextmenu', (e) => {
+    const slider = e.target.closest('input[type="range"]');
+    if (!slider) return;
+    e.preventDefault(); // suppress browser context menu on the slider
+    resetSlider(slider);
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   loadPreferences();
   setupTabs();
@@ -619,6 +648,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   syncCharTransformToUI();
   setupAutoRigControls();
   setupDragAndDrop();
+  setupSliderReset();
 
   // Await server ping BEFORE loading default character so isServerAvailable is set
   await pingServer();
