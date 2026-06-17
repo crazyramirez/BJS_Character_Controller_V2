@@ -190,7 +190,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,                             // Optional: shadow generator to add character meshes to
     assetsPath: 'assets/',              // Optional: path to GLB assets folder (defaults to 'assets/')
-    filename: 'character_animated.glb', // Optional: GLB file name (defaults to 'character_animated.glb')
+    filename: 'character_animated_1.glb', // Optional: GLB file name (defaults to 'character_animated_1.glb')
     spawnPosition: new BABYLON.Vector3(0, 2, 0), // Optional: starting position override
     ellipsoid: new BABYLON.Vector3(0.35, 0.96, 0.35), // Optional: collision ellipsoid override
     keys: { JUMP: ['KeyK'] },           // Optional: remap keyboard controls directly
@@ -331,7 +331,7 @@ The **Export** tab provides 4 distinct ways to output your configuration and ass
 When exporting your setup, you can choose between two integration architectures depending on your project needs:
 
 *   **Pre-merged GLB (Baked Merge)**:
-    *   **How it works**: Merges character meshes and animation channels into a single `character_animated.glb` file.
+    *   **How it works**: Merges character meshes and animation channels into a single `character_animated_1.glb` file.
     *   **Best for**: Single character games, simple setups, or engines where loading multiple separate files is not desired.
     *   **Drawback**: Duplicate data. If you have 10 characters sharing the same locomotion set, you will be downloading those animation frames 10 times.
 *   **Runtime Retargeting (Client-Side Dynamic Retargeting)**:
@@ -353,7 +353,7 @@ Allows you to save/load your visual builder configuration presets:
 *   **Import builder-config.json**: Restore your saved configuration at any time to resume working in the builder without losing your adjustments.
 
 ### 3. 📦 Exporting the Character as GLB (with animations)
-Click **Download character_animated.glb** to download a single, self-contained GLB file that merges your character mesh with the active animations retargeted and merged directly into the skeletal structures on the server. Ready for drag-and-drop into your assets folder.
+Click **Download character_animated_1.glb** to download a single, self-contained GLB file that merges your character mesh with the active animations retargeted and merged directly into the skeletal structures on the server. Ready for drag-and-drop into your assets folder.
 
 ### ⚡ 4. Downloading Baked Controller (`custom-character-controller.js`)
 Generates a tailored standalone `character-controller.js` file with your settings pre-baked:

@@ -68,7 +68,7 @@ for (let i = 0; i < args.length; i++) {
 }
 charPath = charPath || '../assets/character.glb';
 animPath = animPath || './assets//animations.glb';
-outputPath = outputPath || '../assets/character_animated.glb';
+outputPath = outputPath || '../assets/character_animated_1.glb';
 
 // ── Bone name mapping ───────────────────────────────────────────────────────
 const BONE_MAP = {
@@ -789,7 +789,7 @@ async function main() {
   const charDoc = await io.read(charPath);
   const animDoc = await io.read(animPath);
 
-  // ── Unify skeleton structure and apply scale/pivot shift to match character_animated.glb ────────────────
+  // ── Unify skeleton structure and apply scale/pivot shift to match character_animated_1.glb ────────────────
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
     if (name) {
@@ -1204,7 +1204,7 @@ async function main() {
     );
   }
 
-  // Unify skeleton structure to match character_animated.glb
+  // Unify skeleton structure to match character_animated_1.glb
   console.log('Unifying skeleton structure...');
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();

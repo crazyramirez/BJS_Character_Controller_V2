@@ -1197,15 +1197,15 @@ async function loadDefaultCharacter() {
   setLoaderStep('read', 'active');
   showLoading('Loading default character…');
   try {
-    const response = await fetch('assets/character_animated.glb');
+    const response = await fetch('assets/character_animated_1.glb');
     if (!response.ok) throw new Error('Assets character GLB not found.');
     const buf = await response.arrayBuffer();
     setLoaderStep('read', 'completed');
-    const file = new File([buf], 'character_animated.glb');
+    const file = new File([buf], 'character_animated_1.glb');
     await loadCharacterMeshFile(file, buf);
     animationsGlbBuffer = buf;
   } catch (e) {
-    console.warn('Could not load assets/character_animated.glb, waiting for user import.', e);
+    console.warn('Could not load assets/character_animated_1.glb, waiting for user import.', e);
     hideLoading();
   }
 }
@@ -5002,7 +5002,7 @@ function updateExportCode() {
     animFileOption = `\n    animationsFilename: '${animName}',`;
   }
 
-  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: '${exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated.glb'}',${animFileOption}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
+  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: '${exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated_1.glb'}',${animFileOption}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
   savePreferences();
@@ -5053,10 +5053,10 @@ async function downloadCharacterGlbFile() {
     const blob = new Blob([resultBuffer], { type: 'model/gltf-binary' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'character_animated.glb';
+    link.download = 'character_animated_1.glb';
     link.click();
     hideLoading();
-    showToast('Downloaded character_animated.glb!');
+    showToast('Downloaded character_animated_1.glb!');
   } catch (err) {
     console.error(err);
     hideLoading();

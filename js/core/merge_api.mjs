@@ -1453,7 +1453,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
   }
 
-  // ── Unify skeleton structure and apply scale/pivot shift to match character_animated.glb ────────────────
+  // ── Unify skeleton structure and apply scale/pivot shift to match character_animated_1.glb ────────────────
   const sx = cfg.SCALE_X !== undefined ? cfg.SCALE_X : 1.0;
   const sy = cfg.SCALE_Y !== undefined ? cfg.SCALE_Y : 1.0;
   const sz = cfg.SCALE_Z !== undefined ? cfg.SCALE_Z : 1.0;

@@ -9,8 +9,10 @@ const C3 = (r, g, b) => new BABYLON.Color3(r, g, b);
 var charRoot, charRes;
 
 function setLoad(pct, label) {
-  $('bar').style.width = pct + '%';
-  if (label) $('bar-label').textContent = label;
+  const bar = $('bar');
+  const lbl = $('bar-label');
+  if (bar) bar.style.width = pct + '%';
+  if (label && lbl) lbl.textContent = label;
 }
 function hideLoad() {
   const el = $('loading');
@@ -37,184 +39,16 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
-    filename: 'character_animated_3.glb',
-    capsuleScale: { x: 1, y: 1, z: 1 },
-    keys: {
-      "MOVE_FORWARD": [
-        "KeyW",
-        "ArrowUp"
-      ],
-      "MOVE_BACKWARD": [
-        "KeyS",
-        "ArrowDown"
-      ],
-      "MOVE_LEFT": [
-        "KeyA",
-        "ArrowLeft"
-      ],
-      "MOVE_RIGHT": [
-        "KeyD",
-        "ArrowRight"
-      ],
-      "SPRINT": [
-        "ShiftLeft",
-        "ShiftRight"
-      ],
-      "CROUCH": [
-        "ControlLeft",
-        "ControlRight",
-        "KeyC"
-      ],
-      "JUMP": [
-        "Space"
-      ],
-      "ROLL": [
-        "KeyR"
-      ],
-      "PUNCH": [
-        "KeyQ"
-      ],
-      "SPELL": [
-        "KeyE"
-      ],
-      "INTERACT": [
-        "KeyF"
-      ]
-    },
-    config: {
-      "GRAV": 22,
-      "JUMP_PWR": 9.5,
-      "SPD_WALK": 2.5,
-      "SPD_JOG": 3,
-      "SPD_SPRINT": 5,
-      "SPD_CROUCH": 2,
-      "SPD_CROUCH_RUN": 3.2,
-      "ACCEL": 14,
-      "DECEL": 16,
-      "ROT_SPD": 40,
-      "AIR_CONTROL": false,
-      "DYNAMIC_FOV": true,
-      "DYNAMIC_FOV_MAX": 0.54,
-      "CAM_TILT": false,
-      "CAM_TILT_AMOUNT": 0.34,
-      "CAM_FOLLOW_LOCK": false,
-      "CAM_FOLLOW_PITCH": 1.047,
-      "CAM_FOLLOW_DIST": 8,
-      "CAM_LOCK_PITCH": false,
-      "JOYSTICK_LOCK_X": false,
-      "DOUBLE_JUMP_ENABLED": true,
-      "SPEED_MULTIPLIER": 1,
-      "PLAY_PARTICLES": true
-    },
-    configure: ({ animCtrl, charCtrl, filteredGroups }) => {
-      // Remap Idle_Loop
-      const anim_Idle_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Idle_Loop');
-      if (anim_Idle_Loop) {
-        animCtrl.setAnimation('Idle_Loop', anim_Idle_Loop);
-        animCtrl.setAnimationRanges('Idle_Loop', 0, 150);
-      }
+    // Integration Mode options:
+    // Option A: Pre-merged GLB (Embedded animations, standard)
+    // filename: 'character_animated_1.glb'
 
-      // Remap Walk_Loop
-      const anim_Walk_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Walk_Loop');
-      if (anim_Walk_Loop) {
-        animCtrl.setAnimation('Walk_Loop', anim_Walk_Loop);
-        animCtrl.setAnimationRanges('Walk_Loop', 0, 80);
-      }
-
-      // Remap Sprint_Loop
-      const anim_Sprint_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Sprint_Loop');
-      if (anim_Sprint_Loop) {
-        animCtrl.setAnimation('Sprint_Loop', anim_Sprint_Loop);
-        animCtrl.setAnimationRanges('Sprint_Loop', 0, 40);
-      }
-
-      // Remap Crouch_Idle_Loop
-      const anim_Crouch_Idle_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Crouch_Idle_Loop');
-      if (anim_Crouch_Idle_Loop) {
-        animCtrl.setAnimation('Crouch_Idle_Loop', anim_Crouch_Idle_Loop);
-        animCtrl.setAnimationRanges('Crouch_Idle_Loop', 0, 176);
-      }
-
-      // Remap Crouch_Fwd_Loop
-      const anim_Crouch_Fwd_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Crouch_Fwd_Loop');
-      if (anim_Crouch_Fwd_Loop) {
-        animCtrl.setAnimation('Crouch_Fwd_Loop', anim_Crouch_Fwd_Loop);
-        animCtrl.setAnimationRanges('Crouch_Fwd_Loop', 0, 120);
-      }
-
-      // Remap Jump_Start
-      const anim_Jump_Start = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Start');
-      if (anim_Jump_Start) {
-        animCtrl.setAnimation('Jump_Start', anim_Jump_Start);
-        animCtrl.setAnimationRanges('Jump_Start', 0, 80);
-      }
-
-      // Remap Jump_Loop
-      const anim_Jump_Loop = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Loop');
-      if (anim_Jump_Loop) {
-        animCtrl.setAnimation('Jump_Loop', anim_Jump_Loop);
-        animCtrl.setAnimationRanges('Jump_Loop', 0, 150);
-      }
-
-      // Remap Jump_Land
-      const anim_Jump_Land = filteredGroups.find(g => cleanAnimName(g.name) === 'Jump_Land');
-      if (anim_Jump_Land) {
-        animCtrl.setAnimation('Jump_Land', anim_Jump_Land);
-        animCtrl.setAnimationRanges('Jump_Land', 0, 76);
-      }
-
-      // Remap Roll
-      const anim_Roll = filteredGroups.find(g => cleanAnimName(g.name) === 'Roll');
-      if (anim_Roll) {
-        animCtrl.setAnimation('Roll', anim_Roll);
-        animCtrl.setAnimationRanges('Roll', 0, 88);
-      }
-
-      // Remap Punch_Jab
-      const anim_Punch_Jab = filteredGroups.find(g => cleanAnimName(g.name) === 'Punch_Jab');
-      if (anim_Punch_Jab) {
-        animCtrl.setAnimation('Punch_Jab', anim_Punch_Jab);
-        animCtrl.setAnimationRanges('Punch_Jab', 0, 52);
-      }
-
-      // Remap Punch_Cross
-      const anim_Punch_Cross = filteredGroups.find(g => cleanAnimName(g.name) === 'Punch_Cross');
-      if (anim_Punch_Cross) {
-        animCtrl.setAnimation('Punch_Cross', anim_Punch_Cross);
-        animCtrl.setAnimationRanges('Punch_Cross', 0, 60);
-      }
-
-      // Remap Spell_Simple_Enter
-      const anim_Spell_Simple_Enter = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Enter');
-      if (anim_Spell_Simple_Enter) {
-        animCtrl.setAnimation('Spell_Simple_Enter', anim_Spell_Simple_Enter);
-        animCtrl.setAnimationRanges('Spell_Simple_Enter', 0, 32);
-      }
-
-      // Remap Spell_Simple_Shoot
-      const anim_Spell_Simple_Shoot = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Shoot');
-      if (anim_Spell_Simple_Shoot) {
-        animCtrl.setAnimation('Spell_Simple_Shoot', anim_Spell_Simple_Shoot);
-        animCtrl.setAnimationRanges('Spell_Simple_Shoot', 0, 30);
-      }
-
-      // Remap Spell_Simple_Exit
-      const anim_Spell_Simple_Exit = filteredGroups.find(g => cleanAnimName(g.name) === 'Spell_Simple_Exit');
-      if (anim_Spell_Simple_Exit) {
-        animCtrl.setAnimation('Spell_Simple_Exit', anim_Spell_Simple_Exit);
-        animCtrl.setAnimationRanges('Spell_Simple_Exit', 0, 26);
-      }
-
-      // Remap Interact
-      const anim_Interact = filteredGroups.find(g => cleanAnimName(g.name) === 'Interact');
-      if (anim_Interact) {
-        animCtrl.setAnimation('Interact', anim_Interact);
-        animCtrl.setAnimationRanges('Interact', 0, 120);
-      }
-
-    }
+    // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
+    filename: 'character_animated_1.glb',
+    animationsFilename: 'animations.glb'
   });
 }
+
 // Setup Character with custom controls and animations
 // async function loadCharacter(scene, shadow, camera, usePhysics) {
 //   return setupCharacter(scene, camera, usePhysics, {
@@ -443,11 +277,31 @@ async function createDemoScene() {
   pp.imageProcessing.vignetteColor = new BABYLON.Color4(0, 0, 0, 0);
 
   // ── LOAD CHARACTER ─────────────────────────────────────
-  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
+  let charHandle = await loadCharacter(scene, shadow, camera, usePhysics);
+  const { playerCapsule, animCtrl, charCtrl } = charHandle;
 
   // Hook up HUD setting toggles dynamically via custom-hud.js
   if (typeof bindHUDControls === 'function') {
     bindHUDControls(charCtrl, camera, usePhysics);
+  }
+
+  // ── RUNTIME CHARACTER SWAP ─────────────────────────────
+  // Loads a different model (preset or external GLB) without reloading the page.
+  // Reuses the same shadow/keys/config as the initial loadCharacter.
+  async function switchCharacter(options) {
+    setLoad(5, 'Loading character…');
+    const merged = Object.assign({ shadow, assetsPath: 'assets/' }, options);
+    charHandle = await loadCharacterRuntime(scene, camera, usePhysics, merged, charHandle);
+    if (typeof bindHUDControls === 'function') {
+      bindHUDControls(charHandle.charCtrl, camera, usePhysics);
+    }
+    setLoad(100, 'Ready!');
+    return charHandle;
+  }
+  // Expose for the in-page UI and the console.
+  window.switchCharacter = switchCharacter;
+  if (typeof bindCharacterSwapUI === 'function') {
+    bindCharacterSwapUI(switchCharacter);
   }
 
   setLoad(100, 'Ready!');
@@ -485,3 +339,58 @@ createDemoScene()
 
 // ── WINDOW RESIZE CONTROLLER ──────────────────────────────
 window.addEventListener('resize', () => engine.resize());
+
+// ═══════════════════════════════════════════════════════════
+// CHARACTER SWAP UI
+// ═══════════════════════════════════════════════════════════
+// Wires the #char-swap panel (preset dropdown + GLB import) to the
+// switchCharacter() runtime loader created in createDemoScene().
+function bindCharacterSwapUI(switchCharacter) {
+  const select = $('char-preset');
+  const importBtn = $('char-import-btn');
+  const fileInput = $('char-import-file');
+  let busy = false;
+  // Object URL of the last imported mesh, so "Merge Anims" can re-feed it.
+  let lastMeshUrl = null;
+
+  const run = async (fn) => {
+    if (busy) return;
+    busy = true;
+    try { await fn(); }
+    catch (e) { console.error('Character swap failed:', e); $('bar-label') && ($('bar-label').textContent = 'Swap error: ' + e.message); }
+    finally { busy = false; }
+  };
+
+  // Preset model from assets/
+  select?.addEventListener('change', () => {
+    lastMeshUrl = null; // back to a preset — drop the imported mesh reference
+    run(() => switchCharacter({ assetsPath: 'assets/', filename: select.value }));
+  });
+
+  // External GLB import — loaded as-is (Option A). Use it for GLBs that already
+  // carry their animations. For a raw mesh, load it then press "Merge Anims".
+  importBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    lastMeshUrl = url; // remember it so Merge Anims can re-merge this mesh
+    run(async () => {
+      try { await switchCharacter({ glbUrl: url }); }
+      finally { fileInput.value = ''; }
+      // NOTE: do not revoke url here — keep it for a later Merge Anims.
+    });
+  });
+
+  // Merge assets/animations.glb into the current character (Option B, server).
+  // Works on the imported mesh (or, if none, the current preset filename).
+  const mergeBtn = $('char-merge-anim-btn');
+  mergeBtn?.addEventListener('click', () => {
+    run(async () => {
+      const opts = { animationsFilename: 'animations.glb', assetsPath: 'assets/' };
+      if (lastMeshUrl) opts.glbUrl = lastMeshUrl;
+      else opts.filename = select ? select.value : 'character_animated_1.glb';
+      await switchCharacter(opts);
+    });
+  });
+}

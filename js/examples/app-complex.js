@@ -9,8 +9,10 @@ const C3 = (r, g, b) => new BABYLON.Color3(r, g, b);
 var charRoot, charRes;
 
 function setLoad(pct, label) {
-  $('bar').style.width = pct + '%';
-  if (label) $('bar-label').textContent = label;
+  const bar = $('bar');
+  const lbl = $('bar-label');
+  if (bar) bar.style.width = pct + '%';
+  if (label && lbl) lbl.textContent = label;
 }
 function hideLoad() {
   const el = $('loading');
@@ -37,7 +39,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
-    filename: 'character_animated.glb',
+    filename: 'character_animated_1.glb',
 
     // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
     // filename: 'character.glb',
@@ -174,11 +176,29 @@ async function createDemoScene() {
   pp.imageProcessing.vignetteColor = new BABYLON.Color4(0, 0, 0, 0);
 
   // ── LOAD CHARACTER ─────────────────────────────────────
-  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
+  let charHandle = await loadCharacter(scene, shadow, camera, usePhysics);
+  const { playerCapsule, animCtrl, charCtrl } = charHandle;
 
   // Hook up HUD setting toggles dynamically via custom-hud.js
   if (typeof bindHUDControls === 'function') {
     bindHUDControls(charCtrl, camera, usePhysics);
+  }
+
+  // ── RUNTIME CHARACTER SWAP ─────────────────────────────
+  // Loads a different model (preset or external GLB) without reloading the page.
+  async function switchCharacter(options) {
+    if (typeof setLoad === 'function') setLoad(5, 'Loading character…');
+    const merged = Object.assign({ shadow, assetsPath: 'assets/' }, options);
+    charHandle = await loadCharacterRuntime(scene, camera, usePhysics, merged, charHandle);
+    if (typeof bindHUDControls === 'function') {
+      bindHUDControls(charHandle.charCtrl, camera, usePhysics);
+    }
+    if (typeof setLoad === 'function') setLoad(100, 'Ready!');
+    return charHandle;
+  }
+  window.switchCharacter = switchCharacter;
+  if (typeof bindCharacterSwapUI === 'function') {
+    bindCharacterSwapUI(switchCharacter);
   }
 
   setLoad(100, 'Ready!');
@@ -202,3 +222,38 @@ createDemoScene()
 
 // ── WINDOW RESIZE CONTROLLER ──────────────────────────────
 window.addEventListener('resize', () => engine.resize());
+
+// ═══════════════════════════════════════════════════════════
+// CHARACTER SWAP UI
+// ═══════════════════════════════════════════════════════════
+// Wires the #char-swap panel (preset dropdown + GLB import) to the
+// switchCharacter() runtime loader created in the scene factory.
+function bindCharacterSwapUI(switchCharacter) {
+  const select = $('char-preset');
+  const importBtn = $('char-import-btn');
+  const fileInput = $('char-import-file');
+  let busy = false;
+
+  const run = async (fn) => {
+    if (busy) return;
+    busy = true;
+    try { await fn(); }
+    catch (e) { console.error('Character swap failed:', e); }
+    finally { busy = false; }
+  };
+
+  select?.addEventListener('change', () => {
+    run(() => switchCharacter({ assetsPath: 'assets/', filename: select.value }));
+  });
+
+  importBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    run(async () => {
+      try { await switchCharacter({ glbUrl: url }); }
+      finally { URL.revokeObjectURL(url); fileInput.value = ''; }
+    });
+  });
+}

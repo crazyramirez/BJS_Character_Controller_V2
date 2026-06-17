@@ -16,8 +16,8 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
-    filename: 'character_animated.glb'
-    
+    filename: 'character_animated_1.glb'
+
     // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
     // filename: 'character.glb',
     // animationsFilename: 'animations.glb'
@@ -52,12 +52,25 @@ async function createMinimalScene() {
   }
 
   // 6. Load Character and Setup Controller
-  const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, null, camera, usePhysics);
+  let charHandle = await loadCharacter(scene, null, camera, usePhysics);
+  const { playerCapsule, animCtrl, charCtrl } = charHandle;
 
   // Hook up HUD setting toggles dynamically via custom-hud.js
   if (typeof bindHUDControls === 'function') {
     bindHUDControls(charCtrl, camera, usePhysics);
   }
+
+  // 7. OPTIONAL: Runtime character swap (no page reload).
+  //    Console:  await switchCharacter({ filename: 'character_animated_2.glb' })
+  //    External: await switchCharacter({ glbUrl: URL.createObjectURL(file) })
+  window.switchCharacter = async (options) => {
+    const merged = Object.assign({ shadow: null, assetsPath: 'assets/' }, options);
+    charHandle = await loadCharacterRuntime(scene, camera, usePhysics, merged, charHandle);
+    if (typeof bindHUDControls === 'function') {
+      bindHUDControls(charHandle.charCtrl, camera, usePhysics);
+    }
+    return charHandle;
+  };
 
   return scene;
 }

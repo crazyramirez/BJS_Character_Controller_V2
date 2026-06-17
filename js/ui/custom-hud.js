@@ -485,7 +485,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,                             // Optional: shadow generator to add character meshes to
     assetsPath: 'assets/',              // Optional: path to GLB assets folder (defaults to 'assets/')
-    filename: 'character_animated.glb', // Optional: GLB file name (defaults to 'character_animated.glb')
+    filename: 'character_animated_1.glb', // Optional: GLB file name (defaults to 'character_animated_1.glb')
     spawnPosition: new BABYLON.Vector3(0, 2, 0), // Optional: starting position override
     ellipsoid: new BABYLON.Vector3(0.35, 0.96, 0.35), // Optional: collision ellipsoid override
     keys: { JUMP: ['KeyK'] },           // Optional: remap keyboard controls directly
@@ -595,7 +595,7 @@ animCtrl.setIdleAnim(newIdleAnimGroup);</div>
 npm install @gltf-transform/core fs-extra
 
 # Run merge utility
-node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_animated.glb</div>
+node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_animated_1.glb</div>
           </div>
         </div>
       </div>

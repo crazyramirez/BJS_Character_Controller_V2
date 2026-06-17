@@ -2001,10 +2001,10 @@ class CharCtrl {
   _isMeshCharacter(mesh) {
     if (!mesh) return false;
     if (mesh === this.root || mesh === this.visualMesh) return true;
-    
+
     // Check if it shares any skeleton in the scene that is currently active on our visual mesh
     if (mesh.skeleton) {
-      const activeSkel = this.visualMesh.skeleton || 
+      const activeSkel = this.visualMesh.skeleton ||
         (this.visualMesh.getChildMeshes && this.visualMesh.getChildMeshes().find(m => m.skeleton)?.skeleton);
       if (activeSkel && mesh.skeleton === activeSkel) {
         return true;
@@ -2021,13 +2021,13 @@ class CharCtrl {
         p = p.parent;
       }
     }
-    
+
     // Check name pattern matching
     const lowerName = (mesh.name || "").toLowerCase();
     if (lowerName.includes("character") || lowerName.includes("playercapsule") || lowerName.includes("autorig") || lowerName.includes("wrapper")) {
       return true;
     }
-    
+
     return false;
   }
 
@@ -3345,6 +3345,100 @@ async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// RUNTIME CHARACTER SWAP
+// ═══════════════════════════════════════════════════════════
+// Builds a destroy() that fully tears down a character: controllers,
+// scene observers, visual meshes, skeleton and animation groups, capsule.
+// Lets you load a different model (or import an external GLB) at runtime
+// without leaking render observers or duplicating skeletons.
+function _makeCharacterDestroyer(scene, charCtrl, animCtrl, playerCapsule, loadResult, cameraFollowObserver) {
+  return function destroy() {
+    // 1. Controllers (remove their window/canvas/scene listeners + physics)
+    try { charCtrl?.destroy(); } catch (e) { console.warn('charCtrl.destroy failed', e); }
+    try { animCtrl?.destroy(); } catch (e) { console.warn('animCtrl.destroy failed', e); }
+
+    // 2. Camera-follow observer added in setupCharacter
+    if (cameraFollowObserver) scene.onBeforeRenderObservable.remove(cameraFollowObserver);
+
+    // 3. Animation groups produced by this character
+    (loadResult?.animationGroups || []).forEach(ag => { try { ag.stop(); ag.dispose(); } catch (_) { } });
+
+    // 4. Visual meshes + skeleton
+    (loadResult?.skeletons || []).forEach(sk => { try { sk.dispose(); } catch (_) { } });
+    (loadResult?.meshes || []).forEach(m => { try { m.dispose(false, true); } catch (_) { } });
+    (loadResult?.transformNodes || []).forEach(tn => { try { tn.dispose(); } catch (_) { } });
+
+    // 5. Capsule collider
+    try { playerCapsule?.dispose(false, true); } catch (_) { }
+  };
+}
+
+// Load a new character at runtime, disposing a previous one first.
+//   prevHandle — the object returned by a prior setupCharacter / loadCharacterRuntime
+//                (its .destroy() is called before the new load). Pass null on first load.
+//   options    — same options object accepted by setupCharacter, e.g.
+//     Option A (pre-merged GLB):
+//       { filename: 'character_animated_2.glb', assetsPath: 'assets/', shadow, ... }
+//       { glbUrl: <objectURL/path>, ... }                       // imported single GLB
+//     Option B (separate mesh + animations → server retarget):
+//       { filename: 'character.glb', animationsFilename: 'animations.glb', assetsPath: 'assets/' }
+//       { glbUrl: <meshURL>, animationsUrl: <animsURL> }          // imported pair
+// Returns the new character handle (with its own .destroy()).
+async function loadCharacterRuntime(scene, camera, usePhysics, options = {}, prevHandle = null) {
+  // Preserve spawn transform of the outgoing character so the swap is seamless.
+  if (prevHandle?.playerCapsule && !options.spawnPosition) {
+    options = Object.assign({}, options, { spawnPosition: prevHandle.playerCapsule.position.clone() });
+  }
+  if (prevHandle && typeof prevHandle.destroy === 'function') {
+    prevHandle.destroy();
+  }
+
+  options = Object.assign({}, options);
+
+  // External GLB(s) are loaded as absolute object URLs. setupCharacter builds
+  // each fetch as (assetsPath + filename) / (assetsPath + animationsFilename),
+  // so when ANY external URL is given we force assetsPath:'' and make every
+  // file an absolute URL — otherwise the un-overridden one stays relative and
+  // 404s against the page instead of assets/.
+  const usesExternal = options.glbUrl || options.animationsUrl;
+  if (usesExternal) {
+    const base = options.assetsPath || 'assets/';
+    const meshUrl = options.glbUrl || (base + options.filename);
+    options.filename = meshUrl;
+    if (options.animationsUrl || options.animationsFilename) {
+      options.animationsFilename = options.animationsUrl || (base + options.animationsFilename);
+    }
+    options.assetsPath = '';
+    delete options.glbUrl;
+    delete options.animationsUrl;
+  }
+
+  return setupCharacter(scene, camera, usePhysics, options);
+}
+
+// Swap ONLY the animations on the current character at runtime (keep the mesh).
+// Server-merges the current character's GLB with a new animations GLB, then
+// rebinds the controller's AnimCtrl to the freshly retargeted groups.
+//   handle      — current character handle (from setupCharacter/loadCharacterRuntime)
+//   characterGlb / animationsGlb — ArrayBuffer | Blob | object-URL strings.
+// Returns the new handle (the old one is destroyed). Requires the merge server.
+async function swapCharacterAnimations(scene, camera, usePhysics, handle, characterGlb, animationsGlb, extraOptions = {}) {
+  // Reuse the runtime loader's Option-B path (mesh + animations → server merge),
+  // which already rebuilds AnimCtrl/CharCtrl against the retargeted groups.
+  const toUrl = async (src) => {
+    if (typeof src === 'string') return src; // already a URL/path
+    const buf = src instanceof ArrayBuffer ? src : await src.arrayBuffer();
+    return URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
+  };
+  const options = Object.assign({
+    assetsPath: '',
+    filename: await toUrl(characterGlb),
+    animationsFilename: await toUrl(animationsGlb),
+  }, extraOptions);
+  return loadCharacterRuntime(scene, camera, usePhysics, options, handle);
+}
+
+// ═══════════════════════════════════════════════════════════
 // SHARED CHARACTER SETUP HELPER
 // ═══════════════════════════════════════════════════════════
 async function setupCharacter(scene, camera, usePhysics, options = {}) {
@@ -3464,7 +3558,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
         const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         const cameraYOffset = isMobileDev ? -0.25 : 0.4;
-        scene.registerBeforeRender(() => {
+        const cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
           const dt = scene.getEngine().getDeltaTime() / 1000;
           const clampedDt = Math.max(0.001, Math.min(0.1, dt));
           const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
@@ -3474,7 +3568,9 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         });
 
         setLoad(100, 'Ready!');
-        return { playerCapsule, charRoot: mergedRoot, animCtrl, charCtrl, scene };
+        const handleB = { playerCapsule, charRoot: mergedRoot, animCtrl, charCtrl, scene };
+        handleB.destroy = _makeCharacterDestroyer(scene, charCtrl, animCtrl, playerCapsule, mergedRes, cameraFollowObserver);
+        return handleB;
       }
     } catch (serverErr) {
       console.warn('[setupCharacter] Server merge failed, falling back to client retargeting:', serverErr.message);
@@ -3488,7 +3584,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
   // ── Option A: single merged GLB, OR Option B client-side fallback ──
   setLoad(10, 'Loading character...');
-  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
+  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated_1.glb', scene);
 
   setLoad(75, 'Setting up character...');
   const charRoot = mergedCharRes.meshes[0];
@@ -3627,7 +3723,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   const cameraYOffset = isMobileDev ? -0.25 : 0.4;
 
-  scene.registerBeforeRender(() => {
+  const cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
     const dt = scene.getEngine().getDeltaTime() / 1000;
     const clampedDt = Math.max(0.001, Math.min(0.1, dt));
     const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
@@ -3636,7 +3732,9 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
   });
 
-  return { playerCapsule, animCtrl, charCtrl };
+  const handle = { playerCapsule, charRoot, animCtrl, charCtrl, scene };
+  handle.destroy = _makeCharacterDestroyer(scene, charCtrl, animCtrl, playerCapsule, mergedCharRes, cameraFollowObserver);
+  return handle;
 }
 
 // Expose classes and definitions to the global window object for easy consumption in classical script-based setups
@@ -3647,6 +3745,8 @@ window.CharCtrl = CharCtrl;
 window.normBone = normBone;
 window.cleanAnimName = cleanAnimName;
 window.lerp = lerp;
+window.loadCharacterRuntime = loadCharacterRuntime;
+window.swapCharacterAnimations = swapCharacterAnimations;
 window.lerpAngle = lerpAngle;
 window.setupCharacter = setupCharacter;
 window.loadCharacter = setupCharacter;

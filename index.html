@@ -7,6 +7,56 @@
   <title>BJS Character Controller V2</title>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
+  <style>
+    #char-swap {
+      position: fixed;
+      top: 12px;
+      right: 50%;
+      transform: translateX(50%);
+      z-index: 50;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(10, 10, 20, 0.6);
+      backdrop-filter: blur(8px);
+      font-family: 'Outfit', sans-serif;
+      color: #e8e8f0;
+      font-size: 13px;
+    }
+
+    #char-swap label {
+      opacity: 0.7;
+      font-weight: 600;
+    }
+
+    #char-swap select,
+    #char-swap button {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e8e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font: inherit;
+      font-size: 9px;
+      cursor: pointer;
+    }
+
+    #char-swap button:hover,
+    #char-swap select:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    #char-swap select {
+      color-scheme: dark;
+    }
+
+    #char-swap select option {
+      background: #14141f;
+      color: #e8e8f0;
+    }
+  </style>
 </head>
 
 <body>
@@ -41,6 +91,20 @@
 
   <div id="xhair"></div>
   <div id="combo"></div>
+
+  <!-- RUNTIME CHARACTER SWAP -->
+  <div id="char-swap">
+    <select id="char-preset">
+      <option value="character_animated_1.glb">Character 1</option>
+      <option value="character_animated_2.glb">Character 2</option>
+      <option value="character_animated_3.glb">Character 3</option>
+      <option value="character_animated_4.glb">Character 4</option>
+      <option value="character_animated_5.glb">Character 5</option>
+    </select>
+    <button id="char-import-btn" type="button">Import GLB</button>
+    <input id="char-import-file" type="file" accept=".glb" hidden>
+    <button id="char-merge-anim-btn" type="button" title="Merge assets/animations.glb into the current character (server)">Merge Anims</button>
+  </div>
 
   <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
