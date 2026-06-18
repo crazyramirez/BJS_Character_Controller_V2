@@ -161,9 +161,14 @@ let charTransformConfig = {
   LEG_SPREAD_ANGLE: 0.0,
   SPINE_STRAIGHTEN_ANGLE: 0.0,
   HIPS_TILT_ANGLE: 0.0,
-  FOOT_TOE_OUT_ANGLE: 0.0   // +deg toes-out: R about +Y, L about -Y (fixes CC supinated feet)
+  FOOT_TOE_OUT_ANGLE: 0.0,  // +deg toes-out: R about +Y, L about -Y (fixes CC supinated feet)
+  HAND_RELAX_ANGLE: 0.0     // +deg opens the fingers (uncurls toward an open hand); 0 = leave as retargeted
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
+
+// Thumb relaxes opposite the other fingers (mirrored local frame) and by a
+// smaller amount so it doesn't splay out. Shared by the live preview and merge.
+const THUMB_RELAX_SCALE = 0.5;
 
 // ── Bone role classification (posture/spread sliders) ───────────────────────
 // Normalized like merge_api's aliasNorm so CC/AccuRig, UE, Unity, Biped and
@@ -195,11 +200,20 @@ const BONE_ROLE_SETS = {
   hips: new Set(['hips', 'hip', 'pelvis']),
 };
 
+// Finger joints (thumb/index/middle/ring/pinky segments, excluding toes) get a
+// single 'finger' role driven by the Hand Relax slider. Matched by pattern, not
+// a Set — there are too many (5 fingers × 3-4 joints × 2 hands) to enumerate.
+function isFingerBoneName(name) {
+  const n = boneRoleNorm(name);
+  return /(thumb|index|middle|ring|pinky)/.test(n) && !/toe/.test(n);
+}
+
 function boneRole(name) {
   const n = boneRoleNorm(name);
   for (const [role, set] of Object.entries(BONE_ROLE_SETS)) {
     if (set.has(n)) return role;
   }
+  if (isFingerBoneName(name)) return 'finger';
   return null;
 }
 
@@ -403,6 +417,7 @@ function syncCharTransformToUI() {
   setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
   setSlider('slider-hips-tilt', charTransformConfig.HIPS_TILT_ANGLE, '°');
   setSlider('slider-foot-toe-out', charTransformConfig.FOOT_TOE_OUT_ANGLE, '°');
+  setSlider('slider-hand-relax', charTransformConfig.HAND_RELAX_ANGLE, '°');
 }
 
 function resetCharacterTransform() {
@@ -432,6 +447,7 @@ function resetCharacterTransform() {
   const spineS = document.getElementById('slider-spine-straighten');
   const hipsT = document.getElementById('slider-hips-tilt');
   const footT = document.getElementById('slider-foot-toe-out');
+  const handR = document.getElementById('slider-hand-relax');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
   if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
   if (shoulderR) { shoulderR.min = "-15"; shoulderR.max = "15"; }
@@ -439,6 +455,7 @@ function resetCharacterTransform() {
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
   if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
   if (footT) { footT.min = "-45"; footT.max = "45"; }
+  if (handR) { handR.min = "-30"; handR.max = "30"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -462,6 +479,7 @@ function setupCharTransformControls() {
   const spineStraightenSlider = document.getElementById('slider-spine-straighten');
   const hipsTiltSlider = document.getElementById('slider-hips-tilt');
   const footToeOutSlider = document.getElementById('slider-foot-toe-out');
+  const handRelaxSlider = document.getElementById('slider-hand-relax');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -494,6 +512,7 @@ function setupCharTransformControls() {
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
     charTransformConfig.HIPS_TILT_ANGLE = hipsTiltSlider ? parseFloat(hipsTiltSlider.value) : 0.0;
     charTransformConfig.FOOT_TOE_OUT_ANGLE = footToeOutSlider ? parseFloat(footToeOutSlider.value) : 0.0;
+    charTransformConfig.HAND_RELAX_ANGLE = handRelaxSlider ? parseFloat(handRelaxSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -516,6 +535,7 @@ function setupCharTransformControls() {
   spineStraightenSlider?.addEventListener('input', onSliderChange);
   hipsTiltSlider?.addEventListener('input', onSliderChange);
   footToeOutSlider?.addEventListener('input', onSliderChange);
+  handRelaxSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -593,6 +613,7 @@ function getMergeOptions(extra = {}) {
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
     FOOT_TOE_OUT_ANGLE: charTransformConfig.FOOT_TOE_OUT_ANGLE,
+    HAND_RELAX_ANGLE: charTransformConfig.HAND_RELAX_ANGLE,
     removeExistingAnimations: true,
     ...extra
   };
@@ -1849,6 +1870,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
       boneOffsetAxes.set(node.uniqueId, {
         role,
         isSpineRoot: role === 'spine' && ancestorRole === 'hips',
+        isThumb: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')),
         x: toLocal(BABYLON.Axis.X),
         y: toLocal(BABYLON.Axis.Y),
         z: toLocal(BABYLON.Axis.Z),
@@ -1901,6 +1923,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
     const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
     const toeOut = charTransformConfig.FOOT_TOE_OUT_ANGLE || 0;
+    const handRelax = charTransformConfig.HAND_RELAX_ANGLE || 0;
 
     // 2. Loop through character bones and apply offsets about bind-world axes
     scene.skeletons.forEach(skel => {
@@ -1958,6 +1981,14 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             break;
           case 'footR':
             apply(axes.y, toeOut);  // toes point outward (right)
+            break;
+          case 'finger':
+            // Flexion is about the joint's LOCAL X (not the world-derived axes
+            // the limbs use — finger frames are rolled ~90°). +relax opens the
+            // hand (−X uncurls the pre-curled CC bind). The thumb's local frame
+            // is mirrored vs the other fingers, so it relaxes with the opposite
+            // sign and a smaller amount (THUMB_RELAX_SCALE).
+            apply(BABYLON.Axis.X, axes.isThumb ? (handRelax * THUMB_RELAX_SCALE) : -handRelax);
             break;
           case 'spine':
             apply(axes.x, spineAngle);

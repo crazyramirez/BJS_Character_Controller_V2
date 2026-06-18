@@ -28,6 +28,11 @@ const DEFAULTS = {
   SPINE_STRAIGHTEN_ANGLE: 0,
   HIPS_TILT_ANGLE: 0,
   FOOT_TOE_OUT_ANGLE: 0,
+  // Hand relax: uncurls the fingers toward an open hand. CC/AccuRig fingers bind
+  // pre-curled (~10-22° flexion about each joint's local X). +deg opens them,
+  // -deg closes further. Applied as a static local-X offset on every finger joint
+  // (thumb included), baked into rest + animation tracks like the other sliders.
+  HAND_RELAX_ANGLE: 0,
   POSE_OFFSETS: {},
   COMPRESS_OUTPUT: true,
   // A-pose correction is disabled: the world-space change-of-basis C = inv(Wchar)·Wanim
@@ -39,16 +44,15 @@ const DEFAULTS = {
   // Local roll applied to foot bones in retargeted clips; right side mirrored.
   FOOT_ROLL_DEG: 0,
   FOOT_ROLL_AXIS: 'y',
-  // Finger retarget tuning for rigs whose bind pose is already pre-curled
-  // (CC/AccuRig fingers rest ~15-25° flexed, Mixamo fingers rest straight).
-  // The Mixamo curl delta is authored for straight-bind fingers; transplanting
-  // it whole onto a pre-curled bind over-closes the hand. Scale the per-key
-  // finger motion delta toward identity to compensate. 1 = no change.
-  FINGER_CURL_SCALE: 0.9,
-  // The thumb's distal segment (thumb3) twists worst under retarget because the
-  // CC thumb bind is rolled hard vs Mixamo. Dampen it harder than the rest.
-  THUMB_CURL_SCALE: 0.5,
+  // Optional escape hatch: drop ALL finger/thumb channels (hands rest in their
+  // neutral bind). Fingers otherwise retarget with the hand-space change-of-basis
+  // (see retarget loop). Leave false for normal use.
+  IGNORE_FINGERS: false,
 };
+
+// Thumb relaxes opposite the other fingers (mirrored local frame) and by a
+// smaller amount so it doesn't splay out. Keep in sync with builder.js.
+const THUMB_RELAX_SCALE = 0.5;
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
 //
@@ -390,19 +394,6 @@ function eulerToQuat(pitch, yaw, roll) {
     cp * cy * sr + sp * sy * cr,
     cp * cy * cr - sp * sy * sr,
   ];
-}
-// Scale a rotation's angle by `s` about its own axis (nlerp from identity → q).
-// s=1 returns q unchanged; s<1 dampens; s>1 amplifies. Shortest-arc safe.
-function qScaleAngle([x, y, z, w], s) {
-  if (s === 1) return [x, y, z, w];
-  let q = [x, y, z, w];
-  if (q[3] < 0) q = [-q[0], -q[1], -q[2], -q[3]]; // force shortest arc
-  const ang = 2 * Math.acos(Math.min(1, Math.max(-1, q[3])));
-  if (ang < 1e-6) return [0, 0, 0, 1];
-  const sinHalf = Math.sqrt(Math.max(0, 1 - q[3] * q[3]));
-  const ax = [q[0] / sinHalf, q[1] / sinHalf, q[2] / sinHalf];
-  const h = (ang * s) / 2, sh = Math.sin(h);
-  return [ax[0] * sh, ax[1] * sh, ax[2] * sh, Math.cos(h)];
 }
 function buildParentMap(doc) {
   const map = new Map();
@@ -1449,7 +1440,16 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
   }
 
-  if (cfg.removeExistingAnimations) {
+  // Remove the character's pre-existing animations when bringing in a separate
+  // animation source (Option B). Otherwise the character's baked clips survive
+  // and DUPLICATE the freshly retargeted ones (e.g. character_animated_1.glb
+  // already carries 45 clips → output ends up with 87, half of them the old
+  // finger-curled versions). Auto-enable whenever an animation buffer is given;
+  // an explicit removeExistingAnimations:false can still opt out.
+  const removeExisting = cfg.removeExistingAnimations !== undefined
+    ? cfg.removeExistingAnimations
+    : !!animBuffer;
+  if (removeExisting) {
     charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
   }
 
@@ -1908,23 +1908,21 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   for (const node of charDoc.getRoot().listNodes()) {
     const name = node.getName();
     const wrot = charWorldRots.get(node) || [0, 0, 0, 1];
+    const key = name ? name.toLowerCase() : '';
 
     let restRot, worldRot;
     if (virtualPose) {
       restRot = virtualPose.localRotT.get(node) || [0, 0, 0, 1];
       worldRot = virtualPose.worldRotT.get(node) || [0, 0, 0, 1];
+    } else if (tposeRestPose) {
+      restRot = node.getRotation() || [0, 0, 0, 1];
+      worldRot = wrot;
     } else {
-      if (tposeRestPose) {
-        restRot = node.getRotation() || [0, 0, 0, 1];
-        worldRot = wrot;
-      } else {
-        restRot = bindRotByName.get(name?.toLowerCase()) || node.getRotation() || [0, 0, 0, 1];
-        worldRot = bindWorldByName.get(name?.toLowerCase()) || wrot;
-      }
+      restRot = bindRotByName.get(key) || node.getRotation() || [0, 0, 0, 1];
+      worldRot = bindWorldByName.get(key) || wrot;
     }
 
     if (name) {
-      const key = name.toLowerCase();
       charRestByName.set(key, restRot);
       charWorldByName.set(key, worldRot);
     }
@@ -2006,6 +2004,15 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   // after coordinate-baking (e.g. "Armature|mixamo.com|Layer0" from Sketchfab exports).
   for (const anim of [...charDoc.getRoot().listAnimations()]) {
     if (anim.getName().includes('mixamo.com')) { anim.dispose(); continue; }
+    // Strip exporter group prefixes: Blender/Unity name clips "Armature|Death01",
+    // "Take 001|Walk", etc. The app looks clips up by their bare name
+    // ('Death01', 'Idle_Loop'), so persist the clean name in the GLB itself
+    // rather than relying on every consumer to re-strip the '|' prefix.
+    const rawName = anim.getName();
+    if (rawName.includes('|')) {
+      const clean = rawName.split('|').pop().trim();
+      if (clean) anim.setName(clean);
+    }
     if (anim.getName() === 'A_TPose') anim.setName('TPose');
   }
 
@@ -2055,6 +2062,58 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   if (cfg.SKELETON_SOURCE === 'character') {
     const charParentMap = buildParentMap(charDoc);
 
+    // ── True hip-above-floor scale (root-motion vertical unit conversion) ─────
+    // Root translation deltas come in the ANIM rig's units. The amount a crouch
+    // lowers the pelvis is proportional to LEG LENGTH (hip-above-floor), NOT the
+    // raw hip-to-origin height. Using hip-to-origin (the old code) gives the
+    // wrong factor when the two rigs sit at different origins, so the character's
+    // feet leave the floor in crouch ("flying"). Compute the real hip↔foot rest
+    // distance on both rigs and scale by their ratio.
+    // World rest position INCLUDING parent scale (Unity exports often carry a
+    // scale-100 Armature, so translation-only accumulation under-reports by 100×).
+    const _restWorldPos = (doc, node) => {
+      const pmp = buildParentMap(doc);
+      let chain = [], c = node;
+      while (c) { chain.unshift(c); c = pmp.get(c); }
+      let p = [0, 0, 0], q = [0, 0, 0, 1], s = [1, 1, 1];
+      for (const b of chain) {
+        const t = b.getTranslation() || [0, 0, 0];
+        const r = b.getRotation() || [0, 0, 0, 1];
+        const bs = b.getScale() || [1, 1, 1];
+        // apply accumulated scale to this local offset, then rotate into world
+        const ts = [t[0] * s[0], t[1] * s[1], t[2] * s[2]];
+        p = vec3Add(p, rotateVec3(ts, q));
+        q = qMul(q, r);
+        s = [s[0] * bs[0], s[1] * bs[1], s[2] * bs[2]];
+      }
+      return p;
+    };
+    const _findBone = (doc, names) => {
+      for (const n of doc.getRoot().listNodes()) {
+        const nm = (n.getName() || '').toLowerCase();
+        if (names.some(x => nm === x || nm.endsWith(':' + x) || nm.endsWith('_' + x))) return n;
+      }
+      // fallback: normalized contains
+      for (const n of doc.getRoot().listNodes()) {
+        const nb = normalizeName(n.getName() || '');
+        if (names.some(x => nb === normalizeName(x))) return n;
+      }
+      return null;
+    };
+    let rootMotionVScale = 1.0;
+    try {
+      const cHip = _findBone(charDoc, ['hips', 'mixamorig:hips', 'pelvis', 'hip']);
+      const cFoot = _findBone(charDoc, ['leftfoot', 'mixamorig:leftfoot', 'foot_l', 'footl']);
+      const aHip = _findBone(animDoc, ['pelvis', 'hips', 'mixamorig:hips', 'hip']);
+      const aFoot = _findBone(animDoc, ['foot_l', 'leftfoot', 'mixamorig:leftfoot', 'footl']);
+      if (cHip && cFoot && aHip && aFoot) {
+        const cHAF = Math.abs(_restWorldPos(charDoc, cHip)[1] - _restWorldPos(charDoc, cFoot)[1]);
+        const aHAF = Math.abs(_restWorldPos(animDoc, aHip)[1] - _restWorldPos(animDoc, aFoot)[1]);
+        if (cHAF > 1e-3 && aHAF > 1e-3) rootMotionVScale = cHAF / aHAF;
+        console.log(`[merge] Root-motion vertical scale (hip-above-foot): char ${cHAF.toFixed(3)} / anim ${aHAF.toFixed(3)} = ${rootMotionVScale.toFixed(3)}`);
+      }
+    } catch (e) { /* keep 1.0 */ }
+
     // ── Posture/spread slider offsets (precomputed per bone) ─────────────────
     // Matched on NORMALIZED names so CC/UE/Unity rigs work too, and applied
     // about WORLD axes converted into the bone's bind frame — raw local-axis
@@ -2065,7 +2124,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     {
       const anyPosture = cfg.ARM_SPREAD_ANGLE || cfg.ARM_SPLAY_ANGLE || cfg.SHOULDER_RAISE_ANGLE
         || cfg.LEG_SPREAD_ANGLE || cfg.SPINE_STRAIGHTEN_ANGLE || cfg.HIPS_TILT_ANGLE
-        || cfg.FOOT_TOE_OUT_ANGLE
+        || cfg.FOOT_TOE_OUT_ANGLE || cfg.HAND_RELAX_ANGLE
         || Object.keys(cfg.POSE_OFFSETS || {}).length;
       if (anyPosture) {
         for (const node of charDoc.getRoot().listNodes()) {
@@ -2105,6 +2164,19 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], -cfg.FOOT_TOE_OUT_ANGLE); // toes outward (left)
           } else if (canon === 'foot_r') {
             if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);  // toes outward (right)
+          } else if (cfg.HAND_RELAX_ANGLE && /^(thumb|index|middle|ring|pinky)_0[1234]_[lr]$/.test(canon)) {
+            // Finger flexion is a rotation about each joint's LOCAL X (verified on
+            // CC/AccuRig binds: rest curl axis ≈ [1,0,0], ~10-22° per joint). Open
+            // the hand by rotating −X. Use the LOCAL axis directly (not the
+            // world→local conversion the limbs use) because finger frames are
+            // rolled ~90°, so a world axis would bend them sideways.
+            // The thumb's local frame is rolled opposite the other four fingers,
+            // so its flex axis is mirrored — relax it with the opposite sign and
+            // a smaller magnitude (THUMB_RELAX_SCALE) so it doesn't splay out.
+            const isThumb = /^thumb_/.test(canon);
+            const deg = isThumb ? (cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE) : -cfg.HAND_RELAX_ANGLE;
+            const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+            offsetQ = qMul(offsetQ || [0, 0, 0, 1], [s, 0, 0, Math.cos(r / 2)]);
           } else if (canon === 'pelvis') {
             // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
             // tilt only the root so the offset doesn't double down the chain.
@@ -2117,11 +2189,28 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
+    // UE5/Unreal rigs have a static "root" node ABOVE "pelvis" carrying the
+    // Z-up→Y-up axis fix (and no real motion). Both "root" and "pelvis" alias to
+    // the character's Hips, so retargeting BOTH produces TWO Hips channels — the
+    // static "root" one fights the real "pelvis" one and the clip plays flat /
+    // incomplete (Roll/Death stuck). Detect this layout and skip the "root"
+    // source entirely; "pelvis" alone drives Hips. Only skip when a real pelvis
+    // sibling exists, so rigs whose only hip is literally named "root" still work.
+    const animHasPelvis = animDoc.getRoot().listNodes().some(n => {
+      const nm = (n.getName() || '').toLowerCase();
+      return nm === 'pelvis' || nm.endsWith(':pelvis') || nm.endsWith('_pelvis');
+    });
+
     for (const anim of importedAnims) {
-      for (const ch of anim.listChannels()) {
+      // Snapshot channels — disposing a channel mutates the live listChannels()
+      // array, which makes a for…of over it skip the following element. With the
+      // finger/scale drops below that left ~half the targeted channels behind.
+      for (const ch of [...anim.listChannels()]) {
         const path = ch.getTargetPath();
         const src = ch.getTargetNode();
         if (!src || !src.getName()) { ch.dispose(); continue; }
+        // Drop the redundant UE5 axis-fix "root" node (see note above).
+        if (animHasPelvis && src.getName().toLowerCase() === 'root') { ch.dispose(); continue; }
         if (path === 'scale' && cfg.IGNORE_SCALE) { ch.dispose(); continue; }
 
         const target = findMatchingBone(src, charByName, charByNorm);
@@ -2134,6 +2223,15 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         // ('hip', no s) — substring checks alone would drop its translation track.
         const isRoot = tgtName.includes('hips') || tgtName.includes('pelvis') || tgtName === '__root__'
           || aliasNorm(tgtName) === 'hip';
+
+        // Optionally drop finger/thumb channels (keeps neutral bind hands).
+        // Exclude toes (CC names them 'IndexToe1' etc. — they contain finger words).
+        if (cfg.IGNORE_FINGERS) {
+          const _isToeBone = /toe/.test(tgtName) || /toe/.test(srcName);
+          const _isFingerBone = !_isToeBone && (/(thumb|index|middle|ring|pinky)/.test(tgtName)
+            || /(thumb|index|middle|ring|pinky)/.test(srcName));
+          if (_isFingerBone) { ch.dispose(); continue; }
+        }
 
         if (path === 'translation' && !isRoot && cfg.IGNORE_NON_ROOT_TRANSLATION) { ch.dispose(); continue; }
 
@@ -2192,59 +2290,33 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const rAnimInv = qInvert(rAnim);
 
           // ── Finger bones: exact hand-space retarget ───────────────────────
-          // Using different C matrices for parent/child finger bones causes twisting
-          // when finger spreads differ between the character and animation.
-          // We use the hand's change-of-basis (C) matrix for all bones in the finger
-          // chain to ensure they curl and orient naturally relative to the hand.
-          // CC/AccuRig name toes 'IndexToe1', 'PinkyToe1', etc. — they contain
-          // finger keywords but are NOT hand fingers; exclude them so they don't
-          // get the hand change-of-basis (which would twist the feet).
-          const _isToe = /toe/.test(tgtName) || /toe/.test(srcName);
-          // The thumb opposes the palm (bind ~45° off the hand). It still uses
-          // the shared hand-anchored C below (chain-consistent, no inter-segment
-          // tip twist); the extra rotation that change-of-basis would introduce
-          // is absorbed by THUMB_CURL_SCALE rather than by a per-bone C.
-          const _isThumb = /thumb/.test(tgtName) || /thumb/.test(srcName);
-          const isFinger = !_isToe && !_isThumb && (/(index|middle|ring|pinky|mid\d)/.test(tgtName)
-            || /(index|middle|ring|pinky)/.test(srcName));
-
-          // ── Curl-magnitude damping ────────────────────────────────────────
-          // Pre-curled binds (CC/AccuRig) over-close when fed Mixamo's
-          // straight-bind curl deltas. Scale the per-key motion delta toward
-          // identity. Thumbs damp harder (their distal twist is worst).
-          let curlScale = 1;
-          if (_isThumb) curlScale = cfg.THUMB_CURL_SCALE ?? 1;
-          else if (isFinger) curlScale = cfg.FINGER_CURL_SCALE ?? 1;
+          // Using different C matrices for parent/child finger bones causes
+          // twisting when finger spreads differ between the character and the
+          // animation. Use the hand's change-of-basis (C) for ALL bones in the
+          // finger chain (thumb included) so they curl/orient naturally relative
+          // to the hand. (Restored from merge_api_bkp.mjs — the per-bone /
+          // carve-out variants deformed the hand on CUSTOM rigs.)
+          const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
+            || /(thumb|index|middle|ring|pinky)/.test(srcName);
 
           let C_to_use = C;
           let Cinv_to_use = Cinv;
 
-          // Use ONE hand-anchored change-of-basis for the whole digit chain
-          // (all 3 segments share it). A per-segment C lets adjacent thumb
-          // segments twist independently → the distal tip visibly deforms.
-          // Anchoring every segment to the hand frame keeps the chain rigid in
-          // hand space; THUMB_CURL_SCALE then tames the residual over-rotation.
-          if (isFinger || _isThumb) {
+          if (isFinger) {
             const isLeft = tgtName.includes('left') || tgtName.includes('_l') || tgtName.endsWith('l') ||
               srcName.includes('left') || srcName.includes('_l') || srcName.endsWith('l');
-            // Hand bone normalized forms across rigs:
-            //   Mixamo/RPM LeftHand → lefthand;  UE5 hand_l → handl
-            //   CC/AccuRig CC_Base_L_Hand → lhand;  Unity LeftHand → lefthand
-            const isLeftHandNorm = (norm) => norm === 'handl' || norm === 'lefthand' || norm === 'lhand';
-            const isRightHandNorm = (norm) => norm === 'handr' || norm === 'righthand' || norm === 'rhand';
             let handCharName = '';
             for (const name of charWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && isLeftHandNorm(norm)) { handCharName = name; break; }
-              if (!isLeft && isRightHandNorm(norm)) { handCharName = name; break; }
+              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handCharName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handCharName = name; break; }
             }
             let handAnimName = '';
             for (const name of animWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && isLeftHandNorm(norm)) { handAnimName = name; break; }
-              if (!isLeft && isRightHandNorm(norm)) { handAnimName = name; break; }
+              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handAnimName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handAnimName = name; break; }
             }
-
             if (handCharName && handAnimName) {
               const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
               const Wanim_hand = animWorldByName.get(handAnimName) || [0, 0, 0, 1];
@@ -2284,8 +2356,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
                   const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
-                  let delta = qMul(rAnimInv, qKey);
-                  if (curlScale !== 1) delta = qScaleAngle(delta, curlScale);
+                  const delta = qMul(rAnimInv, qKey);
                   const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
                   let final = qMul(rChar, rotated);
 
@@ -2315,6 +2386,16 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const animRestLocal = src.getTranslation() || [0, 0, 0];
           const charRest = target.getTranslation() || [0, 0, 0];
           const animRestWorld = rotateVec3(animRestLocal, Cp);
+
+          // ── Root-motion unit scale ───────────────────────────────────────
+          // Vertical travel (crouch/death lowering the pelvis) is proportional to
+          // LEG LENGTH, so scale Y by the precomputed hip-above-foot ratio
+          // (rootMotionVScale). This keeps the feet planted on the floor instead
+          // of leaving the character floating in crouch. Horizontal travel is
+          // proportional to overall rig size; reuse the same ratio (close enough
+          // and avoids a second mismatched factor). For same-scale rigs it's ~1.
+          const heightScale = rootMotionVScale;
+
           const output = ch.getSampler()?.getOutput();
           const arr = output?.getArray();
           if (arr) {
@@ -2332,9 +2413,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
               const kw = rotateVec3([arr[j], arr[j + 1], arr[j + 2]], Cp);
-              out[j] = charRest[0] + (kw[0] - animRestWorld[0]) / spX;
-              out[j + 1] = charRest[1] + (kw[1] - animRestWorld[1]) / spY;
-              out[j + 2] = charRest[2] + (kw[2] - animRestWorld[2]) / spZ;
+              out[j] = charRest[0] + ((kw[0] - animRestWorld[0]) * heightScale) / spX;
+              out[j + 1] = charRest[1] + ((kw[1] - animRestWorld[1]) * heightScale) / spY;
+              out[j + 2] = charRest[2] + ((kw[2] - animRestWorld[2]) * heightScale) / spZ;
             }
             output.setArray(out);
           }

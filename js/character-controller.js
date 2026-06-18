@@ -124,33 +124,58 @@ function normBone(name) {
   if (!name) return '';
   let n = name.toLowerCase();
 
-  // 1. Determine side (left / right)
+  // 1. Determine side (left / right) from EXPLICIT markers only.
+  // Mid-word letters must never decide the side — "uppe(r)arm", "fo(r)earm",
+  // "c(l)avicle", "(r)oot" previously tripped the old [^a-z][lr][a-z] regex and
+  // flipped every UE5 bone to the wrong side. Match only:
+  //   • the words "left"/"right"
+  //   • an l/r that is its own separator-delimited token: _l_, .r, l-
+  //   • an l/r prefix/suffix glued to a separator: l_thumb, hand_r
   let side = '';
-  if (n.includes('left') || n.match(/\b_l\b/) || n.match(/_l_/) || n.startsWith('l_') || n.match(/[^a-z]l[a-z]/) || n.includes('lhand') || n.includes('lfoot') || n.includes('lthigh') || n.includes('lcalf') || n.includes('larm') || n.includes('lforearm') || n.includes('lclavicle')) {
-    side = 'left';
-  } else if (n.includes('right') || n.match(/\b_r\b/) || n.match(/_r_/) || n.startsWith('r_') || n.match(/[^a-z]r[a-z]/) || n.includes('rhand') || n.includes('rfoot') || n.includes('rthigh') || n.includes('rcalf') || n.includes('rarm') || n.includes('rforearm') || n.includes('rclavicle')) {
-    side = 'right';
+  const sideMarker = (s) => {
+    if (n.includes(s === 'l' ? 'left' : 'right')) return true;
+    // strip the bone prefix first so "cc_base_l_hand" etc. read cleanly
+    const t = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '');
+    return new RegExp(`(^|[-_. ])${s}([-_. ]|$)`).test(t) // _l_ , .r , trailing _l
+        || new RegExp(`[-_. ]${s}$`).test(t)              // hand_l
+        || new RegExp(`^${s}[-_. ]`).test(t);             // l_thumb
+  };
+  if (sideMarker('l')) side = 'left';
+  else if (sideMarker('r')) side = 'right';
+
+  // Clean known prefixes, then strip side tokens (words AND bare l/r that sit
+  // next to a separator) BEFORE removing punctuation, so we don't leave a
+  // dangling "l"/"r" stuck to the bone name (clavicle_l → shoulder, not shoulderl).
+  n = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '');
+  if (side) {
+    // "left"/"right" can be glued (Mixamo: LeftShoulder) or delimited (UE5: _l).
+    // Remove the full word anywhere, and a bare l/r only when separator-bounded
+    // (so it never eats the l in "calf" or r in "arm").
+    n = n.replace(/left|right/g, '')
+         .replace(/(^|[-_. ])[lr](?=[-_. ]|$)/g, '$1');
   }
+  // Remove all remaining punctuation/separators.
+  n = n.replace(/[:_ \-.]/g, '');
 
-  // Clean prefixes and punctuation
-  n = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '')
-    .replace(/[:_ \-]/g, '');
-
-  // 2. Normalize synonyms
+  // 2. Normalize synonyms (UE5 / CC → Mixamo vocabulary).
   if (n.includes('thigh')) n = n.replace('thigh', 'upleg');
   if (n.includes('calf')) n = n.replace('calf', 'leg');
   if (n.includes('upperarm')) n = n.replace('upperarm', 'arm');
+  if (n.includes('lowerarm')) n = n.replace('lowerarm', 'forearm');
   if (n.includes('clavicle')) n = n.replace('clavicle', 'shoulder');
+  if (n.includes('collar')) n = n.replace('collar', 'shoulder');
   if (n.includes('pelvis')) n = n.replace('pelvis', 'hips');
-  if (n.includes('hip')) n = n.replace('hip', 'hips');
+  if (n.includes('hip') && !n.includes('hips')) n = n.replace('hip', 'hips');
   if (n.includes('hand')) n = n.replace('hand', '');
   if (n.includes('middle')) n = n.replace('middle', 'mid');
+  if (n.includes('ball')) n = n.replace('ball', 'toebase'); // UE5 ball_l → Mixamo ToeBase
 
-  // If we found a side, prepend it to ensure left/right are distinct
-  if (side) {
-    n = n.replace(/^(left|right|l|r)/, '');
-    n = side + n;
-  }
+  // 3. Strip leading zeros in segment indices: UE5 "spine_01" → "spine1" to
+  // match Mixamo "Spine1"; "index_02" → "index2".
+  n = n.replace(/0+(\d)/g, '$1');
+
+  // Re-attach side prefix so left/right stay distinct.
+  if (side) n = side + n;
 
   return n;
 }
@@ -868,7 +893,6 @@ class CharCtrl {
     this._rollActive = false;
     this._lastRollTime = 0;
     this._rollTimeoutId = null;
-    this._rollExitSpeed = 0;
     this._wasClimbingStep = false;
 
     // State
@@ -1777,7 +1801,7 @@ class CharCtrl {
           this.speed = carried;
         }
         this._rollExitSpeed = 0;
-        this._returnToLoco(1);
+        this._returnToLoco(0.38);
       } else if (fallingDown) {
         // Arc has peaked and we are now descending — hand off to JUMP_LOOP.
         // The carried roll-exit speed is kept so the air-dash arc continues
@@ -1785,7 +1809,7 @@ class CharCtrl {
         // it preserves the dash momentum until landing.
         this.grounded = false;
         this._setState(S.JUMP_LOOP);
-        this.anim.play('Jump_Loop', true, 1);
+        this.anim.play('Jump_Loop', true, 0.7);
       } else {
         // Still ascending or at peak — wait one more frame
         requestAnimationFrame(check);
@@ -2424,11 +2448,12 @@ class CharCtrl {
     if (this.usePhysics) {
       const activeShape = useCrouchHeight ? this._crouchShape : this._standShape;
       const prevTargetLocalY = this.targetLocalY;
-      if (useCrouchHeight) {
-        this.targetLocalY = -0.90 - (this.crouching ? 0.08 : 0); // Crouch shape bottom aligns with -0.90
-      } else {
-        this.targetLocalY = -0.90; // Stand shape bottom is at -0.90
-      }
+      // Keep the visual mesh anchor at -0.90 for BOTH stand and crouch. The
+      // crouch ANIMATION already lowers the hips (feet stay planted), so adding a
+      // controller-side -0.08 on top double-lowers it and the feet sink into the
+      // floor. The capsule still swaps to the shorter crouch collision shape
+      // below for collision/ceiling purposes; only the mesh anchor stays put.
+      this.targetLocalY = -0.90;
 
       if (this.physicsBody.shape !== activeShape) {
         this.physicsBody.shape = activeShape;
@@ -3226,10 +3251,12 @@ class CharCtrl {
     if (this.crouching) {
       const want = hasMove ? (sprint ? S.CROUCH_RUN : S.CROUCH_WALK) : S.CROUCH_IDLE;
 
-      // Sinks 8 cm relative to rest pose for a smooth visual crouch down.
-      // Physics mode: capsule bottom is fixed; targetLocalY already set by the shape-switch path.
+      // The crouch ANIMATION already lowers the hips (feet stay planted), so do
+      // NOT sink the mesh anchor again here — that double-lowering pushed the
+      // feet through the floor. Keep the anchor at rest; the anim does the crouch.
+      // Physics mode: targetLocalY already kept at -0.90 by the shape-switch path.
       if (!this.usePhysics) {
-        this.targetLocalY = this._standMeshY - 0.08 * this._capScaleY;
+        this.targetLocalY = this._standMeshY;
       }
 
       let speedRatio = want === S.CROUCH_RUN ? this.SPD_CROUCH_RUN * (3.2 / 3.6) : this.SPD_CROUCH * (1.8 / 2.0);
@@ -3490,7 +3517,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
       const healthRes = await fetch('/api/health');
       if (healthRes.ok) {
         setLoad(20, 'Server available — loading files for merge...');
-        const assetsPath = options.assetsPath || 'assets/';
+        const assetsPath = options.assetsPath != null ? options.assetsPath : 'assets/';
 
         // Fetch both GLBs as ArrayBuffers
         const [charBuf, animBuf] = await Promise.all([
@@ -3607,7 +3634,12 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
   // ── Option A: single merged GLB, OR Option B client-side fallback ──
   setLoad(10, 'Loading character...');
-  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated_1.glb', scene);
+  const charAssetsPath = options.assetsPath != null ? options.assetsPath : 'assets/';
+  const charFilename = options.filename || 'character_animated_1.glb';
+  // Blob/object URLs carry no .glb extension, so Babylon guesses .babylon and
+  // fails JSON parse. Force the glTF loader when the source isn't a .glb path.
+  const charPlugin = /\.glb($|\?)/i.test(charFilename) ? undefined : '.glb';
+  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', charAssetsPath, charFilename, scene, null, charPlugin);
 
   setLoad(75, 'Setting up character...');
   const charRoot = mergedCharRes.meshes[0];
