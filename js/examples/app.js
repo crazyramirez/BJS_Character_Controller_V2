@@ -48,7 +48,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     // bakes during the server merge — pass mergeOptions only if the mesh is NOT
     // pre-baked:
     filename: 'character_animated_1.glb',
-    animationsFilename: 'animations-pro.glb',
+    animationsFilename: 'animations-basic.glb',
     // mergeOptions: { FOOT_TOE_OUT_ANGLE: -43, /* … */ },
   });
 }

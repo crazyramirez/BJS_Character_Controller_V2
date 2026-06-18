@@ -20,7 +20,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
 
     // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
     filename: 'character_animated_1.glb',
-    animationsFilename: 'animations-pro.glb',
+    animationsFilename: 'animations-basic.glb',
   });
 }
 
