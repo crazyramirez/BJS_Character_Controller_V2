@@ -90,6 +90,7 @@ const S = {
   IDLE: 'IDLE', WALK: 'WALK', JOG: 'JOG', SPRINT: 'SPRINT',
   WALK_FORMAL: 'WALK_FORMAL',
   CROUCH_IDLE: 'CROUCH_IDLE', CROUCH_WALK: 'CROUCH_WALK', CROUCH_RUN: 'CROUCH_RUN',
+  CRAWL_IDLE: 'CRAWL_IDLE', CRAWL_WALK: 'CRAWL_WALK',
   JUMP_START: 'JUMP_START', JUMP_LOOP: 'JUMP_LOOP', JUMP_LAND: 'JUMP_LAND',
   ROLL: 'ROLL',
   PUNCH: 'PUNCH', PUNCH_JAB: 'PUNCH_JAB', PUNCH_CROSS: 'PUNCH_CROSS',
@@ -694,6 +695,26 @@ class AnimCtrl {
     return this.setAnimation('Crouch_Fwd_Loop', animationGroup);
   }
 
+  setCrouchBwdAnim(animationGroup) {
+    return this.setAnimation('Crouch_Bwd_Loop', animationGroup);
+  }
+
+  setJogBwdAnim(animationGroup) {
+    return this.setAnimation('Jog_Bwd_Loop', animationGroup);
+  }
+
+  setCrawlIdleAnim(animationGroup) {
+    return this.setAnimation('Crawl_Idle_Loop', animationGroup);
+  }
+
+  setCrawlFwdAnim(animationGroup) {
+    return this.setAnimation('Crawl_Fwd_Loop', animationGroup);
+  }
+
+  setCrawlBwdAnim(animationGroup) {
+    return this.setAnimation('Crawl_Bwd_Loop', animationGroup);
+  }
+
   setJumpStartAnim(animationGroup) {
     return this.setAnimation('Jump_Start', animationGroup);
   }
@@ -899,6 +920,8 @@ class CharCtrl {
     this.state = S.IDLE;
     this.stateT = 0;
     this.crouching = false;
+    this.crawling = false;
+    this._lastCrouchTapTime = 0; // for double-tap Ctrl -> crawl detection
     this._forcedCrouchFromRoll = false;
     this._hasDoubleJumped = false;
     this.sprinting = false;
@@ -1508,7 +1531,24 @@ class CharCtrl {
 
     if (this._matchesAction(code, 'CROUCH')) {
       if (this.grounded && !inAction && !this.sitting) {
-        if (this.crouching) {
+        const now = performance.now();
+        const isDoubleTap = (now - this._lastCrouchTapTime) < 320;
+        this._lastCrouchTapTime = now;
+        const hasCrawl = this._hasCrawlAnims();
+
+        // Double-tap Ctrl -> enter crawl (only if the GLB provides crawl clips)
+        if (isDoubleTap && hasCrawl && !this.crawling) {
+          this.crawling = true;
+          this.crouching = true;       // crawl reuses the low (crouch) collision stance
+          this._forcedCrouchFromRoll = false;
+          this._returnToLoco();
+        } else if (this.crawling) {
+          // From crawl, a single tap rises one stance: crawl -> crouch
+          this.crawling = false;
+          this.crouching = true;
+          this._returnToLoco();
+        } else if (this.crouching) {
+          // crouch -> stand
           if (this._canUncrouch()) {
             this.crouching = false;
             this._forcedCrouchFromRoll = false;
@@ -1518,6 +1558,7 @@ class CharCtrl {
             setTimeout(() => this._hideCombo(), 1200);
           }
         } else {
+          // stand -> crouch
           this.crouching = true;
           this._forcedCrouchFromRoll = false;
           this._returnToLoco();
@@ -1541,6 +1582,7 @@ class CharCtrl {
         } else if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
+            this.crawling = false;
             this._forcedCrouchFromRoll = false;
             this._jump();
           }
@@ -1741,7 +1783,7 @@ class CharCtrl {
     // anim jumps and slides. A fixed duration is predictable across all presets;
     // the landing block (state===ROLL) only clears the vertical hop. Scaled by
     // SPEED_MULTIPLIER so a sped-up controller ends the roll proportionally.
-    const rollDurationMs = 850;
+    const rollDurationMs = 920;
 
     this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
@@ -1995,7 +2037,10 @@ class CharCtrl {
 
   // ── IDLE ───────────────────────────────────────────────
   _idle(blend = 0.35) {
-    if (this.crouching) {
+    if (this.crawling) {
+      this._setState(S.CRAWL_IDLE);
+      this.anim.play('Crawl_Idle_Loop', true, blend);
+    } else if (this.crouching) {
       this._setState(S.CROUCH_IDLE);
       this.anim.play('Crouch_Idle_Loop', true, blend);
     } else {
@@ -2046,7 +2091,7 @@ class CharCtrl {
   }
 
   _isInAction() {
-    const LOCO_STATES = new Set(['IDLE', 'WALK', 'JOG', 'SPRINT', 'WALK_FORMAL', 'CROUCH_IDLE', 'CROUCH_WALK', 'CROUCH_RUN', 'JUMP_START', 'JUMP_LOOP', 'JUMP_LAND']);
+    const LOCO_STATES = new Set(['IDLE', 'WALK', 'JOG', 'SPRINT', 'WALK_FORMAL', 'CROUCH_IDLE', 'CROUCH_WALK', 'CROUCH_RUN', 'CRAWL_IDLE', 'CRAWL_WALK', 'JUMP_START', 'JUMP_LOOP', 'JUMP_LAND']);
     return ACTION_STATES.has(this.state) || (!LOCO_STATES.has(this.state) && this.state !== 'NONE');
   }
 
@@ -2199,6 +2244,18 @@ class CharCtrl {
   _canUncrouch() {
     if (!this.crouching) return true;
     return !this._isCeilingBlocked();
+  }
+
+  // True only if the GLB provided crawl clips (idle is the minimum requirement)
+  _hasCrawlAnims() {
+    return !!(this.anim && this.anim.g && this.anim.g.has('Crawl_Idle_Loop'));
+  }
+
+  // Returns the Bwd variant clip name when moving backward AND that clip exists,
+  // otherwise the forward base clip (caller applies reverse-speedRatio fallback).
+  _bwdClip(baseName, bwdName, backward) {
+    if (backward && this.anim && this.anim.g && this.anim.g.has(bwdName)) return bwdName;
+    return baseName;
   }
 
   // ── UPDATE ─────────────────────────────────────────────
@@ -2571,7 +2628,9 @@ class CharCtrl {
           // Direct Target Speed (only W/S drives physical movement speed)
           let tgt = 0;
           if (inputZ !== 0) {
-            if (this.crouching) {
+            if (this.crawling) {
+              tgt = this.SPD_CROUCH * 0.45;
+            } else if (this.crouching) {
               tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
             } else if (isSprinting) {
               tgt = this.SPD_SPRINT;
@@ -2604,7 +2663,9 @@ class CharCtrl {
           // Target Speed calculation
           let tgt = 0;
           if (hasMove) {
-            if (this.crouching) {
+            if (this.crawling) {
+              tgt = this.SPD_CROUCH * 0.45;
+            } else if (this.crouching) {
               tgt = isSprinting ? this.SPD_CROUCH_RUN : this.SPD_CROUCH;
             } else if (isSprinting) {
               tgt = this.SPD_SPRINT;
@@ -3271,6 +3332,42 @@ class CharCtrl {
 
     const dt = this.scene.getEngine().getDeltaTime() / 1000;
 
+    if (this.crawling) {
+      // ── CRAWL stance (deepest). Idle / Fwd / Bwd clips, no run variant. ──
+      const want = hasMove ? S.CRAWL_WALK : S.CRAWL_IDLE;
+
+      if (!this.usePhysics) {
+        this.targetLocalY = this._standMeshY;
+      }
+
+      // Crawl moves slower than crouch — keep anim playback in sync with the
+      // SPD_CROUCH * 0.45 physical speed used in the horizontal physics block.
+      let speedRatio = this.SPD_CROUCH * (1.8 / 2.0) * 0.45;
+      if (this.isTouch && hasMove) {
+        const inputMag = Math.min(1.0, Math.sqrt(this.touchVector.x * this.touchVector.x + this.touchVector.y * this.touchVector.y));
+        speedRatio *= inputMag;
+      }
+
+      // Prefer a dedicated Bwd clip; otherwise fall back to reverse-playing Fwd.
+      let moveClip = 'Crawl_Fwd_Loop';
+      if (want === S.CRAWL_WALK && backward) {
+        const bwd = this._bwdClip('Crawl_Fwd_Loop', 'Crawl_Bwd_Loop', true);
+        moveClip = bwd;
+        if (this.CAM_FOLLOW_LOCK && bwd === 'Crawl_Fwd_Loop') speedRatio = -speedRatio;
+      }
+
+      if (this.state !== want) this._setState(want);
+
+      this.anim.play(
+        want === S.CRAWL_IDLE ? 'Crawl_Idle_Loop' : moveClip,
+        true,
+        blend,
+        null,
+        want === S.CRAWL_IDLE ? 1.0 : speedRatio
+      );
+      return;
+    }
+
     if (this.crouching) {
       const want = hasMove ? (sprint ? S.CROUCH_RUN : S.CROUCH_WALK) : S.CROUCH_IDLE;
 
@@ -3290,9 +3387,13 @@ class CharCtrl {
         speedRatio *= inputMag;
       }
 
-      // Invert crouch animation direction when moving backward under follow lock
-      if (this.CAM_FOLLOW_LOCK && backward) {
-        speedRatio = -speedRatio;
+      // Prefer a dedicated Crouch_Bwd clip when reversing; otherwise reverse-play Fwd.
+      let moveClip = 'Crouch_Fwd_Loop';
+      if (want !== S.CROUCH_IDLE && backward) {
+        const bwd = this._bwdClip('Crouch_Fwd_Loop', 'Crouch_Bwd_Loop', true);
+        moveClip = bwd;
+        // Only invert playback when falling back to the forward clip under follow lock.
+        if (this.CAM_FOLLOW_LOCK && bwd === 'Crouch_Fwd_Loop') speedRatio = -speedRatio;
       }
 
       if (this.state !== want) {
@@ -3300,7 +3401,7 @@ class CharCtrl {
       }
 
       this.anim.play(
-        want === S.CROUCH_IDLE ? 'Crouch_Idle_Loop' : 'Crouch_Fwd_Loop',
+        want === S.CROUCH_IDLE ? 'Crouch_Idle_Loop' : moveClip,
         true,
         blend,
         null,
@@ -3333,6 +3434,22 @@ class CharCtrl {
         const spdWalk = this.SPD_WALK;
         loco.updateSpeed(0.2 * spdWalk);
       }
+      return;
+    }
+
+    // Dedicated backward jog clip (when the GLB provides Jog_Bwd_Loop). Jog = running,
+    // so this is the running backpedal — used while sprinting backward instead of
+    // reverse-playing the forward blend tree.
+    if (backward && hasMove && sprint && this.anim.g.has('Jog_Bwd_Loop')) {
+      if (this.state !== S.JOG || this.anim.curName !== 'Jog_Bwd_Loop') {
+        this._setState(S.JOG);
+      }
+      let speedRatio = this.SPD_SPRINT * (1.1 / 6.0) * this.SPEED_MULTIPLIER;
+      if (this.isTouch) {
+        const inputMag = Math.min(1.0, Math.sqrt(this.touchVector.x * this.touchVector.x + this.touchVector.y * this.touchVector.y));
+        speedRatio *= inputMag;
+      }
+      this.anim.play('Jog_Bwd_Loop', true, blend, null, speedRatio);
       return;
     }
 

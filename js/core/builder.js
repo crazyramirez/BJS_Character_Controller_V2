@@ -46,7 +46,12 @@ const STANDARD_ANIM_KEYS = [
   { key: 'Walk_Loop', label: 'Walk Loop', defaultKeyword: /^(?!.*crouch)(?!.*formal).*walk/i },
   { key: 'Sprint_Loop', label: 'Sprint / Run Loop', defaultKeyword: /^(?!.*crouch).*(sprint|run)/i },
   { key: 'Crouch_Idle_Loop', label: 'Crouch Idle Loop', defaultKeyword: /crouch.*idle/i },
-  { key: 'Crouch_Fwd_Loop', label: 'Crouch Forward Loop', defaultKeyword: /crouch.*(walk|fwd)/i },
+  { key: 'Crouch_Fwd_Loop', label: 'Crouch Forward Loop', defaultKeyword: /crouch_(walk|fwd)_loop$/i },
+  { key: 'Crouch_Bwd_Loop', label: 'Crouch Backward Loop', defaultKeyword: /crouch_bwd_loop$/i },
+  { key: 'Jog_Bwd_Loop', label: 'Jog Backward Loop', defaultKeyword: /jog_bwd_loop$/i },
+  { key: 'Crawl_Idle_Loop', label: 'Crawl Idle Loop', defaultKeyword: /crawl.*idle/i },
+  { key: 'Crawl_Fwd_Loop', label: 'Crawl Forward Loop', defaultKeyword: /crawl_(fwd|walk)_loop$/i },
+  { key: 'Crawl_Bwd_Loop', label: 'Crawl Backward Loop', defaultKeyword: /crawl_bwd_loop$/i },
   { key: 'Jump_Start', label: 'Jump Takeoff', defaultKeyword: /jump.*(start|takeoff|up)/i },
   { key: 'Jump_Loop', label: 'Jump Mid-Air Loop', defaultKeyword: /jump.*(loop|mid|air)/i },
   { key: 'Jump_Land', label: 'Jump Land', defaultKeyword: /jump.*(land|ground)/i },
@@ -963,8 +968,13 @@ function runControllerTestAction(action) {
     if (typeof ctrl._roll === 'function') ctrl._roll();
     else previewMappedAnimation('Roll', Sx.ROLL || 'ROLL');
   } else if (action === 'crouch') {
+    ctrl.crawling = false;
     ctrl.crouching = !ctrl.crouching;
     previewMappedAnimation(ctrl.crouching ? 'Crouch_Idle_Loop' : 'Idle_Loop', ctrl.crouching ? (Sx.CROUCH_IDLE || 'CROUCH_IDLE') : (Sx.IDLE || 'IDLE'));
+  } else if (action === 'crawl') {
+    ctrl.crawling = !ctrl.crawling;
+    ctrl.crouching = ctrl.crawling; // crawl reuses the low stance
+    previewMappedAnimation(ctrl.crawling ? 'Crawl_Idle_Loop' : 'Idle_Loop', ctrl.crawling ? (Sx.CRAWL_IDLE || 'CRAWL_IDLE') : (Sx.IDLE || 'IDLE'));
   }
   updateTestLabMetrics();
 }
@@ -1024,7 +1034,7 @@ function updateTestLabMetrics() {
     presetEl.textContent = preset?.name || activeControllerPreset || '-';
   }
   if (animEl) animEl.textContent = activeCharacter?.animCtrl?.curName || ctrl?._previewAnim || '-';
-  if (crouchEl) crouchEl.textContent = ctrl ? (ctrl.crouching ? 'on' : 'off') : '-';
+  if (crouchEl) crouchEl.textContent = ctrl ? (ctrl.crawling ? 'crawl' : (ctrl.crouching ? 'on' : 'off')) : '-';
   if (rollEl) rollEl.textContent = ctrl ? (ctrl._rollActive ? 'active' : 'ready') : '-';
   if (cameraEl) cameraEl.textContent = camera ? `${camera.radius.toFixed(1)}m / ${Math.round(camera.beta * 180 / Math.PI)}deg` : '-';
 }
