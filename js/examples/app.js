@@ -39,10 +39,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
-    // The Builder bakes posture/transform (scale, arm spread, foot toe-out, …)
-    // directly into the exported GLB, so the runtime just loads it as-is — no
-    // builder-config.json / mergeOptions needed.
-    //
+    // Integration Mode options:
     // Option A: Pre-merged GLB with the pose + animations already baked in.
     // filename: 'character_animated_1.glb'
 
@@ -52,7 +49,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     // pre-baked:
     filename: 'character_animated_1.glb',
     animationsFilename: 'animations-pro.glb',
-    //   mergeOptions: { FOOT_TOE_OUT_ANGLE: -23, /* … */ },
+    // mergeOptions: { FOOT_TOE_OUT_ANGLE: -43, /* … */ },
   });
 }
 
