@@ -2188,17 +2188,13 @@ class CharCtrl {
     this.stateT += dt;
     this._timeSinceSpawn += dt;
 
-    // Freeze camera vectors during mouse orbit dragging under standard camera mode
-    // to allow the character to keep their world direction and let the user look at their face.
-    if (this._pointerDragging && !this.CAM_FOLLOW_LOCK) {
-      if (!this._frozenCamFwd) {
-        this._frozenCamFwd = this._camForward();
-        this._frozenCamRgt = this._camRight(this._frozenCamFwd);
-      }
-    } else {
-      this._frozenCamFwd = null;
-      this._frozenCamRgt = null;
-    }
+    // In standard (non-lock) camera mode the movement basis tracks the camera
+    // live, so orbiting the camera while moving turns the character smoothly
+    // along with it (the rotation lerp below provides the inertia/easing).
+    // Previously these were frozen during the drag, which stuck the character
+    // and produced an abrupt snap when the pointer was released.
+    this._frozenCamFwd = null;
+    this._frozenCamRgt = null;
 
     const currentVelocity = this.usePhysics ? this.physicsBody.getLinearVelocity() : null;
 
@@ -2617,8 +2613,8 @@ class CharCtrl {
       if (shouldRotate) {
         const tgtAngle = Math.atan2(dir.x, dir.z);
         if (this._smoothTgt === undefined) this._smoothTgt = tgtAngle;
-        this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-30 * dt));
-        const k = (this.grounded ? (this.ROT_SPD * 0.16) : (this.ROT_SPD * 0.08)) * this.SPEED_MULTIPLIER;
+        this._smoothTgt = lerpAngle(this._smoothTgt, tgtAngle, 1 - Math.exp(-10 * dt));
+        const k = (this.grounded ? (this.ROT_SPD * 0.4) : (this.ROT_SPD * 0.2)) * this.SPEED_MULTIPLIER;
         this.rotY = lerpAngle(this.rotY, this._smoothTgt, 1 - Math.exp(-k * dt));
         if (this.usePhysics) {
           this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);

@@ -1143,6 +1143,11 @@ async function initBabylonScene() {
   camera.upperBetaLimit = Math.PI / 2.05;
   camera.wheelPrecision = 55; // Comfortable, precise wheel zoom speed
   camera.pinchPrecision = 55; // Comfortable, precise pinch zoom speed
+  // Camera tracks the pointer live while dragging with a soft settle on release.
+  // Default 0.9 drifts too long after release; 0 is too abrupt. ~0.5 follows
+  // during the drag and eases to a stop quickly.
+  camera.inertia = 0.85;
+  camera.panningInertia = 0.85;
   camera.attachControl(canvas, true);
   if (camera.inputs && camera.inputs.attached) {
     const mw = camera.inputs.attached.mousewheel || camera.inputs.attached.mouseWheel;
