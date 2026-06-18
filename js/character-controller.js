@@ -1728,7 +1728,27 @@ class CharCtrl {
       ));
     }
 
-    this.anim.play('Roll', false, 0.4, null, 1.1);
+    const ROLL_SPEED = 1.24;
+    this.anim.play('Roll', false, 0.4, null, ROLL_SPEED);
+
+    // End the roll when the actual Roll clip finishes, not at a fixed 820ms.
+    // A short mapped clip used to end its animation well before the timer,
+    // freezing on the last frame and then snapping at 820ms (the "cambio
+    // extraño", most visible after double-jump + roll). Derive the real clip
+    // length, account for the playback speed, and floor it so the hop arc
+    // still has time to resolve. Falls back to 820ms when the clip is missing.
+    const rollAg = this.anim.g.get('Roll');
+    const rollFps = (rollAg && rollAg.targetedAnimations[0] && rollAg.targetedAnimations[0].animation)
+      ? rollAg.targetedAnimations[0].animation.framePerSecond : 30;
+    const rollClipMs = rollAg ? ((rollAg.to - rollAg.from) / rollFps) * 1000 / ROLL_SPEED : 820;
+    const rollDurationMs = Math.max(600, rollClipMs);
+
+    // Minimum time the roll animation must play before an early ground contact
+    // is allowed to end it. On a flat running roll the character barely leaves
+    // the floor, so ground recognition fires almost immediately and chopped the
+    // clip off abruptly. Hold the roll for most of its length before letting a
+    // landing cut it short (the timer still ends it at full duration).
+    this._rollMinPlayUntil = performance.now() + (rollDurationMs * 0.7) / this.SPEED_MULTIPLIER;
 
     this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
@@ -1765,7 +1785,7 @@ class CharCtrl {
       // immediately forcing JUMP_LOOP — this prevents premature fall-animation
       // during jump + roll combos where the character is still ascending.
       this._resolvePostRoll();
-    }, 820 / this.SPEED_MULTIPLIER);
+    }, rollDurationMs / this.SPEED_MULTIPLIER);
   }
 
   // Called at the end of the roll timer. Polls each frame until the hop arc
@@ -1798,7 +1818,14 @@ class CharCtrl {
         if (hasInput) {
           this.speed = Math.max(carried, this.SPD_WALK * this.SPEED_MULTIPLIER * 0.6);
         } else {
-          this.speed = carried;
+          // No movement input: stop. Keeping carried momentum here let the
+          // locomotion block re-apply dir*speed every frame against a stale
+          // direction, so the character slid across the ground after landing.
+          this.speed = 0;
+          if (this.usePhysics && this.physicsBody) {
+            const cv = this.physicsBody.getLinearVelocity();
+            this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
+          }
         }
         this._rollExitSpeed = 0;
         this._returnToLoco(0.38);
@@ -2268,10 +2295,44 @@ class CharCtrl {
         // Quietly settle character without emitting landing dust or playing landing camera shakes/anims
         this._rollOnLand = false;
         this._returnToLoco();
-      } else if (this.state === S.ROLL) {
+      } else if (this.state === S.ROLL && performance.now() >= (this._rollMinPlayUntil || 0)) {
         this._emitLandingDust();
-        if (!this._rollActive) {
-          this._returnToLoco(0.06);
+        // Ground recognition ends the roll immediately — do NOT wait for the
+        // roll timer. If the character touches down before the timer fires it
+        // would otherwise stay stuck in the ROLL animation until the timeout,
+        // which read as "not recognizing the ground". A minimum play time
+        // (_rollMinPlayUntil) guards against a flat running roll being chopped
+        // off the instant the feet touch. Cancel the pending timer and the
+        // deferred _resolvePostRoll poll so they don't double-fire.
+        if (this._rollActive) {
+          this._rollActive = false;
+          if (this._rollTimeoutId) { clearTimeout(this._rollTimeoutId); this._rollTimeoutId = null; }
+        }
+        {
+          // If landing the roll with no movement input, stop rather than letting
+          // the locomotion block keep applying the roll's residual speed against a
+          // stale direction (which made the character slide across the ground).
+          const hasInput = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
+            this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
+            (this.isTouch && (Math.abs(this.touchVector?.x) > 0.15 || Math.abs(this.touchVector?.y) > 0.15));
+          // Clear the hop's residual vertical impulse (kinematic mode never
+          // decrements jumpVel via gravity once grounded).
+          this.jumpVel = 0;
+          if (!hasInput) {
+            // No movement input: bleed the roll momentum off smoothly via the
+            // locomotion DECEL instead of snapping to a dead stop, but zero the
+            // one-shot physics velocity so the body doesn't keep coasting on a
+            // stale direction (that was the earlier "slide"). Keeping a little
+            // speed lets the loco blend tree ease back to Idle rather than pop.
+            this.speed = Math.min(this.speed, this.SPD_WALK * this.SPEED_MULTIPLIER * 0.4);
+            this._rollExitSpeed = 0;
+            if (this.usePhysics && this.physicsBody) {
+              const cv = this.physicsBody.getLinearVelocity();
+              this.physicsBody.setLinearVelocity(new BABYLON.Vector3(0, cv.y, 0));
+            }
+          }
+          // Smooth crossfade out of the roll clip (0.06 was a hard snap).
+          this._returnToLoco(0.58);
         }
       } else if (this._rollOnLand && this.speed > 1.0) {
         this._rollOnLand = false;
