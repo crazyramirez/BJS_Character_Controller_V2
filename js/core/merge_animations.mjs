@@ -67,7 +67,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === '--leg-spread' && args[i + 1]) { LEG_SPREAD_ANGLE = parseFloat(args[++i]); }
 }
 charPath = charPath || '../assets/character.glb';
-animPath = animPath || './assets//animations.glb';
+animPath = animPath || './assets//animations-basic.glb';
 outputPath = outputPath || '../assets/character_animated_1.glb';
 
 // ── Bone name mapping ───────────────────────────────────────────────────────

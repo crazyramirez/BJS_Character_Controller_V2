@@ -137,8 +137,8 @@ function normBone(name) {
     // strip the bone prefix first so "cc_base_l_hand" etc. read cleanly
     const t = n.replace(/^(mixamorig\d*|armature|cc_base)[:_ ]/i, '');
     return new RegExp(`(^|[-_. ])${s}([-_. ]|$)`).test(t) // _l_ , .r , trailing _l
-        || new RegExp(`[-_. ]${s}$`).test(t)              // hand_l
-        || new RegExp(`^${s}[-_. ]`).test(t);             // l_thumb
+      || new RegExp(`[-_. ]${s}$`).test(t)              // hand_l
+      || new RegExp(`^${s}[-_. ]`).test(t);             // l_thumb
   };
   if (sideMarker('l')) side = 'left';
   else if (sideMarker('r')) side = 'right';
@@ -152,7 +152,7 @@ function normBone(name) {
     // Remove the full word anywhere, and a bare l/r only when separator-bounded
     // (so it never eats the l in "calf" or r in "arm").
     n = n.replace(/left|right/g, '')
-         .replace(/(^|[-_. ])[lr](?=[-_. ]|$)/g, '$1');
+      .replace(/(^|[-_. ])[lr](?=[-_. ]|$)/g, '$1');
   }
   // Remove all remaining punctuation/separators.
   n = n.replace(/[:_ \-.]/g, '');
@@ -3431,7 +3431,7 @@ function _makeCharacterDestroyer(scene, charCtrl, animCtrl, playerCapsule, loadR
 //       { filename: 'character_animated_2.glb', assetsPath: 'assets/', shadow, ... }
 //       { glbUrl: <objectURL/path>, ... }                       // imported single GLB
 //     Option B (separate mesh + animations → server retarget):
-//       { filename: 'character.glb', animationsFilename: 'animations.glb', assetsPath: 'assets/' }
+//       { filename: 'character.glb', animationsFilename: 'animations-basic.glb', assetsPath: 'assets/' }
 //       { glbUrl: <meshURL>, animationsUrl: <animsURL> }          // imported pair
 // Returns the new character handle (with its own .destroy()).
 async function loadCharacterRuntime(scene, camera, usePhysics, options = {}, prevHandle = null) {

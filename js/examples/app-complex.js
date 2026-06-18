@@ -39,11 +39,11 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
-    filename: 'character_animated_1.glb',
+    // filename: 'character_animated_1.glb',
 
     // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
-    // filename: 'character.glb',
-    // animationsFilename: 'animations.glb',
+    filename: 'character_animated_1.glb',
+    animationsFilename: 'animations-pro.glb',
 
     spawnPosition: new BABYLON.Vector3(0, 2, 0)
     // ellipsoid omitted → uses the default 0.35 radius (the wide 0.75 ellipsoid
@@ -266,12 +266,12 @@ function bindCharacterSwapUI(switchCharacter) {
     });
   });
 
-  // Merge assets/animations.glb into the current character (Option B, server).
+  // Merge assets/animations-basic.glb into the current character (Option B, server).
   // Works on the imported mesh (or, if none, the current preset filename).
   const mergeBtn = $('char-merge-anim-btn');
   mergeBtn?.addEventListener('click', () => {
     run(async () => {
-      const opts = { animationsFilename: 'animations.glb', assetsPath: 'assets/' };
+      const opts = { animationsFilename: 'animations-basic.glb', assetsPath: 'assets/' };
       if (lastMeshUrl) opts.glbUrl = lastMeshUrl;
       else opts.filename = select ? select.value : 'character_animated_1.glb';
       await switchCharacter(opts);

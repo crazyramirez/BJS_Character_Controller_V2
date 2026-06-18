@@ -335,7 +335,7 @@ When exporting your setup, you can choose between two integration architectures 
     *   **Best for**: Single character games, simple setups, or engines where loading multiple separate files is not desired.
     *   **Drawback**: Duplicate data. If you have 10 characters sharing the same locomotion set, you will be downloading those animation frames 10 times.
 *   **Runtime Retargeting (Client-Side Dynamic Retargeting)**:
-    *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations.glb`) separate. In your code, [setupCharacter](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L3179) automatically maps the animation channels onto whichever character skeleton is loaded at runtime using [normBone](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L123) matching.
+    *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations-basic.glb`) separate. In your code, [setupCharacter](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L3179) automatically maps the animation channels onto whichever character skeleton is loaded at runtime using [normBone](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L123) matching.
     *   **Best for**: Multi-character games, RPGs, or modular projects. Reuses one shared animation file across dozens of characters, drastically reducing download size and memory footprint.
     *   **Note**: Requires Babylon.js 9+ (utilizes the native `AnimatorAvatar` class).
 

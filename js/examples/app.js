@@ -44,14 +44,14 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     // builder-config.json / mergeOptions needed.
     //
     // Option A: Pre-merged GLB with the pose + animations already baked in.
-    filename: 'character_animated_1.glb'
+    // filename: 'character_animated_1.glb'
 
     // Option B: Runtime retargeting from a separate mesh + animation pack.
     // Use this when the mesh and animations are shipped as two files. Posture
     // bakes during the server merge — pass mergeOptions only if the mesh is NOT
     // pre-baked:
-    //   filename: 'character.glb',
-    //   animationsFilename: 'animations.glb',
+    filename: 'character_animated_1.glb',
+    animationsFilename: 'animations-pro.glb',
     //   mergeOptions: { FOOT_TOE_OUT_ANGLE: -23, /* … */ },
   });
 }
@@ -389,12 +389,12 @@ function bindCharacterSwapUI(switchCharacter) {
     });
   });
 
-  // Merge assets/animations.glb into the current character (Option B, server).
+  // Merge assets/animations-basic.glb into the current character (Option B, server).
   // Works on the imported mesh (or, if none, the current preset filename).
   const mergeBtn = $('char-merge-anim-btn');
   mergeBtn?.addEventListener('click', () => {
     run(async () => {
-      const opts = { animationsFilename: 'animations.glb', assetsPath: 'assets/' };
+      const opts = { animationsFilename: 'animations-basic.glb', assetsPath: 'assets/' };
       if (lastMeshUrl) opts.glbUrl = lastMeshUrl;
       else opts.filename = select ? select.value : 'character_animated_1.glb';
       await switchCharacter(opts);

@@ -16,11 +16,11 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
-    filename: 'character_animated_1.glb'
+    // filename: 'character_animated_1.glb'
 
     // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
-    // filename: 'character.glb',
-    // animationsFilename: 'animations.glb'
+    filename: 'character_animated_1.glb',
+    animationsFilename: 'animations-pro.glb',
   });
 }
 
@@ -63,7 +63,7 @@ async function createMinimalScene() {
   // 7. OPTIONAL: Runtime character swap (no page reload). Console examples:
   //    Preset (anims embedded):  await switchCharacter({ filename: 'character_animated_2.glb' })
   //    Imported GLB as-is:       await switchCharacter({ glbUrl: URL.createObjectURL(file) })
-  //    Merge anims into a mesh:  await switchCharacter({ glbUrl, animationsFilename: 'animations.glb' })  // needs server
+  //    Merge anims into a mesh:  await switchCharacter({ glbUrl, animationsFilename: 'animations-basic.glb' })  // needs server
   window.switchCharacter = async (options) => {
     const merged = Object.assign({ shadow: null, assetsPath: 'assets/' }, options);
     charHandle = await loadCharacterRuntime(scene, camera, usePhysics, merged, charHandle);

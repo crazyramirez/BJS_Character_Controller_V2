@@ -19,7 +19,7 @@ let animationsCleared = false; // true after "Clear All": force export to strip 
 let isServerAvailable = false;
 let characterFilename = 'character.glb';
 
-let animationsFilename = 'animations.glb';
+let animationsFilename = 'animations-basic.glb';
 
 // Posture preview/bake state. While a posture slider is dragged the observer shows
 // the EXACT live offset (matches the bake). On release we bake the pose on the
@@ -1396,20 +1396,20 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
     updateCharStatusBar(file.name);
 
     // No usable animation set in imported character (none, or a single clip
-    // like a mixamo.com export / t-pose) → use default animations.glb
+    // like a mixamo.com export / t-pose) → use default animations-basic.glb
     if (!animationsGlbBuffer && detectedAnimations.length <= 1) {
       try {
-        const animRes = await fetch('assets/animations.glb');
+        const animRes = await fetch('assets/animations-basic.glb');
         if (animRes.ok) {
           animationsGlbBuffer = await animRes.arrayBuffer();
           showToast(detectedAnimations.length === 0
-            ? 'No animations in character — using default animations.glb'
-            : 'Only one animation in character — adding default animations.glb');
+            ? 'No animations in character — using default animations-basic.glb'
+            : 'Only one animation in character — adding default animations-basic.glb');
         } else {
-          console.warn('assets/animations.glb not found, skipping default animations.');
+          console.warn('assets/animations-basic.glb not found, skipping default animations.');
         }
       } catch (e) {
-        console.warn('Could not fetch default animations.glb:', e);
+        console.warn('Could not fetch default animations-basic.glb:', e);
       }
     }
 
@@ -1460,7 +1460,7 @@ async function ensureCleanPreviewBuffer() {
   opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
   const formData = new FormData();
   formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-  if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+  if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
   formData.append('options', JSON.stringify(opts));
   const res = await fetch('/api/merge', { method: 'POST', body: formData });
   if (!res.ok) throw new Error('clean preview merge failed');
@@ -1506,7 +1506,7 @@ async function rebakePosturePreview() {
     // not stacked, because the base never carries posture.
     const postureBase = scaledCharacterBuffer || originalCharacterGlbBuffer;
     formData.append('character', new Blob([postureBase], { type: 'model/gltf-binary' }), 'character.glb');
-    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
     // Bake POSTURE only — scale/pivot are already in the baseline geometry (or the
     // live wrapper applies them), so zero them here to avoid doubling.
     const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
@@ -1555,13 +1555,13 @@ async function bakeScalePivot() {
     const base = scaledCharacterBuffer || originalCharacterGlbBuffer;
     const formData = new FormData();
     formData.append('character', new Blob([base], { type: 'model/gltf-binary' }), 'character.glb');
-    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
     // Fold the CURRENT SCALE only. Zero posture (own bake path) AND zero pivot —
     // baking pivot into the geometry deforms the character; pivot stays a live
     // wrapper offset and is folded only at final export.
     const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
-    ['ARM_SPREAD_ANGLE','ARM_SPLAY_ANGLE','SHOULDER_RAISE_ANGLE','LEG_SPREAD_ANGLE',
-     'SPINE_STRAIGHTEN_ANGLE','HIPS_TILT_ANGLE','FOOT_TOE_OUT_ANGLE','HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
+    ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
+      'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
     opts.POSE_OFFSETS = {};
     opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
     formData.append('options', JSON.stringify(opts));
@@ -1603,7 +1603,7 @@ async function applyPreloadedAnimations() {
     try {
       const formData = new FormData();
       formData.append('character', new Blob([characterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-      formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+      formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
 
       formData.append('options', JSON.stringify(getMergeOptions()));
 
@@ -1629,7 +1629,7 @@ async function applyPreloadedAnimations() {
       console.error('Server merge failed for preloaded animations, falling back to client-side load:', err);
       showToast('Server merge failed — falling back to client-side retargeting.', true);
       try {
-        await loadAnimationsOffline(animationsGlbBuffer, 'animations.glb');
+        await loadAnimationsOffline(animationsGlbBuffer, 'animations-basic.glb');
       } catch (clientErr) {
         console.error('Client-side retargeting fallback failed:', clientErr);
         showToast('Client-side retargeting failed: ' + clientErr.message, true);
@@ -1640,7 +1640,7 @@ async function applyPreloadedAnimations() {
   } else {
     showLoading(`Retargeting preloaded animations on client…`);
     try {
-      await loadAnimationsOffline(animationsGlbBuffer, 'animations.glb');
+      await loadAnimationsOffline(animationsGlbBuffer, 'animations-basic.glb');
       showToast(`✓ Client-side retargeted preloaded animations! ${detectedAnimations.length} animations loaded.`);
     } catch (err) {
       console.error(err);
@@ -1933,7 +1933,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   const _prevSkeletons = scene && scene.skeletons ? [...scene.skeletons] : [];
   const _prevAnimGroups = scene && scene.animationGroups ? [...scene.animationGroups] : [];
   // Stop old groups now so they don't drive bones during the brief overlap.
-  _prevAnimGroups.forEach(ag => { try { ag.stop(); } catch (e) {} });
+  _prevAnimGroups.forEach(ag => { try { ag.stop(); } catch (e) { } });
   if (_prevCharacter) {
     // Detach observers immediately so the old controller stops updating mid-swap.
     if (_prevCharacter.boneOffsetObserver) scene.onAfterAnimationsObservable.remove(_prevCharacter.boneOffsetObserver);
@@ -1951,16 +1951,16 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   // New mesh is in the scene now — tear down the old character/skeletons/groups.
   // The new skeleton/groups are NOT in these snapshots, so they're safe.
   if (_prevCharacter) {
-    try { _prevCharacter.charCtrl?.destroy(); } catch (e) {}
-    try { _prevCharacter.animCtrl?.destroy(); } catch (e) {}
-    try { _prevCharacter.playerCapsule?.dispose(); } catch (e) {}
+    try { _prevCharacter.charCtrl?.destroy(); } catch (e) { }
+    try { _prevCharacter.animCtrl?.destroy(); } catch (e) { }
+    try { _prevCharacter.playerCapsule?.dispose(); } catch (e) { }
   }
-  _prevSkeletons.forEach(skel => { try { skel.dispose(); } catch (e) {} });
+  _prevSkeletons.forEach(skel => { try { skel.dispose(); } catch (e) { } });
   // Dispose stale animation groups: a previous load leaves its groups in
   // scene.animationGroups; since AnimCtrl resolves clips by NAME, a stale group
   // (phantom mixamorig:* targets) can shadow the freshly-merged one and leave new
   // bones un-animated → mesh deforms.
-  _prevAnimGroups.forEach(ag => { try { ag.dispose(); } catch (e) {} });
+  _prevAnimGroups.forEach(ag => { try { ag.dispose(); } catch (e) { } });
 
   const charRoot = charRes.meshes[0];
   charRoot.name = 'Character_Visual_builder';
@@ -5326,7 +5326,7 @@ function updateExportCode() {
 
   let animFileOption = '';
   if (exportMode === 'runtime') {
-    const animName = animationsFilename || 'animations.glb';
+    const animName = animationsFilename || 'animations-basic.glb';
     animFileOption = `\n    animationsFilename: '${animName}',`;
     // Runtime mode re-merges character + animations on the server at load time.
     // Pass the posture/transform sliders so that re-merge bakes the SAME pose
@@ -5366,7 +5366,7 @@ async function downloadCharacterGlbFile() {
   // ── RUNTIME RETARGETING MODE ──────────────────────────────────────────────
   // The controller re-merges character + animations on load, so the character
   // GLB must ship WITHOUT baked animation groups (only posture baked), and the
-  // raw animations.glb goes alongside it as a separate file. Two downloads.
+  // raw animations-basic.glb goes alongside it as a separate file. Two downloads.
   if (exportMode === 'runtime') {
     if (!isServerAvailable) {
       showToast('Server offline — runtime export needs the merge server.', true);
@@ -5377,7 +5377,7 @@ async function downloadCharacterGlbFile() {
       // Character: bake posture from the scale-baked baseline (preserves applied
       // scale/pivot) or the clean original, strip animations but KEEP the T-pose
       // clip — the controller's load-time merge needs it as the retarget alignment
-      // reference for the separate animations.glb.
+      // reference for the separate animations-basic.glb.
       const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
@@ -5394,16 +5394,16 @@ async function downloadCharacterGlbFile() {
       const charName = characterFilename || 'character.glb';
       _downloadBuffer(charBuffer, charName);
 
-      // Animations: ship the raw (pre-merge) animations.glb separately.
+      // Animations: ship the raw (pre-merge) animations-basic.glb separately.
       if (hasAnimBuffer) {
-        const animName = animationsFilename || 'animations.glb';
+        const animName = animationsFilename || 'animations-basic.glb';
         // Small gap so the browser registers two distinct downloads.
         setTimeout(() => _downloadBuffer(animationsGlbBuffer, animName), 600);
         hideLoading();
         showToast(`Downloaded ${charName} (no animations) + ${animName} separately.`);
       } else {
         hideLoading();
-        showToast(`Downloaded ${charName} (no animations). No animations.glb to export.`, true);
+        showToast(`Downloaded ${charName} (no animations). No animations-basic.glb to export.`, true);
       }
     } catch (err) {
       console.error(err);
@@ -5436,7 +5436,7 @@ async function downloadCharacterGlbFile() {
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
 
       if (hasAnimBuffer) {
-        formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+        formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
       }
 
       // Pivot is NEVER baked (deforms the character) — zero it in the export.

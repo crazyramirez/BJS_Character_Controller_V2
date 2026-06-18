@@ -595,7 +595,7 @@ animCtrl.setIdleAnim(newIdleAnimGroup);</div>
 npm install @gltf-transform/core fs-extra
 
 # Run merge utility
-node js/core/merge_animations.mjs -c base.glb -a animations.glb -o assets/character_animated_1.glb</div>
+node js/core/merge_animations.mjs -c base.glb -a animations-basic.glb -o assets/character_animated_1.glb</div>
           </div>
         </div>
       </div>

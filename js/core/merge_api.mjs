@@ -2394,13 +2394,20 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           const Cinv = qInvert(C);
           const rAnimInv = qInvert(rAnim);
 
-          // ── Finger bones: exact hand-space retarget ───────────────────────
-          // Using different C matrices for parent/child finger bones causes
-          // twisting when finger spreads differ between the character and the
-          // animation. Use the hand's change-of-basis (C) for ALL bones in the
-          // finger chain (thumb included) so they curl/orient naturally relative
-          // to the hand. (Restored from merge_api_bkp.mjs — the per-bone /
-          // carve-out variants deformed the hand on CUSTOM rigs.)
+          // ── Finger bones: hand-space vs per-bone change-of-basis ──────────
+          // Two regimes:
+          //  (a) SAME finger convention (Mixamo→Mixamo, custom→custom): each
+          //      finger bone's own C ≈ the hand's C. Using the hand's C for the
+          //      whole chain avoids per-bone twisting from differing spreads, and
+          //      is what kept CUSTOM rigs from deforming. KEEP this here.
+          //  (b) CROSS convention (UE→Mixamo etc.): the source rig's finger
+          //      joints are bind-rolled vs the target's, so the hand-only C
+          //      leaves a per-bone residual → the curl axis rotates wrong and
+          //      the fingers twist/deform. Here the per-bone C (= `C`, already
+          //      inv(Wchar_bone)·Wanim_bone) is the correct map.
+          // Decide per bone: if this bone's own C diverges from the hand's C by
+          // more than a threshold, the rigs disagree about this finger's bind
+          // frame → use the per-bone C. Otherwise use the hand C (safe default).
           const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
             || /(thumb|index|middle|ring|pinky)/.test(srcName);
 
@@ -2425,8 +2432,20 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             if (handCharName && handAnimName) {
               const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
               const Wanim_hand = animWorldByName.get(handAnimName) || [0, 0, 0, 1];
-              C_to_use = qMul(qInvert(Wchar_hand), Wanim_hand);
-              Cinv_to_use = qInvert(C_to_use);
+              const C_hand = qMul(qInvert(Wchar_hand), Wanim_hand);
+              // Angle between this bone's own C and the hand C (both unit quats).
+              // 2·acos(|dot|) is the rotation separating them, in radians.
+              const dot = Math.abs(C[0] * C_hand[0] + C[1] * C_hand[1] + C[2] * C_hand[2] + C[3] * C_hand[3]);
+              const divergeRad = 2 * Math.acos(Math.min(1, dot));
+              // ~12° threshold: same-convention rigs sit well under this (spread
+              // differences are small); cross-convention bind rolls are ≥45°.
+              const FINGER_FRAME_DIVERGE = 12 * Math.PI / 180;
+              if (divergeRad <= FINGER_FRAME_DIVERGE) {
+                // Same convention — hand-space C (avoids spread twist on custom rigs).
+                C_to_use = C_hand;
+                Cinv_to_use = qInvert(C_hand);
+              }
+              // else: cross convention — keep the per-bone C (C_to_use already = C).
             }
           }
 
