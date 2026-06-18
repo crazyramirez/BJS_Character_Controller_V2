@@ -15,9 +15,23 @@ let detectedAnimations = [];
 let characterGlbBuffer = null; // ArrayBuffer of the loaded character GLB
 let originalCharacterGlbBuffer = null; // Clean original character GLB
 let animationsGlbBuffer = null; // ArrayBuffer of the preloaded animations GLB
+let animationsCleared = false; // true after "Clear All": force export to strip baked anims
 let isServerAvailable = false;
 let characterFilename = 'character.glb';
+
 let animationsFilename = 'animations.glb';
+
+// Posture preview/bake state. While a posture slider is dragged the observer shows
+// the EXACT live offset (matches the bake). On release we bake the pose on the
+// SERVER and reload the baked GLB so the animations carry the pose in their tracks
+// (no snapping between clips). Once baked the observer must stop applying posture
+// (already in the GLB) — posturePreviewBaked gates it. To re-adjust we reload the
+// posture-free clean buffer first so the observer layers on a clean bind, never on
+// an already-baked pose. See [[posture_preview_vs_export_parity]].
+let posturePreviewBaked = false;     // true while the loaded GLB already carries the pose
+let _postureRebakeTimer = null;      // debounce for the on-release bake
+let cleanPreviewBuffer = null;       // GLB merged with scale/anims but posture=0
+let _enteringLivePreview = false;    // guard while swapping to the clean buffer
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
@@ -518,6 +532,9 @@ function setupCharTransformControls() {
     applyLiveTransformations();
     savePreferences();
     updateExportCode();
+    // The clean preview buffer bakes scale/pivot; any transform change makes it
+    // stale. Drop it so the next drag-after-bake rebuilds it.
+    cleanPreviewBuffer = null;
   };
 
   uniformToggle?.addEventListener('change', onSliderChange);
@@ -528,14 +545,23 @@ function setupCharTransformControls() {
   pivotXSlider?.addEventListener('input', onSliderChange);
   pivotYSlider?.addEventListener('input', onSliderChange);
   pivotZSlider?.addEventListener('input', onSliderChange);
-  armSpreadSlider?.addEventListener('input', onSliderChange);
-  armSplaySlider?.addEventListener('input', onSliderChange);
-  shoulderRaiseSlider?.addEventListener('input', onSliderChange);
-  legSpreadSlider?.addEventListener('input', onSliderChange);
-  spineStraightenSlider?.addEventListener('input', onSliderChange);
-  hipsTiltSlider?.addEventListener('input', onSliderChange);
-  footToeOutSlider?.addEventListener('input', onSliderChange);
-  handRelaxSlider?.addEventListener('input', onSliderChange);
+  // Posture sliders: live exact preview while dragging (observer), bake on release.
+  const postureSliders = [armSpreadSlider, armSplaySlider, shoulderRaiseSlider,
+    legSpreadSlider, spineStraightenSlider, hipsTiltSlider, footToeOutSlider, handRelaxSlider];
+
+  // First drag after a bake → swap back to the clean buffer so the observer layers
+  // the live offset on a clean bind (not on the already-baked pose).
+  const onPostureInput = () => {
+    if (posturePreviewBaked) {
+      posturePreviewBaked = false;
+      enterLivePosturePreview();
+    }
+    onSliderChange();
+  };
+  postureSliders.forEach(s => {
+    s?.addEventListener('input', onPostureInput);
+    s?.addEventListener('change', schedulePostureRebake); // release → bake into the GLB
+  });
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -1255,6 +1281,7 @@ async function loadDefaultCharacter() {
     const file = new File([buf], 'character_animated_1.glb');
     await loadCharacterMeshFile(file, buf);
     animationsGlbBuffer = buf;
+    cleanPreviewBuffer = null; // anims changed → posture-free preview base is stale
   } catch (e) {
     console.warn('Could not load assets/character_animated_1.glb, waiting for user import.', e);
     hideLoading();
@@ -1316,6 +1343,8 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   const arrayBuffer = preloadedBuffer || await file.arrayBuffer();
   characterGlbBuffer = arrayBuffer;
   originalCharacterGlbBuffer = arrayBuffer;
+  animationsCleared = false; // fresh load resets the cleared state
+  cleanPreviewBuffer = null; // new character → rebuild the posture-free preview base
   characterFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('import', 'active');
@@ -1394,6 +1423,78 @@ async function updateSkeletonInfoAfterMerge(mergedBuffer) {
   }
 }
 
+// Build (once) the posture-free GLB — same merge as export but with every posture
+// angle zeroed. Used as the live drag base so the observer layers its offset on a
+// clean bind, never on top of an already-baked pose (which would double it).
+async function ensureCleanPreviewBuffer() {
+  if (cleanPreviewBuffer) return cleanPreviewBuffer;
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return null;
+  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+  const opts = getMergeOptions({ removeExistingAnimations: hasAnim });
+  for (const k of ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
+    'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE']) opts[k] = 0;
+  const formData = new FormData();
+  formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+  if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+  formData.append('options', JSON.stringify(opts));
+  const res = await fetch('/api/merge', { method: 'POST', body: formData });
+  if (!res.ok) throw new Error('clean preview merge failed');
+  cleanPreviewBuffer = await res.arrayBuffer();
+  return cleanPreviewBuffer;
+}
+
+// First drag after a bake: swap the scene to the clean (posture-free) GLB so the
+// live observer offset applies on a clean bind. Keeps posturePreviewBaked=false.
+async function enterLivePosturePreview() {
+  if (!isServerAvailable || _enteringLivePreview) return;
+  _enteringLivePreview = true;
+  try {
+    const buf = await ensureCleanPreviewBuffer();
+    if (buf) await _loadGlbIntoScene(buf, 'clean-preview.glb'); // resets posturePreviewBaked=false
+  } catch (err) {
+    console.warn('[posture] clean preview load failed; observer may double on baked pose:', err);
+  } finally {
+    _enteringLivePreview = false;
+  }
+}
+
+// On slider release: bake the current posture on the server (the exact export
+// pipeline) and reload, so the clips carry the pose in their tracks — no snapping.
+function schedulePostureRebake() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return; // observer-only fallback (offline)
+  if (_postureRebakeTimer) clearTimeout(_postureRebakeTimer);
+  _postureRebakeTimer = setTimeout(() => { _postureRebakeTimer = null; rebakePosturePreview(); }, 350);
+}
+
+async function rebakePosturePreview() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return;
+  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+  showLoading('Applying posture…');
+  try {
+    const formData = new FormData();
+    // Always bake from the CLEAN original so posture is applied once, not stacked.
+    formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+    formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: hasAnim })));
+
+    const res = await fetch('/api/merge', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Server merge failed');
+    }
+    const mergedBuffer = await res.arrayBuffer();
+    characterGlbBuffer = mergedBuffer;          // this is what export uses
+    animationsCleared = false;                  // new anims merged → no longer cleared
+    await _loadGlbIntoScene(mergedBuffer, 'merged.glb'); // sets posturePreviewBaked=false
+    posturePreviewBaked = true;                 // pose now lives in the GLB → observer holds at 0
+    hideLoading();
+  } catch (err) {
+    console.error('[posture-rebake] server merge failed:', err);
+    posturePreviewBaked = false;                // keep the live observer preview
+    hideLoading();
+  }
+}
+
 async function applyPreloadedAnimations() {
   if (!characterGlbBuffer || !animationsGlbBuffer) return;
 
@@ -1418,6 +1519,7 @@ async function applyPreloadedAnimations() {
 
       const mergedBuffer = await res.arrayBuffer();
       characterGlbBuffer = mergedBuffer;
+      animationsCleared = false;
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
       await updateSkeletonInfoAfterMerge(mergedBuffer);
       setLoaderStep('merge', 'completed');
@@ -1477,6 +1579,7 @@ async function loadAnimationBatchFile(file) {
 
   const animBuffer = await file.arrayBuffer();
   animationsGlbBuffer = animBuffer;
+  cleanPreviewBuffer = null; // anims changed → posture-free preview base is stale
   animationsFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('merge', 'active');
@@ -1504,6 +1607,7 @@ async function loadAnimationBatchFile(file) {
       const mergedBuffer = await res.arrayBuffer();
       console.log(`[batch-import] Merged result: ${(mergedBuffer.byteLength / 1024).toFixed(0)} KB`);
       characterGlbBuffer = mergedBuffer; // update stored char buffer to the merged one
+      animationsCleared = false;
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
       await updateSkeletonInfoAfterMerge(mergedBuffer);
       console.log(`[batch-import] Detected animations after load: [${detectedAnimations.join(', ')}]`);
@@ -1714,6 +1818,9 @@ async function loadAnimationsOffline(arrayBuffer, filename) {
 // CORE GLB LOADER → BABYLON SCENE
 // ═══════════════════════════════════════════════════════════
 async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly = false) {
+  // A freshly loaded GLB carries no baked posture by default; the rebake path sets
+  // this back to true after IT reloads. Default to the live observer preview.
+  posturePreviewBaked = false;
   // Leave auto-rig adjust mode (restores hidden scene meshes, disposes markers/gizmo)
   // before the character the markers are parented to gets disposed.
   cancelAutoRigAdjust();
@@ -1843,6 +1950,28 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   // WORLD axes (X = pitch, Y = splay, Z = spread). Mixamo binds are
   // identity-ish (local ≈ world), but CC/AccuRig/UE/Unity rigs carry joint
   // orients — the world axis has to be converted into each bone's frame.
+  // World axes must be the BIND-pose world rotation in SKELETON space — exactly
+  // what merge_api uses (its bind world is derived from the IBMs). Earlier attempts
+  // read node.absoluteRotationQuaternion or composed live node locals; both were
+  // wrong because (a) they fold in the charRoot import rotation and (b) the idle
+  // clip is already playing, so the live pose is animated, not bind. Result: the
+  // foot axis came out ~50° off vertical ([-0.003,-0.634,0.773]) and the toe-out
+  // over-rotated ~2×. The IBM is the animation-independent bind, identical to the
+  // server's source — use it directly.
+  const _tmpMat = new BABYLON.Matrix();
+  const _tmpPos = new BABYLON.Vector3();
+  const _tmpScl = new BABYLON.Vector3();
+  const bindWorldRot = (bone) => {
+    // Absolute inverse bind matrix (IBM); invert → absolute bind world matrix.
+    const ibm = bone.getAbsoluteInverseBindMatrix
+      ? bone.getAbsoluteInverseBindMatrix()
+      : (bone.getInvertedAbsoluteTransform && bone.getInvertedAbsoluteTransform());
+    if (!ibm) return BABYLON.Quaternion.Identity();
+    ibm.invertToRef(_tmpMat);
+    const q = new BABYLON.Quaternion();
+    _tmpMat.decompose(_tmpScl, q, _tmpPos);
+    return q;
+  };
   const boneOffsetAxes = new Map(); // node.uniqueId → { role, x, y, z }
   scene.skeletons.forEach(skel => {
     skel.bones.forEach(bone => {
@@ -1853,8 +1982,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
       // CC rigs have Hip (root) AND Pelvis (child): tilt only the root,
       // otherwise the offset doubles down the chain.
       if (role === 'hips' && boneRole(node.parent?.name || '') === 'hips') return;
-      node.computeWorldMatrix(true);
-      const wq = node.absoluteRotationQuaternion?.clone() || BABYLON.Quaternion.Identity();
+      // Bind world rotation from the IBM (animation-independent, = server source).
+      const wq = bindWorldRot(bone);
       const inv = BABYLON.Quaternion.Inverse(wq);
       const toLocal = (axis) => {
         const out = new BABYLON.Vector3();
@@ -1916,22 +2045,32 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
       }
     });
 
-    const armAngle = charTransformConfig.ARM_SPREAD_ANGLE || 0;
-    const armSplay = charTransformConfig.ARM_SPLAY_ANGLE || 0;
-    const shoulderRaise = charTransformConfig.SHOULDER_RAISE_ANGLE || 0;
-    const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
-    const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
-    const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
-    const toeOut = charTransformConfig.FOOT_TOE_OUT_ANGLE || 0;
-    const handRelax = charTransformConfig.HAND_RELAX_ANGLE || 0;
+    // Once the pose is baked into the loaded GLB, the observer must NOT re-apply it
+    // (the clips already carry it) — hold all angles at 0. During a drag
+    // posturePreviewBaked is false and the exact live offset returns.
+    const armAngle = posturePreviewBaked ? 0 : (charTransformConfig.ARM_SPREAD_ANGLE || 0);
+    const armSplay = posturePreviewBaked ? 0 : (charTransformConfig.ARM_SPLAY_ANGLE || 0);
+    const shoulderRaise = posturePreviewBaked ? 0 : (charTransformConfig.SHOULDER_RAISE_ANGLE || 0);
+    const legAngle = posturePreviewBaked ? 0 : (charTransformConfig.LEG_SPREAD_ANGLE || 0);
+    const spineAngle = posturePreviewBaked ? 0 : (charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0);
+    const hipsTilt = posturePreviewBaked ? 0 : (charTransformConfig.HIPS_TILT_ANGLE || 0);
+    const toeOut = posturePreviewBaked ? 0 : (charTransformConfig.FOOT_TOE_OUT_ANGLE || 0);
+    const handRelax = posturePreviewBaked ? 0 : (charTransformConfig.HAND_RELAX_ANGLE || 0);
 
-    // 2. Loop through character bones and apply offsets about bind-world axes
+    // 2. Loop through character bones and apply offsets about bind-world axes.
+    // The character has multiple skins/skeletons that share the SAME bone
+    // TransformNodes. Without de-duping, the offset was applied once PER skeleton
+    // on the shared node — for an animated bone (no reset) that stacked, e.g. ×2
+    // skeletons made a 20° toe-out look like 40°. Apply each node exactly once.
+    const processedNodes = new Set();
     scene.skeletons.forEach(skel => {
       skel.bones.forEach(bone => {
         const node = bone.getTransformNode();
         if (!node || !node.rotationQuaternion) return;
         const axes = boneOffsetAxes.get(node.uniqueId);
         if (!axes) return;
+        if (processedNodes.has(node.uniqueId)) return;
+        processedNodes.add(node.uniqueId);
 
         const id = node.uniqueId;
         const isAnimated = animatedNodes.has(id);
@@ -4514,7 +4653,7 @@ function clearAllAnimations() {
   showConfirm(
     'Clear All Animations',
     'Are you sure you want to clear all animations from the library? This cannot be undone.',
-    () => {
+    async () => {
       detectedAnimations = [];
 
       // Clear all mappings
@@ -4526,14 +4665,19 @@ function clearAllAnimations() {
 
       // Remove from BJS animCtrl
       if (activeCharacter) {
-        if (activeCharacter.rawAnimationGroups) {
-          activeCharacter.rawAnimationGroups.forEach(group => {
-            group.stop();
-            group.dispose();
-          });
-          activeCharacter.rawAnimationGroups = [];
-        }
         activeCharacter.animCtrl.destroy();
+
+        // Dispose EVERY animation group in the scene, not just the originals in
+        // rawAnimationGroups. AnimCtrl.setAnimation() clones a source group when
+        // the same clip drives two actions (e.g. Walk → Walk_Loop + Sprint_Loop);
+        // those `__isSharedClone` groups live in scene.animationGroups but never
+        // in rawAnimationGroups, so disposing only the raw list leaves the clones
+        // attached to the character bones. Nuke them all (mirrors the character
+        // load path at line ~1851).
+        if (scene && scene.animationGroups) {
+          [...scene.animationGroups].forEach(ag => { ag.stop(); ag.dispose(); });
+        }
+        activeCharacter.rawAnimationGroups = [];
         // Recreate a clean animCtrl with no animation groups
         activeCharacter.animCtrl = new AnimCtrl([], scene);
         activeCharacter.animCtrl.charCtrl = activeCharacter.charCtrl;
@@ -4547,6 +4691,32 @@ function clearAllAnimations() {
 
       // Clear stored animations GLB buffer as well
       animationsGlbBuffer = null;
+      animationsCleared = true; // export must strip baked anims even without an anim buffer
+
+      // Strip baked animations directly from the stored character buffer NOW, so
+      // a later download/export is animation-free without needing a re-merge.
+      // Server disposes all character animations when removeExistingAnimations:true
+      // and no anim buffer is supplied. Falls back to the cleared flag if offline.
+      const stripBase = originalCharacterGlbBuffer || characterGlbBuffer;
+      if (isServerAvailable && stripBase) {
+        try {
+          showLoading('Removing animations from character…');
+          const formData = new FormData();
+          formData.append('character', new Blob([stripBase], { type: 'model/gltf-binary' }), 'character.glb');
+          formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: true })));
+          const res = await fetch('/api/merge', { method: 'POST', body: formData });
+          if (res.ok) {
+            characterGlbBuffer = await res.arrayBuffer();
+            animationsCleared = false; // buffer is now genuinely clean
+          } else {
+            console.warn('[clear-all] strip merge failed, falling back to cleared flag');
+          }
+        } catch (e) {
+          console.warn('[clear-all] strip merge error', e);
+        } finally {
+          hideLoading();
+        }
+      }
 
       renderAnimationLibrary();
       renderAnimationsMappingTab();
@@ -5061,6 +5231,12 @@ function updateExportCode() {
   if (exportMode === 'runtime') {
     const animName = animationsFilename || 'animations.glb';
     animFileOption = `\n    animationsFilename: '${animName}',`;
+    // Runtime mode re-merges character + animations on the server at load time.
+    // Pass the posture/transform sliders so that re-merge bakes the SAME pose
+    // the Builder previewed; otherwise the runtime merge ignores every slider.
+    const mo = getMergeOptions({ removeExistingAnimations: true, COMPRESS_OUTPUT: false });
+    delete mo.COMPRESS_OUTPUT; // controller forces this; keep config clean
+    animFileOption += `\n    mergeOptions: ${JSON.stringify(mo, null, 4).replace(/\n/g, '\n    ')},`;
   }
 
   const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: '${exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated_1.glb'}',${animFileOption}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
@@ -5083,9 +5259,12 @@ async function downloadCharacterGlbFile() {
       const hasAnimBuffer = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
 
       // With an animations buffer: re-merge from the clean original (strip + retarget).
-      // Without one: export the CURRENT character buffer (already holds merged
+      // After "Clear All" (animationsCleared): export from the clean original and
+      // strip any baked anims → animation-free GLB.
+      // Otherwise: export the CURRENT character buffer (already holds merged
       // animations) and keep them — stripping here would produce a GLB with zero animations.
-      const baseBuffer = hasAnimBuffer
+      const stripAnims = hasAnimBuffer || animationsCleared;
+      const baseBuffer = (hasAnimBuffer || animationsCleared)
         ? (originalCharacterGlbBuffer || characterGlbBuffer)
         : (characterGlbBuffer || originalCharacterGlbBuffer);
 
@@ -5096,7 +5275,7 @@ async function downloadCharacterGlbFile() {
         formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
       }
 
-      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: hasAnimBuffer })));
+      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: stripAnims })));
 
       const res = await fetch('/api/merge', {
         method: 'POST',

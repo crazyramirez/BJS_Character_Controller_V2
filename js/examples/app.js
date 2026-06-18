@@ -39,13 +39,20 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
     assetsPath: 'assets/',
-    // Integration Mode options:
-    // Option A: Pre-merged GLB (Embedded animations, standard)
-    // filename: 'character_animated_1.glb'
+    // The Builder bakes posture/transform (scale, arm spread, foot toe-out, …)
+    // directly into the exported GLB, so the runtime just loads it as-is — no
+    // builder-config.json / mergeOptions needed.
+    //
+    // Option A: Pre-merged GLB with the pose + animations already baked in.
+    filename: 'character_animated_1.glb'
 
-    // Option B: Runtime Client Retargeting (Separate mesh and animation pack)
-    filename: 'character_animated_1.glb',
-    animationsFilename: 'animations.glb'
+    // Option B: Runtime retargeting from a separate mesh + animation pack.
+    // Use this when the mesh and animations are shipped as two files. Posture
+    // bakes during the server merge — pass mergeOptions only if the mesh is NOT
+    // pre-baked:
+    //   filename: 'character.glb',
+    //   animationsFilename: 'animations.glb',
+    //   mergeOptions: { FOOT_TOE_OUT_ANGLE: -23, /* … */ },
   });
 }
 

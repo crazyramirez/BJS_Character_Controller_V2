@@ -1399,6 +1399,85 @@ export async function analyzeGLB(buffer) {
 }
 
 /**
+ * Bake posture/spread slider offsets into the character rest pose.
+ *
+ * The full retarget path (mergeGLBs with an animBuffer) bakes posture into the
+ * animation tracks AND the rest pose. But a character-only export (no animBuffer)
+ * early-returns before that code ever runs, so the exported GLB came out in the
+ * raw bind pose — the slider angles only existed in the live runtime bone
+ * observer and were lost on download. This applies the SAME offsets to the rest
+ * pose so a clean character export holds its posture.
+ *
+ * Offsets are computed about WORLD axes mapped into each bone's bind frame
+ * (derived from IBMs), matching the retarget path so both routes agree.
+ *
+ * @param {Document} charDoc — gltf-transform document (mutated in place)
+ * @param {object}   cfg     — merge config (posture angles + POSE_OFFSETS)
+ */
+function bakePostureIntoRest(charDoc, cfg) {
+  const anyPosture = cfg.ARM_SPREAD_ANGLE || cfg.ARM_SPLAY_ANGLE || cfg.SHOULDER_RAISE_ANGLE
+    || cfg.LEG_SPREAD_ANGLE || cfg.SPINE_STRAIGHTEN_ANGLE || cfg.HIPS_TILT_ANGLE
+    || cfg.FOOT_TOE_OUT_ANGLE || cfg.HAND_RELAX_ANGLE
+    || Object.keys(cfg.POSE_OFFSETS || {}).length;
+  if (!anyPosture) return;
+
+  // Bind-pose world rotations: prefer IBM-derived (handles BJS re-exports whose
+  // node.getRotation() is identity), fall back to live node world rotation.
+  const charWorldRots = computeWorldRotations(charDoc);
+  const { bindWorldByName } = extractBindPoseFromIBMs(charDoc);
+  const charParentMap = buildParentMap(charDoc);
+
+  for (const node of charDoc.getRoot().listNodes()) {
+    const nName = (node.getName() || '').toLowerCase();
+    const canon = NORM_TO_CANON.get(normalizeName(nName)) || '';
+    const WcharBind = bindWorldByName.get(nName) || charWorldRots.get(node) || [0, 0, 0, 1];
+    let offsetQ = null;
+    const axisLocalQ = (axis, deg) => {
+      const a = rotateVec3(axis, qInvert(WcharBind));
+      const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+      return [a[0] * s, a[1] * s, a[2] * s, Math.cos(r / 2)];
+    };
+    const addOff = (axis, deg) => { offsetQ = qMul(offsetQ || [0, 0, 0, 1], axisLocalQ(axis, deg)); };
+    if (canon === 'clavicle_l' || canon === 'upperarm_l') {
+      if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], cfg.ARM_SPREAD_ANGLE);
+      if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], -cfg.ARM_SPLAY_ANGLE);
+      if (cfg.SHOULDER_RAISE_ANGLE) addOff([0, 0, 1], canon === 'clavicle_l' ? cfg.SHOULDER_RAISE_ANGLE : -cfg.SHOULDER_RAISE_ANGLE);
+    } else if (canon === 'clavicle_r' || canon === 'upperarm_r') {
+      if (cfg.ARM_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.ARM_SPREAD_ANGLE);
+      if (cfg.ARM_SPLAY_ANGLE) addOff([0, 1, 0], cfg.ARM_SPLAY_ANGLE);
+      if (cfg.SHOULDER_RAISE_ANGLE) addOff([0, 0, 1], canon === 'clavicle_r' ? -cfg.SHOULDER_RAISE_ANGLE : cfg.SHOULDER_RAISE_ANGLE);
+    } else if (canon === 'thigh_l') {
+      if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], -cfg.LEG_SPREAD_ANGLE);
+      if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+    } else if (canon === 'thigh_r') {
+      if (cfg.LEG_SPREAD_ANGLE) addOff([0, 0, 1], cfg.LEG_SPREAD_ANGLE);
+      if (cfg.HIPS_TILT_ANGLE) addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+    } else if (/^spine_0[123]$/.test(canon)) {
+      if (cfg.SPINE_STRAIGHTEN_ANGLE) addOff([1, 0, 0], cfg.SPINE_STRAIGHTEN_ANGLE);
+      if (cfg.HIPS_TILT_ANGLE && canon === 'spine_01') addOff([1, 0, 0], -cfg.HIPS_TILT_ANGLE);
+    } else if (canon === 'foot_l') {
+      if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], -cfg.FOOT_TOE_OUT_ANGLE);
+    } else if (canon === 'foot_r') {
+      if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);
+    } else if (cfg.HAND_RELAX_ANGLE && /^(thumb|index|middle|ring|pinky)_0[1234]_[lr]$/.test(canon)) {
+      const isThumb = /^thumb_/.test(canon);
+      const deg = isThumb ? (cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE) : -cfg.HAND_RELAX_ANGLE;
+      const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+      offsetQ = qMul(offsetQ || [0, 0, 0, 1], [s, 0, 0, Math.cos(r / 2)]);
+    } else if (canon === 'pelvis') {
+      const sp = charParentMap.get(node);
+      const parentIsPelvis = sp && NORM_TO_CANON.get(normalizeName((sp.getName() || '').toLowerCase())) === 'pelvis';
+      if (cfg.HIPS_TILT_ANGLE && !parentIsPelvis) addOff([1, 0, 0], cfg.HIPS_TILT_ANGLE);
+    }
+    if (offsetQ) {
+      const rest = node.getRotation() || [0, 0, 0, 1];
+      const r = qMul(rest, offsetQ);
+      node.setRotation([r[0], r[1], r[2], r[3]]);
+    }
+  }
+}
+
+/**
  * Merge animations from animBuffer into charBuffer and return the merged GLB as a Buffer.
  * @param {Buffer|Uint8Array} charBuffer   — base character GLB
  * @param {Buffer|Uint8Array} animBuffer   — animations GLB
@@ -1814,6 +1893,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   // If no animation buffer is provided, serialize and return the cleaned character directly
   if (!animBuffer || animBuffer.byteLength === 0) {
+    // Bake posture/spread sliders into the rest pose — the retarget path below
+    // (which normally bakes them) is skipped here, so without this the export
+    // comes out in the raw bind pose and the slider angles are lost.
+    bakePostureIntoRest(charDoc, cfg);
     if (cfg.COMPRESS_OUTPUT) {
       await charDoc.transform(unpartition(), prune());
     }

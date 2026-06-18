@@ -3529,7 +3529,13 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         const formData = new FormData();
         formData.append('character', new Blob([charBuf], { type: 'model/gltf-binary' }), options.filename);
         formData.append('animations', new Blob([animBuf], { type: 'model/gltf-binary' }), options.animationsFilename);
-        formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false }));
+        // Forward the Builder's posture/transform sliders (scale, pivot, arm
+        // spread, foot toe-out, hand relax, …) so the runtime re-merge bakes the
+        // SAME pose the Builder previewed. Without this the runtime merge ignores
+        // every slider and the character loads in the raw bind pose.
+        const mergeOpts = { ...(options.mergeOptions || {}), COMPRESS_OUTPUT: false };
+        console.log('[setupCharacter] Runtime merge — posture/transform options:', mergeOpts);
+        formData.append('options', JSON.stringify(mergeOpts));
 
         const mergeRes = await fetch('/api/merge', { method: 'POST', body: formData });
         if (!mergeRes.ok) {
