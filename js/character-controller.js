@@ -1599,6 +1599,7 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'ROLL')) {
+      if (this.crawling) return;
       const now = performance.now();
       if (this._rollActive) return;
       if (now - this._lastRollTime < 1100) {

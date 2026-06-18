@@ -3219,3 +3219,64 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-primary);
   box-shadow: 0 0 14px rgba(239, 68, 68, 0.25);
 }
+
+/* Inline Editable Event Markers */
+.event-marker-type-select {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #a5f3fc;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+.event-marker-type-select:hover,
+.event-marker-type-select:focus {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.event-marker-frame-input {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #fbbf24;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 800;
+  padding: 2px 4px;
+  border-radius: 4px;
+  width: 100%;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+.event-marker-frame-input::-webkit-outer-spin-button,
+.event-marker-frame-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.event-marker-frame-input:hover,
+.event-marker-frame-input:focus {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.event-marker-label-input {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  padding: 2px 4px;
+  border-radius: 4px;
+  width: 100%;
+}
+.event-marker-label-input:hover,
+.event-marker-label-input:focus {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}

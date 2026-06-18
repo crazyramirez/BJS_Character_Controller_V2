@@ -916,10 +916,21 @@ function previewMappedAnimation(key, fallbackState = null) {
   const ctrl = activeCharacter.charCtrl;
   if (mapping?.animName && mapping.animName !== 'None') {
     ctrl.state = fallbackState || (window.S ? window.S.IDLE : 'IDLE');
-    ctrl._previewLocoSpeed = null;
-    // Play the mapped KEY (its own clone with the mapped frame range), not the
-    // raw clip — the raw group can be shared with the blend tree loops.
-    ctrl._previewAnim = ctrl.anim?.has(key) ? key : mapping.animName;
+    if (key === 'Idle_Loop') {
+      ctrl._previewLocoSpeed = 0;
+      ctrl._previewAnim = null;
+    } else if (key === 'Walk_Loop') {
+      ctrl._previewLocoSpeed = ctrl.SPD_WALK || physicsConfig.SPD_WALK;
+      ctrl._previewAnim = null;
+    } else if (key === 'Sprint_Loop') {
+      ctrl._previewLocoSpeed = ctrl.SPD_SPRINT || physicsConfig.SPD_SPRINT;
+      ctrl._previewAnim = null;
+    } else {
+      ctrl._previewLocoSpeed = null;
+      // Play the mapped KEY (its own clone with the mapped frame range), not the
+      // raw clip — the raw group can be shared with the blend tree loops.
+      ctrl._previewAnim = ctrl.anim?.has(key) ? key : mapping.animName;
+    }
     showToast(`Preview: ${key}`);
     return;
   }
@@ -4287,8 +4298,27 @@ function renderAnimationLibrary() {
       }
       const animName = row.dataset.anim;
       if (activeCharacter && activeCharacter.charCtrl) {
-        activeCharacter.charCtrl.state = window.S ? window.S.IDLE : 'IDLE';
-        activeCharacter.charCtrl._previewAnim = animName;
+        const ctrl = activeCharacter.charCtrl;
+        ctrl.state = window.S ? window.S.IDLE : 'IDLE';
+        
+        // Find if this animation is mapped to one of the core locomotion loops
+        const isIdle = animMappings['Idle_Loop']?.animName === animName;
+        const isWalk = animMappings['Walk_Loop']?.animName === animName;
+        const isSprint = animMappings['Sprint_Loop']?.animName === animName;
+
+        if (isIdle) {
+          ctrl._previewLocoSpeed = 0;
+          ctrl._previewAnim = null;
+        } else if (isWalk) {
+          ctrl._previewLocoSpeed = ctrl.SPD_WALK || physicsConfig.SPD_WALK;
+          ctrl._previewAnim = null;
+        } else if (isSprint) {
+          ctrl._previewLocoSpeed = ctrl.SPD_SPRINT || physicsConfig.SPD_SPRINT;
+          ctrl._previewAnim = null;
+        } else {
+          ctrl._previewLocoSpeed = null;
+          ctrl._previewAnim = animName;
+        }
         showToast(`Playing animation: ${animName}`);
       }
     });
@@ -4619,8 +4649,8 @@ function renderAnimationEventsTab() {
     </div>
     <div class="event-targets">
       ${targets.map(target => {
-    const events = animationEvents[target.key] || [];
-    return `
+        const events = animationEvents[target.key] || [];
+        return `
           <div class="event-target-card">
             <div class="event-target-head">
               <strong>${escapeHtml(target.label)}</strong>
@@ -4628,19 +4658,24 @@ function renderAnimationEventsTab() {
             </div>
             ${events.length ? `
               <div class="event-marker-list">
-                ${events.map((evt, index) => `
-                  <div class="event-marker">
-                    <span class="event-marker-type">${escapeHtml(evt.type)}</span>
-                    <span class="event-marker-frame">f${escapeHtml(evt.frame)}</span>
-                    <span class="event-marker-label">${escapeHtml(evt.label || target.animName)}</span>
-                    <button class="btn-event-delete" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" title="Remove marker">×</button>
-                  </div>
-                `).join('')}
+                ${events.map((evt, index) => {
+                  const options = eventTypes.map(t => `<option value="${t}" ${evt.type === t ? 'selected' : ''}>${t}</option>`).join('');
+                  return `
+                    <div class="event-marker">
+                      <select class="event-marker-type-select" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}">
+                        ${options}
+                      </select>
+                      <input type="number" class="event-marker-frame-input" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" min="0" value="${evt.frame}" aria-label="Frame number">
+                      <input type="text" class="event-marker-label-input" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" value="${escapeHtml(evt.label || '')}" placeholder="${escapeHtml(target.animName)}" aria-label="Event label">
+                      <button class="btn-event-delete" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" title="Remove marker">×</button>
+                    </div>
+                  `;
+                }).join('')}
               </div>
             ` : `<div class="event-marker-empty">No markers yet</div>`}
           </div>
         `;
-  }).join('')}
+      }).join('')}
     </div>
   `;
 
@@ -4652,8 +4687,52 @@ function renderAnimationEventsTab() {
   });
   document.getElementById('btn-add-animation-event')?.addEventListener('click', addAnimationEvent);
   document.getElementById('btn-clear-animation-events')?.addEventListener('click', clearAllAnimationEvents);
+  
   container.querySelectorAll('.btn-event-delete').forEach(btn => {
     btn.addEventListener('click', () => deleteAnimationEvent(btn.dataset.eventKey, parseInt(btn.dataset.eventIndex, 10)));
+  });
+
+  // Bind change listeners to inline editable fields
+  container.querySelectorAll('.event-marker-type-select').forEach(sel => {
+    sel.addEventListener('change', (e) => {
+      const key = e.target.dataset.eventKey;
+      const index = parseInt(e.target.dataset.eventIndex, 10);
+      if (animationEvents[key]?.[index]) {
+        animationEvents[key][index].type = e.target.value;
+        savePreferences();
+        updateExportCode();
+        syncAnimationEventsToController();
+      }
+    });
+  });
+
+  container.querySelectorAll('.event-marker-frame-input').forEach(inp => {
+    inp.addEventListener('change', (e) => {
+      const key = e.target.dataset.eventKey;
+      const index = parseInt(e.target.dataset.eventIndex, 10);
+      const val = parseInt(e.target.value, 10);
+      if (animationEvents[key]?.[index] && Number.isFinite(val)) {
+        animationEvents[key][index].frame = val;
+        // Sort events by frame after editing
+        animationEvents[key].sort((a, b) => a.frame - b.frame);
+        savePreferences();
+        updateExportCode();
+        renderAnimationEventsTab(); // Re-render to show sorted list
+      }
+    });
+  });
+
+  container.querySelectorAll('.event-marker-label-input').forEach(inp => {
+    inp.addEventListener('change', (e) => {
+      const key = e.target.dataset.eventKey;
+      const index = parseInt(e.target.dataset.eventIndex, 10);
+      if (animationEvents[key]?.[index]) {
+        animationEvents[key][index].label = e.target.value.trim();
+        savePreferences();
+        updateExportCode();
+        syncAnimationEventsToController();
+      }
+    });
   });
 }
 
