@@ -32,6 +32,11 @@ let posturePreviewBaked = false;     // true while the loaded GLB already carrie
 let _postureRebakeTimer = null;      // debounce for the on-release bake
 let cleanPreviewBuffer = null;       // GLB merged with scale/anims but posture=0
 let _enteringLivePreview = false;    // guard while swapping to the clean buffer
+// Scale/Pivot are baked ON RELEASE into this buffer (accumulates onto the previous
+// baked result), then the slider resets to 1/0 so re-touching never re-multiplies
+// the same value. originalCharacterGlbBuffer stays pristine for animation imports.
+let scaledCharacterBuffer = null;    // original + accumulated scale/pivot, anim-free
+let _scalePivotBakeTimer = null;     // debounce for scale/pivot on-release bake
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
@@ -183,6 +188,9 @@ const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
 // Thumb relaxes opposite the other fingers (mirrored local frame) and by a
 // smaller amount so it doesn't splay out. Shared by the live preview and merge.
 const THUMB_RELAX_SCALE = 0.5;
+// The thumb tip (distal, *_03) stays kinked when every joint rotates equally —
+// give the last joint extra relax in the SAME direction so the tip straightens.
+const THUMB_TIP_SCALE = 2.0;
 
 // ── Bone role classification (posture/spread sliders) ───────────────────────
 // Normalized like merge_api's aliasNorm so CC/AccuRig, UE, Unity, Biped and
@@ -280,13 +288,13 @@ function applyLiveTransformations() {
   const pz = charTransformConfig.PIVOT_Z;
 
   // Scale the capsule mesh itself; the wrapper (child of the capsule) is counter-scaled
-  // so the character's final world scale stays (sx, sy, sz)
+  // so the character's final world scale stays (sx, sy, sz). Scale/pivot are ALWAYS
+  // a live node transform here (never baked into the preview geometry — posture
+  // rebake zeroes them), so applying them on the wrapper never doubles.
   const capsule = activeCharacter.playerCapsule;
   const widthScale = Math.max(sx, sz);
   capsule.scaling.set(widthScale, sy, widthScale);
-
   activeCharacter.charTransformWrapper.scaling.set(sx / widthScale, 1, sz / widthScale);
-
   // Visual root offset in capsule-local space (capsule scaling multiplies it back to world units)
   activeCharacter.charTransformWrapper.position.set(-px * sx / widthScale, -py, -pz * sz / widthScale);
 
@@ -537,14 +545,25 @@ function setupCharTransformControls() {
     cleanPreviewBuffer = null;
   };
 
-  uniformToggle?.addEventListener('change', onSliderChange);
-  uniformSlider?.addEventListener('input', onSliderChange);
-  scaleXSlider?.addEventListener('input', onSliderChange);
-  scaleYSlider?.addEventListener('input', onSliderChange);
-  scaleZSlider?.addEventListener('input', onSliderChange);
-  pivotXSlider?.addEventListener('input', onSliderChange);
-  pivotYSlider?.addEventListener('input', onSliderChange);
-  pivotZSlider?.addEventListener('input', onSliderChange);
+  // SCALE: live wrapper while dragging, BAKE into geometry on release + reset the
+  // slider to 1 (re-touching never multiplies the same value twice).
+  // PIVOT: NEVER baked — folding pivot into the geometry deforms the character.
+  // It stays a live wrapper offset and is folded only at export via getMergeOptions.
+  const onScalePivotInput = () => {
+    if (posturePreviewBaked) {
+      posturePreviewBaked = false;
+      enterLivePosturePreview();
+    }
+    onSliderChange();
+  };
+  uniformToggle?.addEventListener('change', () => { onScalePivotInput(); scheduleScalePivotBake(); });
+  [uniformSlider, scaleXSlider, scaleYSlider, scaleZSlider].forEach(s => {
+    s?.addEventListener('input', onScalePivotInput);
+    s?.addEventListener('change', scheduleScalePivotBake); // release → bake scale, reset slider
+  });
+  [pivotXSlider, pivotYSlider, pivotZSlider].forEach(s => {
+    s?.addEventListener('input', onScalePivotInput); // live wrapper only, no bake
+  });
   // Posture sliders: live exact preview while dragging (observer), bake on release.
   const postureSliders = [armSpreadSlider, armSplaySlider, shoulderRaiseSlider,
     legSpreadSlider, spineStraightenSlider, hipsTiltSlider, footToeOutSlider, handRelaxSlider];
@@ -1345,6 +1364,7 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   originalCharacterGlbBuffer = arrayBuffer;
   animationsCleared = false; // fresh load resets the cleared state
   cleanPreviewBuffer = null; // new character → rebuild the posture-free preview base
+  scaledCharacterBuffer = null; // new character → drop any accumulated scale/pivot
   characterFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('import', 'active');
@@ -1431,8 +1451,13 @@ async function ensureCleanPreviewBuffer() {
   if (!isServerAvailable || !originalCharacterGlbBuffer) return null;
   const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
   const opts = getMergeOptions({ removeExistingAnimations: hasAnim });
+  // Zero posture AND scale/pivot: the live drag preview applies these via the
+  // capsule/wrapper transform, so the base buffer must be neutral or they'd stack
+  // (baked geometry × wrapper = double size/offset).
   for (const k of ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
-    'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE']) opts[k] = 0;
+    'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE',
+    'PIVOT_X', 'PIVOT_Y', 'PIVOT_Z']) opts[k] = 0;
+  opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
   const formData = new FormData();
   formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
   if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
@@ -1469,13 +1494,25 @@ function schedulePostureRebake() {
 async function rebakePosturePreview() {
   if (!isServerAvailable || !originalCharacterGlbBuffer) return;
   const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+  // After "Clear All" the character must stay animation-free. Strip baked anims
+  // on every re-merge too, otherwise a posture/param change re-bakes from the
+  // original (which still carries its clips) and the groups reappear.
+  const stripAnims = hasAnim || animationsCleared;
   showLoading('Applying posture…');
   try {
     const formData = new FormData();
-    // Always bake from the CLEAN original so posture is applied once, not stacked.
-    formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    // Bake posture from the scale-baked baseline if it exists (so accumulated
+    // scale/pivot is preserved), else the CLEAN original. Posture is applied once,
+    // not stacked, because the base never carries posture.
+    const postureBase = scaledCharacterBuffer || originalCharacterGlbBuffer;
+    formData.append('character', new Blob([postureBase], { type: 'model/gltf-binary' }), 'character.glb');
     if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
-    formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: hasAnim })));
+    // Bake POSTURE only — scale/pivot are already in the baseline geometry (or the
+    // live wrapper applies them), so zero them here to avoid doubling.
+    const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
+    opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
+    opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
+    formData.append('options', JSON.stringify(opts));
 
     const res = await fetch('/api/merge', { method: 'POST', body: formData });
     if (!res.ok) {
@@ -1484,7 +1521,7 @@ async function rebakePosturePreview() {
     }
     const mergedBuffer = await res.arrayBuffer();
     characterGlbBuffer = mergedBuffer;          // this is what export uses
-    animationsCleared = false;                  // new anims merged → no longer cleared
+    if (hasAnim) animationsCleared = false;     // only real new anims un-clear; cleared state persists otherwise
     await _loadGlbIntoScene(mergedBuffer, 'merged.glb'); // sets posturePreviewBaked=false
     posturePreviewBaked = true;                 // pose now lives in the GLB → observer holds at 0
     hideLoading();
@@ -1492,6 +1529,68 @@ async function rebakePosturePreview() {
     console.error('[posture-rebake] server merge failed:', err);
     posturePreviewBaked = false;                // keep the live observer preview
     hideLoading();
+  }
+}
+
+// On scale/pivot slider release: fold the current scale/pivot into the geometry
+// (accumulating onto the previous baked result), reload, then reset the sliders to
+// neutral so re-touching never multiplies the same value twice.
+function scheduleScalePivotBake() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return; // wrapper-only fallback (offline)
+  // Only SCALE is baked — nothing to do if scale is already neutral (1,1,1).
+  const sx = charTransformConfig.SCALE_X, sy = charTransformConfig.SCALE_Y, sz = charTransformConfig.SCALE_Z;
+  const neutral = Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6 && Math.abs(sz - 1) < 1e-6;
+  if (neutral) return;
+  if (_scalePivotBakeTimer) clearTimeout(_scalePivotBakeTimer);
+  _scalePivotBakeTimer = setTimeout(() => { _scalePivotBakeTimer = null; bakeScalePivot(); }, 350);
+}
+
+async function bakeScalePivot() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return;
+  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+  const stripAnims = hasAnim || animationsCleared;
+  showLoading('Applying scale…');
+  try {
+    // Base = the previously scale-baked buffer (accumulate) or the pristine original.
+    const base = scaledCharacterBuffer || originalCharacterGlbBuffer;
+    const formData = new FormData();
+    formData.append('character', new Blob([base], { type: 'model/gltf-binary' }), 'character.glb');
+    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
+    // Fold the CURRENT SCALE only. Zero posture (own bake path) AND zero pivot —
+    // baking pivot into the geometry deforms the character; pivot stays a live
+    // wrapper offset and is folded only at final export.
+    const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
+    ['ARM_SPREAD_ANGLE','ARM_SPLAY_ANGLE','SHOULDER_RAISE_ANGLE','LEG_SPREAD_ANGLE',
+     'SPINE_STRAIGHTEN_ANGLE','HIPS_TILT_ANGLE','FOOT_TOE_OUT_ANGLE','HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
+    opts.POSE_OFFSETS = {};
+    opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
+    formData.append('options', JSON.stringify(opts));
+
+    const res = await fetch('/api/merge', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Server merge failed');
+    }
+    const merged = await res.arrayBuffer();
+    scaledCharacterBuffer = merged;   // new accumulated baseline (scale in geometry)
+    characterGlbBuffer = merged;      // export uses this
+    if (hasAnim) animationsCleared = false;
+
+    // Reset SCALE sliders/config to neutral — scale now lives in geometry. Pivot is
+    // NOT touched (it was never baked; it stays a live wrapper offset).
+    charTransformConfig.SCALE_X = 1; charTransformConfig.SCALE_Y = 1; charTransformConfig.SCALE_Z = 1;
+    charTransformConfig.SCALE_UNIFORM = 1;
+    cleanPreviewBuffer = null;        // stale: baseline changed
+    syncCharTransformToUI();
+
+    await _loadGlbIntoScene(merged, 'scaled.glb'); // posturePreviewBaked=false → wrapper re-applies live pivot
+    savePreferences();
+    updateExportCode();
+    hideLoading();
+  } catch (err) {
+    console.error('[scale-bake] server merge failed:', err);
+    hideLoading();
+    showToast('Failed to apply scale: ' + err.message, true);
   }
 }
 
@@ -1587,8 +1686,10 @@ async function loadAnimationBatchFile(file) {
   if (isServerAvailable) {
     showMergeProgress(true, `Merging ${file.name} on server…`);
     try {
-      const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
-      console.log(`[batch-import] Using ${originalCharacterGlbBuffer ? 'original' : 'current'} character buffer (${(baseBuffer.byteLength / 1024).toFixed(0)} KB) + anim file (${(animBuffer.byteLength / 1024).toFixed(0)} KB)`);
+      // Prefer the scale-baked baseline so an import keeps the applied scale/pivot;
+      // fall back to the pristine original. Both are posture-free, so retarget stays clean.
+      const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+      console.log(`[batch-import] Using ${scaledCharacterBuffer ? 'scaled' : (originalCharacterGlbBuffer ? 'original' : 'current')} character buffer (${(baseBuffer.byteLength / 1024).toFixed(0)} KB) + anim file (${(animBuffer.byteLength / 1024).toFixed(0)} KB)`);
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animBuffer], { type: 'model/gltf-binary' }), file.name);
@@ -1825,42 +1926,41 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   // before the character the markers are parented to gets disposed.
   cancelAutoRigAdjust();
 
-  // Dispose existing character
-  if (activeCharacter) {
-    if (activeCharacter.charCtrl) {
-      activeCharacter.charCtrl.destroy();
-    }
-    if (activeCharacter.boneOffsetObserver) {
-      scene.onAfterAnimationsObservable.remove(activeCharacter.boneOffsetObserver);
-    }
-    if (activeCharacter.cameraFollowObserver) {
-      scene.unregisterBeforeRender(activeCharacter.cameraFollowObserver);
-    }
-    activeCharacter.playerCapsule.dispose();
-    activeCharacter.animCtrl.destroy();
-    activeCharacter = null;
+  // DEFERRED DISPOSE (anti-flicker): keep the OLD character visible while the new
+  // GLB parses, then dispose old AFTER the new mesh exists — no empty-scene gap.
+  // Snapshot what to tear down (old skeletons/groups), but don't dispose yet.
+  const _prevCharacter = activeCharacter;
+  const _prevSkeletons = scene && scene.skeletons ? [...scene.skeletons] : [];
+  const _prevAnimGroups = scene && scene.animationGroups ? [...scene.animationGroups] : [];
+  // Stop old groups now so they don't drive bones during the brief overlap.
+  _prevAnimGroups.forEach(ag => { try { ag.stop(); } catch (e) {} });
+  if (_prevCharacter) {
+    // Detach observers immediately so the old controller stops updating mid-swap.
+    if (_prevCharacter.boneOffsetObserver) scene.onAfterAnimationsObservable.remove(_prevCharacter.boneOffsetObserver);
+    if (_prevCharacter.cameraFollowObserver) scene.unregisterBeforeRender(_prevCharacter.cameraFollowObserver);
+    if (_prevCharacter.charCtrl?._updateObserver) scene.onBeforeRenderObservable.remove(_prevCharacter.charCtrl._updateObserver);
   }
-
-  // Dispose all existing skeletons in the scene to prevent duplicates and memory leaks
-  if (scene && scene.skeletons) {
-    [...scene.skeletons].forEach(skel => skel.dispose());
-  }
-
-  // Dispose ALL existing animation groups too. A previous load (e.g. raw
-  // animations.glb, or an earlier character) leaves its groups in
-  // scene.animationGroups; since AnimCtrl resolves clips by NAME, a stale
-  // group (targeting phantom mixamorig:* nodes that don't exist on the new
-  // skeleton) can shadow the freshly-merged, correctly-retargeted one and
-  // leave the new bones (legs/arms) un-animated → mesh deforms.
-  if (scene && scene.animationGroups) {
-    [...scene.animationGroups].forEach(ag => ag.dispose());
-  }
+  activeCharacter = null;
 
   const blob = new Blob([arrayBuffer]);
   const blobUrl = URL.createObjectURL(blob);
 
   const charRes = await BABYLON.SceneLoader.ImportMeshAsync('', '', blobUrl, scene, null, '.glb');
   URL.revokeObjectURL(blobUrl);
+
+  // New mesh is in the scene now — tear down the old character/skeletons/groups.
+  // The new skeleton/groups are NOT in these snapshots, so they're safe.
+  if (_prevCharacter) {
+    try { _prevCharacter.charCtrl?.destroy(); } catch (e) {}
+    try { _prevCharacter.animCtrl?.destroy(); } catch (e) {}
+    try { _prevCharacter.playerCapsule?.dispose(); } catch (e) {}
+  }
+  _prevSkeletons.forEach(skel => { try { skel.dispose(); } catch (e) {} });
+  // Dispose stale animation groups: a previous load leaves its groups in
+  // scene.animationGroups; since AnimCtrl resolves clips by NAME, a stale group
+  // (phantom mixamorig:* targets) can shadow the freshly-merged one and leave new
+  // bones un-animated → mesh deforms.
+  _prevAnimGroups.forEach(ag => { try { ag.dispose(); } catch (e) {} });
 
   const charRoot = charRes.meshes[0];
   charRoot.name = 'Character_Visual_builder';
@@ -2000,6 +2100,10 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         role,
         isSpineRoot: role === 'spine' && ancestorRole === 'hips',
         isThumb: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')),
+        // Right thumb's Z hinge is mirrored vs left — track the side to flip sign.
+        isRightThumb: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')) && /_r$|right|_r_/i.test(bone.name || node.name || ''),
+        // Thumb distal tip (*_03) needs extra relax to straighten.
+        isThumbTip: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')) && /(^|[^0-9])0?3([^0-9]|$)/.test(bone.name || node.name || ''),
         x: toLocal(BABYLON.Axis.X),
         y: toLocal(BABYLON.Axis.Y),
         z: toLocal(BABYLON.Axis.Z),
@@ -2124,10 +2228,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
           case 'finger':
             // Flexion is about the joint's LOCAL X (not the world-derived axes
             // the limbs use — finger frames are rolled ~90°). +relax opens the
-            // hand (−X uncurls the pre-curled CC bind). The thumb's local frame
-            // is mirrored vs the other fingers, so it relaxes with the opposite
-            // sign and a smaller amount (THUMB_RELAX_SCALE).
-            apply(BABYLON.Axis.X, axes.isThumb ? (handRelax * THUMB_RELAX_SCALE) : -handRelax);
+            // hand (−X uncurls the pre-curled CC bind). The thumb's metacarpal is
+            // rolled ~90° vs the other fingers, so local X is its TWIST axis —
+            // rotating there spins the thumb. Its flexion hinge is local Z, so
+            // relax the thumb about Z (smaller magnitude, THUMB_RELAX_SCALE).
+            if (axes.isThumb) apply(BABYLON.Axis.Z, (axes.isRightThumb ? -1 : 1) * handRelax * THUMB_RELAX_SCALE * (axes.isThumbTip ? THUMB_TIP_SCALE : 1));
+            else apply(BABYLON.Axis.X, -handRelax);
             break;
           case 'spine':
             apply(axes.x, spineAngle);
@@ -4691,32 +4797,15 @@ function clearAllAnimations() {
 
       // Clear stored animations GLB buffer as well
       animationsGlbBuffer = null;
-      animationsCleared = true; // export must strip baked anims even without an anim buffer
 
-      // Strip baked animations directly from the stored character buffer NOW, so
-      // a later download/export is animation-free without needing a re-merge.
-      // Server disposes all character animations when removeExistingAnimations:true
-      // and no anim buffer is supplied. Falls back to the cleared flag if offline.
-      const stripBase = originalCharacterGlbBuffer || characterGlbBuffer;
-      if (isServerAvailable && stripBase) {
-        try {
-          showLoading('Removing animations from character…');
-          const formData = new FormData();
-          formData.append('character', new Blob([stripBase], { type: 'model/gltf-binary' }), 'character.glb');
-          formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: true })));
-          const res = await fetch('/api/merge', { method: 'POST', body: formData });
-          if (res.ok) {
-            characterGlbBuffer = await res.arrayBuffer();
-            animationsCleared = false; // buffer is now genuinely clean
-          } else {
-            console.warn('[clear-all] strip merge failed, falling back to cleared flag');
-          }
-        } catch (e) {
-          console.warn('[clear-all] strip merge error', e);
-        } finally {
-          hideLoading();
-        }
-      }
+      // Clear All only empties the LIBRARY + the live scene/preview. It must NOT
+      // strip the stored character buffers: the merge pipeline mutates bind pose/
+      // skeleton, so stripping here corrupts the retarget reference and the NEXT
+      // animation import comes out with wrong/missing postures. The buffers keep
+      // their baked clips harmlessly — a real anim import (always merges with
+      // removeExistingAnimations) replaces them cleanly, and export from runtime/
+      // merged modes handles stripping at download time.
+      animationsCleared = false;
 
       renderAnimationLibrary();
       renderAnimationsMappingTab();
@@ -4942,14 +5031,22 @@ function setupSidebarControls() {
   const exportMergedRadio = document.getElementById('export-mode-merged');
   const exportRuntimeRadio = document.getElementById('export-mode-runtime');
   if (exportMergedRadio && exportRuntimeRadio) {
+    const runtimeBadge = document.getElementById('runtime-export-badge');
+    const syncRuntimeBadge = (isRuntime) => {
+      if (runtimeBadge) runtimeBadge.style.display = isRuntime ? 'block' : 'none';
+    };
     const inputs = document.querySelectorAll('input[name="export-mode"]');
     inputs.forEach(input => {
       input.addEventListener('change', (e) => {
+        const isRuntime = e.target.value === 'runtime';
         exportMergedRadio.classList.toggle('active', e.target.value === 'merged');
-        exportRuntimeRadio.classList.toggle('active', e.target.value === 'runtime');
+        exportRuntimeRadio.classList.toggle('active', isRuntime);
+        syncRuntimeBadge(isRuntime);
         updateExportCode();
       });
     });
+    // Reflect the initial/restored selection
+    syncRuntimeBadge(document.querySelector('input[name="export-mode"]:checked')?.value === 'runtime');
   }
 
   renderKeyBindingsUI();
@@ -5236,6 +5333,7 @@ function updateExportCode() {
     // the Builder previewed; otherwise the runtime merge ignores every slider.
     const mo = getMergeOptions({ removeExistingAnimations: true, COMPRESS_OUTPUT: false });
     delete mo.COMPRESS_OUTPUT; // controller forces this; keep config clean
+    mo.PIVOT_X = 0; mo.PIVOT_Y = 0; mo.PIVOT_Z = 0; // pivot is never baked (deforms the mesh)
     animFileOption += `\n    mergeOptions: ${JSON.stringify(mo, null, 4).replace(/\n/g, '\n    ')},`;
   }
 
@@ -5245,28 +5343,94 @@ function updateExportCode() {
   savePreferences();
 }
 
+// Trigger a browser download from an ArrayBuffer/Blob.
+function _downloadBuffer(buffer, filename, mime = 'model/gltf-binary') {
+  const blob = new Blob([buffer], { type: mime });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+}
+
 async function downloadCharacterGlbFile() {
   if (!originalCharacterGlbBuffer && !characterGlbBuffer) {
     showToast('No character loaded to download!', true);
     return;
   }
 
+  const modeEl = document.querySelector('input[name="export-mode"]:checked');
+  const exportMode = modeEl ? modeEl.value : 'merged';
+  const hasAnimBuffer = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+
+  // ── RUNTIME RETARGETING MODE ──────────────────────────────────────────────
+  // The controller re-merges character + animations on load, so the character
+  // GLB must ship WITHOUT baked animation groups (only posture baked), and the
+  // raw animations.glb goes alongside it as a separate file. Two downloads.
+  if (exportMode === 'runtime') {
+    if (!isServerAvailable) {
+      showToast('Server offline — runtime export needs the merge server.', true);
+      return;
+    }
+    showLoading('Generating animation-free character GLB…');
+    try {
+      // Character: bake posture from the scale-baked baseline (preserves applied
+      // scale/pivot) or the clean original, strip animations but KEEP the T-pose
+      // clip — the controller's load-time merge needs it as the retarget alignment
+      // reference for the separate animations.glb.
+      const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+      const formData = new FormData();
+      formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+      // Pivot is NEVER baked (it deforms the character) — zero it in the export too.
+      const runtimeOpts = getMergeOptions({ removeExistingAnimations: true, keepTPose: true });
+      runtimeOpts.PIVOT_X = 0; runtimeOpts.PIVOT_Y = 0; runtimeOpts.PIVOT_Z = 0;
+      formData.append('options', JSON.stringify(runtimeOpts));
+      const res = await fetch('/api/merge', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Server error during GLB generation');
+      }
+      const charBuffer = await res.arrayBuffer();
+      const charName = characterFilename || 'character.glb';
+      _downloadBuffer(charBuffer, charName);
+
+      // Animations: ship the raw (pre-merge) animations.glb separately.
+      if (hasAnimBuffer) {
+        const animName = animationsFilename || 'animations.glb';
+        // Small gap so the browser registers two distinct downloads.
+        setTimeout(() => _downloadBuffer(animationsGlbBuffer, animName), 600);
+        hideLoading();
+        showToast(`Downloaded ${charName} (no animations) + ${animName} separately.`);
+      } else {
+        hideLoading();
+        showToast(`Downloaded ${charName} (no animations). No animations.glb to export.`, true);
+      }
+    } catch (err) {
+      console.error(err);
+      hideLoading();
+      showToast('Failed to export runtime files: ' + err.message, true);
+    }
+    return;
+  }
+
+  // ── MERGED (BAKED) MODE ───────────────────────────────────────────────────
   showLoading('Generating clean character GLB with active animations...');
   try {
     let resultBuffer = characterGlbBuffer;
 
     if (isServerAvailable && (originalCharacterGlbBuffer || characterGlbBuffer)) {
-      const hasAnimBuffer = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
-
       // With an animations buffer: re-merge from the clean original (strip + retarget).
       // After "Clear All" (animationsCleared): export from the clean original and
       // strip any baked anims → animation-free GLB.
       // Otherwise: export the CURRENT character buffer (already holds merged
       // animations) and keep them — stripping here would produce a GLB with zero animations.
+      // Prefer the scale-baked baseline (preserves applied scale/pivot) over the
+      // pristine original when re-merging from a clean base.
       const stripAnims = hasAnimBuffer || animationsCleared;
+      const cleanBase = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
       const baseBuffer = (hasAnimBuffer || animationsCleared)
-        ? (originalCharacterGlbBuffer || characterGlbBuffer)
-        : (characterGlbBuffer || originalCharacterGlbBuffer);
+        ? cleanBase
+        : (characterGlbBuffer || cleanBase);
 
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
@@ -5275,7 +5439,10 @@ async function downloadCharacterGlbFile() {
         formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations.glb');
       }
 
-      formData.append('options', JSON.stringify(getMergeOptions({ removeExistingAnimations: stripAnims })));
+      // Pivot is NEVER baked (deforms the character) — zero it in the export.
+      const mergedOpts = getMergeOptions({ removeExistingAnimations: stripAnims });
+      mergedOpts.PIVOT_X = 0; mergedOpts.PIVOT_Y = 0; mergedOpts.PIVOT_Z = 0;
+      formData.append('options', JSON.stringify(mergedOpts));
 
       const res = await fetch('/api/merge', {
         method: 'POST',
@@ -5290,11 +5457,7 @@ async function downloadCharacterGlbFile() {
       }
     }
 
-    const blob = new Blob([resultBuffer], { type: 'model/gltf-binary' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'character_animated_1.glb';
-    link.click();
+    _downloadBuffer(resultBuffer, 'character_animated_1.glb');
     hideLoading();
     showToast('Downloaded character_animated_1.glb!');
   } catch (err) {

@@ -53,6 +53,8 @@ const DEFAULTS = {
 // Thumb relaxes opposite the other fingers (mirrored local frame) and by a
 // smaller amount so it doesn't splay out. Keep in sync with builder.js.
 const THUMB_RELAX_SCALE = 0.5;
+// Thumb distal tip (*_03) gets extra relax so it doesn't stay kinked. Sync with builder.js.
+const THUMB_TIP_SCALE = 2.0;
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
 //
@@ -1461,9 +1463,17 @@ function bakePostureIntoRest(charDoc, cfg) {
       if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);
     } else if (cfg.HAND_RELAX_ANGLE && /^(thumb|index|middle|ring|pinky)_0[1234]_[lr]$/.test(canon)) {
       const isThumb = /^thumb_/.test(canon);
-      const deg = isThumb ? (cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE) : -cfg.HAND_RELAX_ANGLE;
+      // The thumb's Z hinge is mirrored between hands — right thumb needs the
+      // opposite sign so both relax outward, not one in / one out.
+      const thumbSign = /_r$/.test(canon) ? -1 : 1;
+      const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
+      const deg = isThumb ? (thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost) : -cfg.HAND_RELAX_ANGLE;
       const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
-      offsetQ = qMul(offsetQ || [0, 0, 0, 1], [s, 0, 0, Math.cos(r / 2)]);
+      // Fingers flex about local X. The thumb's metacarpal frame is rotated ~90°
+      // vs the other fingers, so local X is its TWIST axis (rotating it there just
+      // spins the thumb). Its flexion hinge is local Z → uncurl about Z instead.
+      const q = isThumb ? [0, 0, s, Math.cos(r / 2)] : [s, 0, 0, Math.cos(r / 2)];
+      offsetQ = qMul(offsetQ || [0, 0, 0, 1], q);
     } else if (canon === 'pelvis') {
       const sp = charParentMap.get(node);
       const parentIsPelvis = sp && NORM_TO_CANON.get(normalizeName((sp.getName() || '').toLowerCase())) === 'pelvis';
@@ -1529,7 +1539,14 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     ? cfg.removeExistingAnimations
     : !!animBuffer;
   if (removeExisting) {
-    charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
+    // Optionally keep the T-pose/utility clip: it's the alignment reference a
+    // later animation import retargets against. Stripping it makes the next
+    // merge fall back to IBM-only bind and can misalign the new clips.
+    const keepTPose = !!cfg.keepTPose;
+    charDoc.getRoot().listAnimations().forEach(anim => {
+      if (keepTPose && /t[\-_]?pose/i.test(anim.getName() || '')) return;
+      anim.dispose();
+    });
   }
 
   // ── Unify skeleton structure and apply scale/pivot shift to match character_animated_1.glb ────────────────
@@ -2253,13 +2270,18 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             // the hand by rotating −X. Use the LOCAL axis directly (not the
             // world→local conversion the limbs use) because finger frames are
             // rolled ~90°, so a world axis would bend them sideways.
-            // The thumb's local frame is rolled opposite the other four fingers,
-            // so its flex axis is mirrored — relax it with the opposite sign and
-            // a smaller magnitude (THUMB_RELAX_SCALE) so it doesn't splay out.
+            // The thumb's metacarpal frame is rolled ~90° vs the other four
+            // fingers, so its local X is a TWIST axis (rotating there spins the
+            // thumb instead of uncurling). Its flexion hinge is local Z — relax
+            // the thumb about Z, smaller magnitude (THUMB_RELAX_SCALE).
             const isThumb = /^thumb_/.test(canon);
-            const deg = isThumb ? (cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE) : -cfg.HAND_RELAX_ANGLE;
+            // Right thumb's Z hinge is mirrored vs left — flip its sign.
+            const thumbSign = /_r$/.test(canon) ? -1 : 1;
+            const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
+            const deg = isThumb ? (thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost) : -cfg.HAND_RELAX_ANGLE;
             const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
-            offsetQ = qMul(offsetQ || [0, 0, 0, 1], [s, 0, 0, Math.cos(r / 2)]);
+            const q = isThumb ? [0, 0, s, Math.cos(r / 2)] : [s, 0, 0, Math.cos(r / 2)];
+            offsetQ = qMul(offsetQ || [0, 0, 0, 1], q);
           } else if (canon === 'pelvis') {
             // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
             // tilt only the root so the offset doesn't double down the chain.
