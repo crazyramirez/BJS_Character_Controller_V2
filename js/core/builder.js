@@ -117,7 +117,7 @@ const CONTROLLER_PRESETS = [
     description: 'Readable third-person movement for exploration, combat tests and general demos. Free camera, light dynamic FOV, no air steering.',
     tags: ['default', 'third person'],
     config: {
-      GRAV: 22, JUMP_PWR: 9.5, SPD_WALK: 2.5, SPD_JOG: 3.0, SPD_SPRINT: 5.0,
+      GRAV: 22, JUMP_PWR: 9.5, SPD_WALK: 3, SPD_JOG: 3.5, SPD_SPRINT: 6.0,
       ACCEL: 14, DECEL: 16, ROT_SPD: 40, AIR_CONTROL: false,
       DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.10, CAM_TILT: false, CAM_TILT_AMOUNT: 0.15, CAM_FOLLOW_LOCK: true,
       CAM_FOLLOW_PITCH: 1.047, CAM_FOLLOW_DIST: 8.0, CAM_LOCK_PITCH: false, JOYSTICK_LOCK_X: false,
