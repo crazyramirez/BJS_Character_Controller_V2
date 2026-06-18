@@ -114,52 +114,56 @@ const CONTROLLER_PRESETS = [
   {
     id: 'balanced',
     name: 'Balanced Adventure',
-    description: 'Readable third-person movement for exploration, combat tests and general demos.',
+    description: 'Readable third-person movement for exploration, combat tests and general demos. Free camera, light dynamic FOV, no air steering.',
     tags: ['default', 'third person'],
     config: {
       GRAV: 22, JUMP_PWR: 9.5, SPD_WALK: 2.5, SPD_JOG: 3.0, SPD_SPRINT: 5.0,
       ACCEL: 14, DECEL: 16, ROT_SPD: 40, AIR_CONTROL: false,
       DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.10, CAM_TILT: false, CAM_TILT_AMOUNT: 0.15, CAM_FOLLOW_LOCK: true,
-      CAM_FOLLOW_PITCH: 1.047, CAM_FOLLOW_DIST: 8.0, DOUBLE_JUMP_ENABLED: true,
+      CAM_FOLLOW_PITCH: 1.047, CAM_FOLLOW_DIST: 8.0, CAM_LOCK_PITCH: false, JOYSTICK_LOCK_X: false,
+      DOUBLE_JUMP_ENABLED: true,
       SPEED_MULTIPLIER: 1.0
     }
   },
   {
     id: 'action',
     name: 'Action Combat',
-    description: 'Tighter acceleration, shorter camera distance and heavier landings for responsive fights.',
+    description: 'Tighter acceleration, shorter camera distance and heavier landings for responsive fights. Locked pitch keeps targets framed; horizontal-only joystick steering.',
     tags: ['combat', 'snappy'],
     config: {
       GRAV: 28, JUMP_PWR: 9.0, SPD_WALK: 2.7, SPD_JOG: 3.2, SPD_SPRINT: 5.8,
       ACCEL: 24, DECEL: 26, ROT_SPD: 70, AIR_CONTROL: false,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.08, CAM_TILT: true, CAM_TILT_AMOUNT: 0.20, CAM_FOLLOW_LOCK: true,
-      CAM_FOLLOW_PITCH: 0.96, CAM_FOLLOW_DIST: 6.2, DOUBLE_JUMP_ENABLED: false,
+      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.06, CAM_TILT: true, CAM_TILT_AMOUNT: 0.22, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 0.96, CAM_FOLLOW_DIST: 6.2, CAM_LOCK_PITCH: true, JOYSTICK_LOCK_X: true,
+      DOUBLE_JUMP_ENABLED: false,
       SPEED_MULTIPLIER: 1.0
     }
   },
   {
     id: 'platformer',
     name: 'Arcade Platformer',
-    description: 'Higher jump, stronger air steering and brighter motion feedback for traversal-heavy games.',
+    description: 'Higher jump, stronger air steering and brighter motion feedback for traversal-heavy games. Full air control, double jump and free camera for reading platforms below.',
     tags: ['jump', 'air control'],
     config: {
       GRAV: 24, JUMP_PWR: 13.5, SPD_WALK: 3.0, SPD_JOG: 3.8, SPD_SPRINT: 6.6,
       ACCEL: 20, DECEL: 18, ROT_SPD: 58, AIR_CONTROL: true,
       DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.16, CAM_TILT: true, CAM_TILT_AMOUNT: 0.25, CAM_FOLLOW_LOCK: true,
-      CAM_FOLLOW_PITCH: 1.02, CAM_FOLLOW_DIST: 7.0, DOUBLE_JUMP_ENABLED: true,
+      CAM_FOLLOW_PITCH: 1.02, CAM_FOLLOW_DIST: 7.0, CAM_LOCK_PITCH: false, JOYSTICK_LOCK_X: false,
+      DOUBLE_JUMP_ENABLED: true,
       SPEED_MULTIPLIER: 1.0
     }
   },
   {
     id: 'cinematic',
     name: 'Cinematic Walkthrough',
-    description: 'Slower motion, softer turns and wider camera framing for showcases and inspection.',
+    description: 'Slower motion, softer turns and wider camera framing for showcases and inspection. Stable locked pitch, near-flat FOV and steady framing keep shots clean.',
     tags: ['showcase', 'smooth'],
     config: {
       GRAV: 20, JUMP_PWR: 7.5, SPD_WALK: 1.6, SPD_JOG: 2.2, SPD_SPRINT: 3.8,
       ACCEL: 8, DECEL: 10, ROT_SPD: 26, AIR_CONTROL: false,
-      DYNAMIC_FOV: true, DYNAMIC_FOV_MAX: 0.04, CAM_TILT: true, CAM_TILT_AMOUNT: 0.08, CAM_FOLLOW_LOCK: true,
-      CAM_FOLLOW_PITCH: 1.12, CAM_FOLLOW_DIST: 9.5, DOUBLE_JUMP_ENABLED: false,
+      DYNAMIC_FOV: false, DYNAMIC_FOV_MAX: 0.03, CAM_TILT: true, CAM_TILT_AMOUNT: 0.06, CAM_FOLLOW_LOCK: true,
+      CAM_FOLLOW_PITCH: 1.12, CAM_FOLLOW_DIST: 9.5, CAM_LOCK_PITCH: true, JOYSTICK_LOCK_X: false,
+      DOUBLE_JUMP_ENABLED: false,
       SPEED_MULTIPLIER: 1.0
     }
   }
