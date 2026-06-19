@@ -3443,7 +3443,7 @@ class CharCtrl {
     // Dedicated backward jog clip (when the GLB provides Jog_Bwd_Loop). Jog = running,
     // so this is the running backpedal — used while sprinting backward instead of
     // reverse-playing the forward blend tree.
-    if (backward && hasMove && sprint && this.anim.g.has('Jog_Bwd_Loop')) {
+    if (this.CAM_FOLLOW_LOCK && backward && hasMove && sprint && this.anim.g.has('Jog_Bwd_Loop')) {
       if (this.state !== S.JOG || this.anim.curName !== 'Jog_Bwd_Loop') {
         this._setState(S.JOG);
       }
