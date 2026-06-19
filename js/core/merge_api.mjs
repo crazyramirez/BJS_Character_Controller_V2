@@ -2518,6 +2518,47 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
                   const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
                   let final = qMul(rChar, rotated);
 
+                  // ── Clean up finger rotations to prevent twisting and deformation ──
+                  const isFingerOrThumb = ((/(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
+                    || /(thumb|index|middle|ring|pinky)/.test(srcName)))
+                    && !(/toe/.test(tgtName) || /toe/.test(srcName));
+
+                  if (isFingerOrThumb) {
+                    const isThumb = /(thumb)/i.test(tgtName) || /(thumb)/i.test(srcName);
+                    const isCC = /cc_base/i.test(target.getName() || '');
+                    const cleanName = stripBJSSuffix(tgtName);
+
+                    // 1) Swing-twist decomposition: Remove twist (rotation around local Y-axis / bone length axis)
+                    const ty = final[1];
+                    const tw = final[3];
+                    const tLen = Math.sqrt(ty * ty + tw * tw);
+                    const q_twist = tLen > 1e-6 ? [0, ty / tLen, 0, tw / tLen] : [0, 0, 0, 1];
+                    const q_swing = qMul(final, qInvert(q_twist));
+                    const mag = Math.sqrt(q_swing[0]*q_swing[0] + q_swing[1]*q_swing[1] + q_swing[2]*q_swing[2] + q_swing[3]*q_swing[3]);
+                    let qClean = mag > 1e-6 ? [q_swing[0]/mag, q_swing[1]/mag, q_swing[2]/mag, q_swing[3]/mag] : [0, 0, 0, 1];
+
+                    // 2) Keep only flexion (curl) for joint index 2, 3, and 4 (PIP, DIP, tip joints)
+                    const isTipJoint = /(index|middle|ring|pinky|thumb)(_0[234]|[234])/i.test(cleanName)
+                      || /(index|middle|ring|pinky|thumb)(_0[234]|[234])/i.test(stripBJSSuffix(srcName));
+
+                    if (isTipJoint) {
+                      if (isCC || isThumb) {
+                        // CC fingers and all thumbs: curl axis is local Z
+                        const cz = qClean[2];
+                        const cw = qClean[3];
+                        const cLen = Math.sqrt(cz * cz + cw * cw);
+                        qClean = cLen > 1e-6 ? [0, 0, cz / cLen, cw / cLen] : [0, 0, 0, 1];
+                      } else {
+                        // Standard fingers: curl axis is local X
+                        const cx = qClean[0];
+                        const cw = qClean[3];
+                        const cLen = Math.sqrt(cx * cx + cw * cw);
+                        qClean = cLen > 1e-6 ? [cx / cLen, 0, 0, cw / cLen] : [0, 0, 0, 1];
+                      }
+                    }
+                    final = qClean;
+                  }
+
                   // Manual per-bone overrides (raw-name keyed, local euler — legacy)
                   if (cfg.POSE_OFFSETS[tgtName]) {
                     const pOffset = cfg.POSE_OFFSETS[tgtName];
