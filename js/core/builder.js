@@ -486,7 +486,7 @@ function resetCharacterTransform() {
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
   if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
   if (footT) { footT.min = "-45"; footT.max = "45"; }
-  if (handR) { handR.min = "-30"; handR.max = "30"; }
+  if (handR) { handR.min = "-90"; handR.max = "90"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -1376,8 +1376,8 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
       return;
     }
   }
+  resetCharacterTransform();
   if (!preloadedBuffer) {
-    resetCharacterTransform();
     animationsGlbBuffer = null;
     lastAppliedRig = null; // genuine new import → drop any remembered rig
   }
@@ -1960,8 +1960,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   // GLB parses, then dispose old AFTER the new mesh exists — no empty-scene gap.
   // Snapshot what to tear down (old skeletons/groups), but don't dispose yet.
   const _prevCharacter = activeCharacter;
-  const _prevSkeletons = scene && scene.skeletons ? [...scene.skeletons] : [];
-  const _prevAnimGroups = scene && scene.animationGroups ? [...scene.animationGroups] : [];
+  const _prevSkeletons = _prevCharacter ? (_prevCharacter.rawSkeletons || []) : [];
+  const _prevAnimGroups = _prevCharacter ? (_prevCharacter.rawAnimationGroups || []) : [];
   // Stop old groups now so they don't drive bones during the brief overlap.
   _prevAnimGroups.forEach(ag => { try { ag.stop(); } catch (e) { } });
   if (_prevCharacter) {
@@ -2059,11 +2059,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     }
   });
 
-  activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, charRoot, charTransformWrapper };
+  activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, rawSkeletons: charRes.skeletons, charRoot, charTransformWrapper };
 
   // Cache original bone rotations for manual posture adjustment (arm/leg spread offsets)
   const originalBoneRotations = new Map();
-  scene.skeletons.forEach(skel => {
+  charRes.skeletons.forEach(skel => {
     skel.bones.forEach(bone => {
       const node = bone.getTransformNode();
       if (node) {
@@ -2103,7 +2103,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     return q;
   };
   const boneOffsetAxes = new Map(); // node.uniqueId → { role, x, y, z }
-  scene.skeletons.forEach(skel => {
+  charRes.skeletons.forEach(skel => {
     skel.bones.forEach(bone => {
       const node = bone.getTransformNode();
       if (!node) return;
@@ -2126,6 +2126,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         ancestorRole = boneRole(p.name || '');
         if (ancestorRole) break;
       }
+      // Find finger joint index from name: thumb1 -> 1, pinky_02 -> 2, etc.
+      let fingerJointIndex = 1;
+      if (role === 'finger') {
+        const match = /(^|[^0-9])0?([1234])([^0-9]|$)/.exec(bone.name || node.name || '');
+        if (match) fingerJointIndex = parseInt(match[2]);
+      }
       boneOffsetAxes.set(node.uniqueId, {
         role,
         isSpineRoot: role === 'spine' && ancestorRole === 'hips',
@@ -2134,6 +2140,9 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         isRightThumb: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')) && /_r$|right|_r_/i.test(bone.name || node.name || ''),
         // Thumb distal tip (*_03) needs extra relax to straighten.
         isThumbTip: role === 'finger' && /thumb/.test(boneRoleNorm(bone.name || node.name || '')) && /(^|[^0-9])0?3([^0-9]|$)/.test(bone.name || node.name || ''),
+        isCC: /cc_base/i.test(bone.name || node.name || ''),
+        isRightFinger: role === 'finger' && /_r$|right|_r_/i.test(bone.name || node.name || ''),
+        fingerJointIndex,
         x: toLocal(BABYLON.Axis.X),
         y: toLocal(BABYLON.Axis.Y),
         z: toLocal(BABYLON.Axis.Z),
@@ -2141,16 +2150,21 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     });
   });
 
-  // CC/AccuRig rigs bind with supinated (toed-in) feet. Auto-apply a default
-  // toe-out so they load straight; the user can still override via the slider.
-  // Only seed when the value is still at rest (0) so a saved/manual value wins.
+  // CC/AccuRig rigs bind with supinated (toed-in) feet and clenched fists. 
+  // Auto-apply a default toe-out and hand-relax so they load straight and natural; 
+  // the user can still override via the sliders. Only seed when the values are still at rest (0).
   {
     let isCC = false;
-    scene.skeletons.forEach(skel => skel.bones.forEach(b => {
+    charRes.skeletons.forEach(skel => skel.bones.forEach(b => {
       if (/cc_base/i.test(b.name || '')) isCC = true;
     }));
-    if (isCC && (charTransformConfig.FOOT_TOE_OUT_ANGLE || 0) === 0) {
-      charTransformConfig.FOOT_TOE_OUT_ANGLE = -10;
+    if (isCC) {
+      if ((charTransformConfig.FOOT_TOE_OUT_ANGLE || 0) === 0) {
+        charTransformConfig.FOOT_TOE_OUT_ANGLE = 0;
+      }
+      if ((charTransformConfig.HAND_RELAX_ANGLE || 0) === 0) {
+        charTransformConfig.HAND_RELAX_ANGLE = 0;
+      }
       syncCharTransformToUI();
     }
   }
@@ -2197,7 +2211,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     // on the shared node — for an animated bone (no reset) that stacked, e.g. ×2
     // skeletons made a 20° toe-out look like 40°. Apply each node exactly once.
     const processedNodes = new Set();
-    scene.skeletons.forEach(skel => {
+    const skeletonsToProcess = activeCharacter?.rawSkeletons || [];
+    skeletonsToProcess.forEach(skel => {
       skel.bones.forEach(bone => {
         const node = bone.getTransformNode();
         if (!node || !node.rotationQuaternion) return;
@@ -2256,14 +2271,18 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
             apply(axes.y, toeOut);  // toes point outward (right)
             break;
           case 'finger':
-            // Flexion is about the joint's LOCAL X (not the world-derived axes
-            // the limbs use — finger frames are rolled ~90°). +relax opens the
-            // hand (−X uncurls the pre-curled CC bind). The thumb's metacarpal is
-            // rolled ~90° vs the other fingers, so local X is its TWIST axis —
-            // rotating there spins the thumb. Its flexion hinge is local Z, so
-            // relax the thumb about Z (smaller magnitude, THUMB_RELAX_SCALE).
-            if (axes.isThumb) apply(BABYLON.Axis.Z, (axes.isRightThumb ? -1 : 1) * handRelax * THUMB_RELAX_SCALE * (axes.isThumbTip ? THUMB_TIP_SCALE : 1));
-            else apply(BABYLON.Axis.X, -handRelax);
+            // Flexion is about the joint's LOCAL X for standard rigs, but local Z for CC rigs
+            // (mirrored sign, and scaled per joint so tips do not bend backwards).
+            if (axes.isThumb) {
+              apply(BABYLON.Axis.Z, (axes.isRightThumb ? -1 : 1) * handRelax * THUMB_RELAX_SCALE * (axes.isThumbTip ? THUMB_TIP_SCALE : 1));
+            } else {
+              const jointScale = [1.0, 1.0, 0.7, 0.3, 0.1][axes.fingerJointIndex] || 1.0;
+              if (axes.isCC) {
+                apply(BABYLON.Axis.Z, (axes.isRightFinger ? -1 : 1) * handRelax * jointScale);
+              } else {
+                apply(BABYLON.Axis.X, -handRelax * jointScale);
+              }
+            }
             break;
           case 'spine':
             apply(axes.x, spineAngle);
@@ -2549,7 +2568,7 @@ function renderSkeletonSection(info) {
 
 function renderSkeletonSectionFromBJS() {
   if (!activeCharacter) return;
-  const skeletons = scene.skeletons;
+  const skeletons = activeCharacter.rawSkeletons;
   const section = document.getElementById('section-skeleton');
   if (section) section.style.display = 'block';
   expandCollapsible('skeleton-content');
@@ -2996,7 +3015,7 @@ function forceAutoRigPose(pose) {
   // ── Rest: undo Force-Pose bone rotations & restore the analyzed layout ──
   if (pose === 'rest') {
     st.rigPoseBase?.clear();   // posture observer falls back to the bind pose
-    if (scene.skeletons?.length) scene.skeletons.forEach(sk => sk.returnToRest());
+    if (activeCharacter.rawSkeletons) activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
     st.appliedPose = null;
     st.restLayout.forEach((p, name) => {
       st.canonical.set(name, p.clone());
@@ -3010,7 +3029,7 @@ function forceAutoRigPose(pose) {
     return;
   }
 
-  const skinned = !!scene.skeletons?.length && st.boneBindings.size > 0;
+  const skinned = !!activeCharacter.rawSkeletons?.length && st.boneBindings.size > 0;
   if (skinned) poseSkeletonArms(pose);
   else poseMarkerLayout(pose);
 
@@ -3075,7 +3094,7 @@ function poseSkeletonArms(pose) {
   const st = autoRigState;
   const B = (n) => st.boneBindings.get(n);
   // Clean slate so alternating presses don't compound.
-  scene.skeletons.forEach(sk => sk.returnToRest());
+  activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
 
   // Measure original foot directions at rest (bind pose)
   const footRestDirs = new Map();
@@ -3470,14 +3489,14 @@ async function startAutoRigAdjust() {
   // spread/splay, shoulder raise, leg spread, spine straighten, hips tilt) keep
   // working and layer on top of the Force-Pose base (autoRigState.rigPoseBase).
   scene.animationGroups.forEach(ag => ag.stop());
-  scene.skeletons.forEach(skel => skel.returnToRest());
+  activeCharacter.rawSkeletons.forEach(skel => skel.returnToRest());
 
   // Marker parent must be the node whose LOCAL space matches the server's joint
   // space. For skinned characters that is the skeleton root's parent (it carries
   // any armature scale, e.g. ×100 cm exports); for static meshes, charRoot.
   let markerParent = activeCharacter.charRoot;
-  if (scene.skeletons && scene.skeletons.length > 0) {
-    const rootBone = scene.skeletons[0].bones.find(b => !b.getParent());
+  if (activeCharacter.rawSkeletons && activeCharacter.rawSkeletons.length > 0) {
+    const rootBone = activeCharacter.rawSkeletons[0].bones.find(b => !b.getParent());
     const rootNode = rootBone?.getTransformNode();
     if (rootNode?.parent) markerParent = rootNode.parent;
   }
@@ -3580,13 +3599,13 @@ async function startAutoRigAdjust() {
   const restRel = new Map();       // node → bind matrix relative to markerParent
   const canonical = new Map();     // joint name → Vector3 (markerParent-local, rest space)
   let localToServerAffine = null;  // (Vector3 local) → [x,y,z] server space, or null
-  if (scene.skeletons?.length) {
+  if (activeCharacter.rawSkeletons?.length) {
     const mpInv0 = markerParent.getWorldMatrix().clone().invert();
     const nodes = [];
     // canonical-name → bone node, so re-rig binds by NAME (robust to the server's
     // joint space differing from Babylon's scene space on flipped/mirrored rigs)
     const nodeByNorm = new Map();
-    scene.skeletons.forEach(sk => sk.bones.forEach(b => {
+    activeCharacter.rawSkeletons.forEach(sk => sk.bones.forEach(b => {
       const n = b.getTransformNode();
       if (n && !restRel.has(n)) {
         n.computeWorldMatrix(true);
@@ -3918,8 +3937,8 @@ async function startAutoRigAdjust() {
       }
     });
 
-    if (profiling && scene.skeletons) {
-      scene.skeletons.forEach(sk => sk.prepare());
+    if (profiling && activeCharacter.rawSkeletons) {
+      activeCharacter.rawSkeletons.forEach(sk => sk.prepare());
     }
   });
 
@@ -3940,7 +3959,7 @@ async function startAutoRigAdjust() {
   // First-time skinless guess: auto-solve marker depth against the mesh so the
   // initial layout already sits inside the body (P1). Restored sessions and
   // existing-skin re-rigs already hold exact positions — leave them.
-  if (!guess.restored && !scene.skeletons?.length) {
+  if (!guess.restored && !activeCharacter.rawSkeletons?.length) {
     requestAnimationFrame(() => snapAllMarkersToBody());
   }
   // Default selection reflects the analyzed layout
@@ -3982,7 +4001,7 @@ function cancelAutoRigAdjust() {
     // Clear the Force-Pose base so the (still-running) posture observer returns
     // to the bind pose, then drop to rest before idle restarts.
     autoRigState.rigPoseBase?.clear();
-    if (scene.skeletons?.length) scene.skeletons.forEach(sk => sk.returnToRest());
+    if (activeCharacter?.rawSkeletons) activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
     // Restart idle: rig mode stopped every animation group and froze the
     // skeleton in rest pose. AnimCtrl.play() short-circuits when the requested
     // group is already `cur` (it only re-weights, never restarts a stopped
@@ -4213,6 +4232,7 @@ function updateCharStatusBar(filename) {
 
 function clearCharacter() {
   cancelAutoRigAdjust();
+  resetCharacterTransform();
 
   const bar = document.getElementById('char-status');
   if (bar) bar.style.display = 'none';
@@ -4229,6 +4249,16 @@ function clearCharacter() {
     }
     if (activeCharacter.cameraFollowObserver) {
       scene.unregisterBeforeRender(activeCharacter.cameraFollowObserver);
+    }
+    if (activeCharacter.rawSkeletons) {
+      activeCharacter.rawSkeletons.forEach(skel => {
+        try { skel.dispose(); } catch (e) { }
+      });
+    }
+    if (activeCharacter.rawAnimationGroups) {
+      activeCharacter.rawAnimationGroups.forEach(ag => {
+        try { ag.dispose(); } catch (e) { }
+      });
     }
     activeCharacter.playerCapsule.dispose();
     activeCharacter.animCtrl.destroy();
@@ -4300,7 +4330,7 @@ function renderAnimationLibrary() {
       if (activeCharacter && activeCharacter.charCtrl) {
         const ctrl = activeCharacter.charCtrl;
         ctrl.state = window.S ? window.S.IDLE : 'IDLE';
-        
+
         // Find if this animation is mapped to one of the core locomotion loops
         const isIdle = animMappings['Idle_Loop']?.animName === animName;
         const isWalk = animMappings['Walk_Loop']?.animName === animName;
@@ -4649,8 +4679,8 @@ function renderAnimationEventsTab() {
     </div>
     <div class="event-targets">
       ${targets.map(target => {
-        const events = animationEvents[target.key] || [];
-        return `
+    const events = animationEvents[target.key] || [];
+    return `
           <div class="event-target-card">
             <div class="event-target-head">
               <strong>${escapeHtml(target.label)}</strong>
@@ -4659,8 +4689,8 @@ function renderAnimationEventsTab() {
             ${events.length ? `
               <div class="event-marker-list">
                 ${events.map((evt, index) => {
-                  const options = eventTypes.map(t => `<option value="${t}" ${evt.type === t ? 'selected' : ''}>${t}</option>`).join('');
-                  return `
+      const options = eventTypes.map(t => `<option value="${t}" ${evt.type === t ? 'selected' : ''}>${t}</option>`).join('');
+      return `
                     <div class="event-marker">
                       <select class="event-marker-type-select" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}">
                         ${options}
@@ -4670,12 +4700,12 @@ function renderAnimationEventsTab() {
                       <button class="btn-event-delete" data-event-key="${escapeHtml(target.key)}" data-event-index="${index}" title="Remove marker">×</button>
                     </div>
                   `;
-                }).join('')}
+    }).join('')}
               </div>
             ` : `<div class="event-marker-empty">No markers yet</div>`}
           </div>
         `;
-      }).join('')}
+  }).join('')}
     </div>
   `;
 
@@ -4687,7 +4717,7 @@ function renderAnimationEventsTab() {
   });
   document.getElementById('btn-add-animation-event')?.addEventListener('click', addAnimationEvent);
   document.getElementById('btn-clear-animation-events')?.addEventListener('click', clearAllAnimationEvents);
-  
+
   container.querySelectorAll('.btn-event-delete').forEach(btn => {
     btn.addEventListener('click', () => deleteAnimationEvent(btn.dataset.eventKey, parseInt(btn.dataset.eventIndex, 10)));
   });

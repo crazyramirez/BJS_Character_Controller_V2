@@ -1463,16 +1463,34 @@ function bakePostureIntoRest(charDoc, cfg) {
       if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);
     } else if (cfg.HAND_RELAX_ANGLE && /^(thumb|index|middle|ring|pinky)_0[1234]_[lr]$/.test(canon)) {
       const isThumb = /^thumb_/.test(canon);
-      // The thumb's Z hinge is mirrored between hands — right thumb needs the
-      // opposite sign so both relax outward, not one in / one out.
-      const thumbSign = /_r$/.test(canon) ? -1 : 1;
-      const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
-      const deg = isThumb ? (thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost) : -cfg.HAND_RELAX_ANGLE;
-      const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
-      // Fingers flex about local X. The thumb's metacarpal frame is rotated ~90°
-      // vs the other fingers, so local X is its TWIST axis (rotating it there just
-      // spins the thumb). Its flexion hinge is local Z → uncurl about Z instead.
-      const q = isThumb ? [0, 0, s, Math.cos(r / 2)] : [s, 0, 0, Math.cos(r / 2)];
+      const isRight = canon.endsWith('_r');
+      const isCC = /cc_base/i.test(node.getName() || '');
+      
+      let q;
+      if (isThumb) {
+        const thumbSign = isRight ? -1 : 1;
+        const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
+        const deg = thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost;
+        const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+        q = [0, 0, s, Math.cos(r / 2)];
+      } else {
+        // Find joint index (1, 2, 3, 4) from canonical name
+        const m = /_0([1234])_[lr]$/.exec(canon);
+        const jointIdx = m ? parseInt(m[1]) : 1;
+        const jointScale = [1.0, 1.0, 0.7, 0.3, 0.1][jointIdx] || 1.0;
+        
+        if (isCC) {
+          // CC fingers flex about local Z, mirrored sign, scaled per joint
+          const deg = (isRight ? -1 : 1) * cfg.HAND_RELAX_ANGLE * jointScale;
+          const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+          q = [0, 0, s, Math.cos(r / 2)];
+        } else {
+          // Non-CC fingers flex about local X, scaled per joint
+          const deg = -cfg.HAND_RELAX_ANGLE * jointScale;
+          const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+          q = [s, 0, 0, Math.cos(r / 2)];
+        }
+      }
       offsetQ = qMul(offsetQ || [0, 0, 0, 1], q);
     } else if (canon === 'pelvis') {
       const sp = charParentMap.get(node);
@@ -2265,22 +2283,37 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           } else if (canon === 'foot_r') {
             if (cfg.FOOT_TOE_OUT_ANGLE) addOff([0, 1, 0], cfg.FOOT_TOE_OUT_ANGLE);  // toes outward (right)
           } else if (cfg.HAND_RELAX_ANGLE && /^(thumb|index|middle|ring|pinky)_0[1234]_[lr]$/.test(canon)) {
-            // Finger flexion is a rotation about each joint's LOCAL X (verified on
-            // CC/AccuRig binds: rest curl axis ≈ [1,0,0], ~10-22° per joint). Open
-            // the hand by rotating −X. Use the LOCAL axis directly (not the
-            // world→local conversion the limbs use) because finger frames are
-            // rolled ~90°, so a world axis would bend them sideways.
-            // The thumb's metacarpal frame is rolled ~90° vs the other four
-            // fingers, so its local X is a TWIST axis (rotating there spins the
-            // thumb instead of uncurling). Its flexion hinge is local Z — relax
-            // the thumb about Z, smaller magnitude (THUMB_RELAX_SCALE).
+            // Finger flexion is a rotation about each joint's LOCAL X for standard rigs, but local Z for CC rigs
+            // (mirrored sign, and scaled per joint so tips do not bend backwards).
             const isThumb = /^thumb_/.test(canon);
-            // Right thumb's Z hinge is mirrored vs left — flip its sign.
-            const thumbSign = /_r$/.test(canon) ? -1 : 1;
-            const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
-            const deg = isThumb ? (thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost) : -cfg.HAND_RELAX_ANGLE;
-            const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
-            const q = isThumb ? [0, 0, s, Math.cos(r / 2)] : [s, 0, 0, Math.cos(r / 2)];
+            const isRight = canon.endsWith('_r');
+            const isCC = /cc_base/i.test(node.getName() || '');
+            
+            let q;
+            if (isThumb) {
+              const thumbSign = isRight ? -1 : 1;
+              const tipBoost = /^thumb_0?3_/.test(canon) ? THUMB_TIP_SCALE : 1;
+              const deg = thumbSign * cfg.HAND_RELAX_ANGLE * THUMB_RELAX_SCALE * tipBoost;
+              const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+              q = [0, 0, s, Math.cos(r / 2)];
+            } else {
+              // Find joint index (1, 2, 3, 4) from canonical name
+              const m = /_0([1234])_[lr]$/.exec(canon);
+              const jointIdx = m ? parseInt(m[1]) : 1;
+              const jointScale = [1.0, 1.0, 0.7, 0.3, 0.1][jointIdx] || 1.0;
+              
+              if (isCC) {
+                // CC fingers flex about local Z, mirrored sign, scaled per joint
+                const deg = (isRight ? -1 : 1) * cfg.HAND_RELAX_ANGLE * jointScale;
+                const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+                q = [0, 0, s, Math.cos(r / 2)];
+              } else {
+                // Non-CC fingers flex about local X, scaled per joint
+                const deg = -cfg.HAND_RELAX_ANGLE * jointScale;
+                const r = (deg * Math.PI) / 180, s = Math.sin(r / 2);
+                q = [s, 0, 0, Math.cos(r / 2)];
+              }
+            }
             offsetQ = qMul(offsetQ || [0, 0, 0, 1], q);
           } else if (canon === 'pelvis') {
             // CC rigs: Hip (root) AND Pelvis (child) both map to 'pelvis' —
@@ -2408,8 +2441,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
           // Decide per bone: if this bone's own C diverges from the hand's C by
           // more than a threshold, the rigs disagree about this finger's bind
           // frame → use the per-bone C. Otherwise use the hand C (safe default).
-          const isFinger = /(thumb|index|middle|ring|pinky|mid\d)/.test(tgtName)
-            || /(thumb|index|middle|ring|pinky)/.test(srcName);
+          const isFinger = ((/(index|middle|ring|pinky|mid\d)/.test(tgtName)
+            || /(index|middle|ring|pinky)/.test(srcName)))
+            && !(/toe/.test(tgtName) || /toe/.test(srcName));
 
           let C_to_use = C;
           let Cinv_to_use = Cinv;
@@ -2420,14 +2454,14 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             let handCharName = '';
             for (const name of charWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handCharName = name; break; }
-              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handCharName = name; break; }
+              if (isLeft && (norm === 'handl' || norm === 'lefthand' || norm === 'lhand')) { handCharName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand' || norm === 'rhand')) { handCharName = name; break; }
             }
             let handAnimName = '';
             for (const name of animWorldByName.keys()) {
               const norm = normalizeName(name);
-              if (isLeft && (norm === 'handl' || norm === 'lefthand')) { handAnimName = name; break; }
-              if (!isLeft && (norm === 'handr' || norm === 'righthand')) { handAnimName = name; break; }
+              if (isLeft && (norm === 'handl' || norm === 'lefthand' || norm === 'lhand')) { handAnimName = name; break; }
+              if (!isLeft && (norm === 'handr' || norm === 'righthand' || norm === 'rhand')) { handAnimName = name; break; }
             }
             if (handCharName && handAnimName) {
               const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
@@ -2437,9 +2471,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               // 2·acos(|dot|) is the rotation separating them, in radians.
               const dot = Math.abs(C[0] * C_hand[0] + C[1] * C_hand[1] + C[2] * C_hand[2] + C[3] * C_hand[3]);
               const divergeRad = 2 * Math.acos(Math.min(1, dot));
-              // ~12° threshold: same-convention rigs sit well under this (spread
+              // ~85° threshold: same-convention rigs sit well under this (spread
               // differences are small); cross-convention bind rolls are ≥45°.
-              const FINGER_FRAME_DIVERGE = 12 * Math.PI / 180;
+              const FINGER_FRAME_DIVERGE = 85 * Math.PI / 180;
               if (divergeRad <= FINGER_FRAME_DIVERGE) {
                 // Same convention — hand-space C (avoids spread twist on custom rigs).
                 C_to_use = C_hand;

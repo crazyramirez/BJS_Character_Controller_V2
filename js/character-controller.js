@@ -1771,7 +1771,8 @@ class CharCtrl {
       ));
     }
 
-    const ROLL_SPEED = 1;
+    // Damped inverse relationship: apply only 10% influence from the inverse ratio for a very subtle effect
+    const ROLL_SPEED = 1.0 + (9.5 / this.JUMP_PWR - 1.0) * 0.1;
     this.anim.play('Roll', false, 0.4, null, ROLL_SPEED);
 
     // End the roll when the actual Roll clip finishes, not at a fixed 850ms.
@@ -1783,8 +1784,9 @@ class CharCtrl {
     // clip length, so deriving the end from landing produced chopped clips,
     // anim jumps and slides. A fixed duration is predictable across all presets;
     // the landing block (state===ROLL) only clears the vertical hop. Scaled by
-    // SPEED_MULTIPLIER so a sped-up controller ends the roll proportionally.
-    const rollDurationMs = 920;
+    // SPEED_MULTIPLIER so a sped-up controller ends the roll proportionally,
+    // and scaled by ROLL_SPEED so it ends when the animation finishes.
+    const rollDurationMs = 920 / ROLL_SPEED;
 
     this._rollTimeoutId = setTimeout(() => {
       this._rollActive = false;
