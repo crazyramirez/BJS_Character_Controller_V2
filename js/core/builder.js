@@ -2722,7 +2722,43 @@ function showAutoRigControls(show, hasExistingSkin = false) {
       ? '💀 Re-Rig / Adjust Skeleton (BETA)'
       : '💀 Generate Skeleton (Auto-Rig - BETA)';
   }
-  if (!show) cancelAutoRigAdjust();
+  if (!show) {
+    cancelAutoRigAdjust();
+    hideAutoRigConfidence();
+  }
+}
+
+function renderAutoRigConfidence(guess) {
+  const wrap = document.getElementById('autorig-confidence');
+  const valueEl = document.getElementById('autorig-confidence-value');
+  const fillEl = document.getElementById('autorig-confidence-fill');
+  const hintEl = document.getElementById('autorig-confidence-hint');
+  if (!wrap || !valueEl || !fillEl || !hintEl) return;
+
+  const score = typeof guess.score === 'number' ? guess.score : 0;
+  valueEl.textContent = `${score}%`;
+  fillEl.style.width = `${Math.max(0, Math.min(100, score))}%`;
+  fillEl.classList.remove('low', 'medium', 'high');
+  if (score >= 80) fillEl.classList.add('high');
+  else if (score >= 50) fillEl.classList.add('medium');
+  else fillEl.classList.add('low');
+
+  let hint = guess.reason || '';
+  if (guess.scaleInfo && guess.scaleInfo.unit !== 'unknown') {
+    hint += ` Detected height: ${guess.scaleInfo.height.toFixed(2)} ${guess.scaleInfo.unit}.`;
+  }
+  if (score < 50) {
+    hint += ' Low confidence — please place markers manually.';
+  } else if (score < 80) {
+    hint += ' Review marker positions before applying.';
+  }
+  hintEl.textContent = hint.trim();
+  wrap.style.display = 'block';
+}
+
+function hideAutoRigConfidence() {
+  const wrap = document.getElementById('autorig-confidence');
+  if (wrap) wrap.style.display = 'none';
 }
 
 function setupAutoRigControls() {
@@ -3461,6 +3497,25 @@ async function startAutoRigAdjust() {
   }
   hideLoading();
 
+  // Humanoid validation gate
+  if (guess.humanoid === false) {
+    showToast(`Cannot auto-rig: ${guess.reason || 'Model does not appear to be a humanoid character.'}`, true);
+    return;
+  }
+
+  // Show detection confidence to the user
+  const score = typeof guess.score === 'number' ? guess.score : 0;
+  const scaleText = guess.scaleInfo ? ` (${guess.scaleInfo.height.toFixed(2)} ${guess.scaleInfo.unit})` : '';
+  if (score >= 80) {
+    showToast(`Auto-rig confidence: ${score}% — high quality detection${scaleText}.`);
+  } else if (score >= 50) {
+    showToast(`Auto-rig confidence: ${score}% — please review marker positions${scaleText}.`, true);
+  } else {
+    showToast(`Auto-rig confidence: ${score}% — low confidence, review carefully${scaleText}.`, true);
+  }
+
+  renderAutoRigConfidence(guess);
+
   // Restore the user's last applied joints verbatim (P2). The server re-guesses
   // from the post-merge bind, which drifts from what the user placed; if we have
   // an exact memory for this character, use it and skip the bone-snap re-fit so
@@ -4026,6 +4081,7 @@ function cancelAutoRigAdjust() {
   const adjustPanel = document.getElementById('autorig-adjust');
   if (startBtn) startBtn.style.display = '';
   if (adjustPanel) adjustPanel.style.display = 'none';
+  hideAutoRigConfidence();
 }
 
 // ── Depth snap: solve the view-perpendicular axis from the mesh ──────────────

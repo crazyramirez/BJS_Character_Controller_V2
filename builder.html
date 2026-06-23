@@ -315,6 +315,16 @@
               </div>
               <div id="autorig-controls" style="display:none;">
                 <button id="btn-autorig-start" class="btn-action">💀 Generate Skeleton (Auto-Rig)</button>
+                <div id="autorig-confidence" class="autorig-confidence" style="display:none;">
+                  <div class="autorig-confidence-label">
+                    <span>Auto-Rig confidence</span>
+                    <span id="autorig-confidence-value">0%</span>
+                  </div>
+                  <div class="autorig-confidence-bar">
+                    <div id="autorig-confidence-fill" class="autorig-confidence-fill" style="width:0%"></div>
+                  </div>
+                  <p id="autorig-confidence-hint" class="autorig-confidence-hint"></p>
+                </div>
                 <div id="autorig-adjust" style="display:none;">
                   <p id="autorig-adjust-hint">
                     Drag the yellow joint markers in the viewport to match your character's anatomy

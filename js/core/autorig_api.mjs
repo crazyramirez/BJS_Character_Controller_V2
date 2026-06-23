@@ -260,23 +260,24 @@ function selectBodyMeshes(doc, skinXforms = new Map()) {
  * All positions are in glTF world space of the input file.
  */
 /**
- * Detect which way the character faces along Z by looking at the feet: toes
- * stick out forward, so the lowest vertices are biased toward the facing side.
- * Returns +1 (faces +Z, Mixamo convention) or -1 (faces -Z).
+ * Detect which way the character faces along Z. Combines multiple anatomical
+ * cues with a weighted vote so symmetric shoes, helmets or action poses don't
+ * flip the facing.
+ * Returns { sign: +1/-1, certainty: 0..1 }.
  */
-function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = null) {
-  if (global.MOCK_FORWARD_Z !== undefined) return global.MOCK_FORWARD_Z;
+function detectForwardZWithConfidence(doc, { min, max }, skinXforms = new Map(), bodyMeshes = null) {
+  if (global.MOCK_FORWARD_Z !== undefined) return { sign: global.MOCK_FORWARD_Z, certainty: 1 };
   const H = max[1] - min[1];
-  const footY = min[1] + 0.12 * H;
-  const faceY = min[1] + 0.85 * H;   // head region: nose/chin protrude forward
+  const footY = min[1] + 0.10 * H;
+  const shinY = min[1] + 0.30 * H;
+  const hipY = min[1] + 0.45 * H;
+  const shoulderY = min[1] + 0.75 * H;
+  const faceY = min[1] + 0.82 * H;
   const parentMap = buildParentMap(doc);
   const cache = new Map();
-  // Collect the foot and face vertex Z values so each cue can be measured by
-  // its ASYMMETRIC OVERHANG (how far the silhouette pokes past its own centre),
-  // not the mean. A foot has a short heel and a long toe: the mean is dominated
-  // by the dense heel/ankle mass and can point the wrong way, but the toe is the
-  // farther-protruding tip — that is the real forward direction.
-  const footZ = [], faceZ = [];
+
+  // Collect per-band Z samples
+  const footZ = [], shinZ = [], hipZ = [], shoulderZ = [], faceZ = [];
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
@@ -287,37 +288,105 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
       if (!arr) continue;
       for (let i = 0; i < arr.length; i += 3) {
         const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
-        if (p[1] <= footY) footZ.push(p[2]);
-        else if (p[1] >= faceY) faceZ.push(p[2]);
+        const y = p[1];
+        if (y <= footY) footZ.push(p[2]);
+        else if (y <= shinY) shinZ.push(p[2]);
+        else if (y <= hipY) hipZ.push(p[2]);
+        else if (y <= shoulderY) shoulderZ.push(p[2]);
+        else if (y >= faceY) faceZ.push(p[2]);
       }
     }
   }
-  const depth = max[2] - min[2] || 1;
+
+  const depth = Math.max(1e-6, max[2] - min[2]);
   const bodyCz = (min[2] + max[2]) / 2;
-  // Two ways to read a foot's facing, combined:
-  //  • offset:  how far the whole foot sits in front of the body centre — strong
-  //    when the foot is displaced forward (sitting/running poses).
-  //  • overhang: how far the toe TIP protrudes past the foot's own median — the
-  //    reliable cue for an upright foot planted under the body (heel↔toe).
-  // Summing both means a forward-displaced foot AND a toe overhang each vote,
-  // and neither alone has to be decisive.
-  const footVote = (zs) => {
-    if (zs.length < 4) return 0;
+
+  // Vote from asymmetric overhang + offset of a Z distribution.
+  const bandVote = (zs, needMin = 4) => {
+    if (zs.length < needMin) return { vote: 0, strength: 0 };
     const med = median(zs);
     let zmax = -Infinity, zmin = Infinity, sum = 0;
-    for (const z of zs) { if (z > zmax) zmax = z; if (z < zmin) zmin = z; sum += z; }
-    const overhang = ((zmax - med) - (med - zmin)) / depth;
+    for (const z of zs) {
+      if (z > zmax) zmax = z;
+      if (z < zmin) zmin = z;
+      sum += z;
+    }
+    const range = zmax - zmin;
+    const overhang = range > 0 ? ((zmax - med) - (med - zmin)) / range : 0;
     const offset = ((sum / zs.length) - bodyCz) / depth;
-    return overhang + offset;
+    const vote = overhang + offset;
+    const asym = Math.abs(overhang);
+    const strength = Math.min(1, zs.length / 200) * Math.min(1, asym * 3 + Math.abs(offset) * 2);
+    return { vote, strength };
   };
-  const fVote = footVote(footZ);
-  const faceVote = footVote(faceZ);
-  // Feet dominate; the face only breaks ties when the foot signal is weak
-  // (barefoot, perfectly symmetric, flat-foot meshes).
-  const footStrong = Math.abs(fVote) > 0.04;
-  const combined = footStrong ? fVote : (2.0 * fVote + 1.0 * faceVote);
-  if (combined === 0) return 1;
-  return combined >= 0 ? 1 : -1;
+
+  const f = bandVote(footZ);
+  const s = bandVote(shinZ);
+  const h = bandVote(hipZ);
+  const sh = bandVote(shoulderZ);
+  const fc = bandVote(faceZ);
+
+  // Face cue: frontal face has more vertices forward of the head median Z.
+  let faceFrontVote = 0, faceFrontStrength = 0;
+  if (faceZ.length >= 10) {
+    const med = median(faceZ);
+    let front = 0, back = 0;
+    for (const z of faceZ) {
+      if (z > med) front++;
+      else if (z < med) back++;
+    }
+    const total = front + back;
+    if (total > 0) {
+      faceFrontVote = (front - back) / total;
+      faceFrontStrength = Math.min(1, total / 400) * Math.abs(faceFrontVote);
+    }
+  }
+
+  // Torso frontal curvature: shoulders usually protrude forward of hips.
+  let shoulderHipVote = 0, shoulderHipStrength = 0;
+  if (shoulderZ.length >= 10 && hipZ.length >= 10) {
+    const shMed = median(shoulderZ);
+    const hipMed = median(hipZ);
+    shoulderHipVote = (shMed - hipMed) / depth;
+    shoulderHipStrength = Math.min(1, Math.min(shoulderZ.length, hipZ.length) / 200);
+  }
+
+  const weights = {
+    foot: 1.0,
+    shin: 0.5,
+    faceOverhang: 0.4,
+    faceFront: 0.35,
+    shoulderHip: 0.25,
+  };
+
+  let weightedVote =
+    f.vote * weights.foot * Math.min(1, f.strength + 0.3) +
+    s.vote * weights.shin * Math.min(1, s.strength + 0.2) +
+    fc.vote * weights.faceOverhang * Math.min(1, fc.strength + 0.2) +
+    faceFrontVote * weights.faceFront * Math.min(1, faceFrontStrength + 0.2) +
+    shoulderHipVote * weights.shoulderHip * Math.min(1, shoulderHipStrength + 0.2);
+
+  let totalWeight =
+    weights.foot * Math.min(1, f.strength + 0.3) +
+    weights.shin * Math.min(1, s.strength + 0.2) +
+    weights.faceOverhang * Math.min(1, fc.strength + 0.2) +
+    weights.faceFront * Math.min(1, faceFrontStrength + 0.2) +
+    weights.shoulderHip * Math.min(1, shoulderHipStrength + 0.2);
+
+  if (totalWeight < 0.01) {
+    return { sign: 1, certainty: 0.1 };
+  }
+
+  const normalized = weightedVote / totalWeight;
+  const certainty = Math.min(1, Math.abs(normalized) * 4 + totalWeight * 0.3);
+  return { sign: normalized >= 0 ? 1 : -1, certainty };
+}
+
+/**
+ * Backward-compatible wrapper: returns only the facing sign.
+ */
+function detectForwardZ(...args) {
+  return detectForwardZWithConfidence(...args).sign;
 }
 
 export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
@@ -1089,16 +1158,18 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
-  const verts = collectWorldVertices(doc, skinXforms, bodyMeshes);
-  const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
-  sliced.method = 'slicing';
+function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, precomputed = {}) {
+  const verts = precomputed.verts || collectWorldVertices(doc, skinXforms, bodyMeshes);
+  const sliced = precomputed.sliced || guessJointsFromMesh(verts, bounds, forwardZ);
+  if (!sliced.method) sliced.method = 'slicing';
 
-  let topo = null;
-  try {
-    topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
-  } catch (e) {
-    console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
+  let topo = precomputed.topo;
+  if (topo === undefined) {
+    try {
+      topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
+    } catch (e) {
+      console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
+    }
   }
   if (!topo) return sliced;
 
@@ -1250,20 +1321,129 @@ function seedJointsFromSkins(doc) {
   return seeded;
 }
 
+// ── Humanoid validation & confidence scoring ─────────────────────────────────
+// Decide whether the mesh is plausibly a humanoid character, and score the
+// overall quality of the detection so the UI can warn or reject.
+function isHumanoidGuess(sliced, topo, score, reason) {
+  // Re-rig path: an existing named humanoid skeleton is always treated as valid.
+  if (sliced.reRig || topo?.reRig) return { humanoid: true, reason: 'Existing humanoid skeleton detected.' };
+
+  // Strong upright humanoid cues (T-pose / A-pose standing character).
+  const upright = sliced.flags?.crotch && sliced.flags?.arms;
+  if (upright) return { humanoid: true, reason: 'Upright humanoid shape detected (crotch + arms).' };
+
+  // Topology pass found a coherent 5-extremity body graph AND overall score is
+  // high enough to rule out boxes / abstract shapes that happen to have corners.
+  if (topo && topo.confidence >= 0.7 && score >= 55) {
+    return { humanoid: true, reason: `Pose-independent topology detected (${(topo.confidence * 100).toFixed(0)}% confidence).` };
+  }
+
+  // Fallback: aggregate score above threshold.
+  if (score >= 60) return { humanoid: true, reason: 'Low-confidence detection — please review markers.' };
+
+  // Rejection reasons.
+  if (!topo) {
+    return { humanoid: false, reason: reason || 'Could not find a humanoid body topology (head + hands + feet).' };
+  }
+  if (topo.confidence < 0.5 || score < 40) {
+    return { humanoid: false, reason: reason || 'Mesh does not appear to be a humanoid character.' };
+  }
+  return { humanoid: false, reason: reason || 'Character shape is too ambiguous for automatic rigging.' };
+}
+
+function computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds) {
+  let score = 20; // base
+
+  // Slicing pass quality (upright T/A pose)
+  if (sliced.flags?.crotch) score += 15;
+  if (sliced.flags?.arms) score += 15;
+  if (sliced.flags?.skirt) score += 5; // we found a garment silhouette, still humanoid
+
+  // Topology pass quality (pose-independent)
+  if (topo) {
+    score += Math.round(topo.confidence * 20);
+  }
+
+  // Forward-Z certainty
+  score += Math.round(fwdCertainty * 10);
+
+  // Humanoid proportions: height should dominate width/depth
+  const H = bounds.max[1] - bounds.min[1];
+  const W = bounds.max[0] - bounds.min[0];
+  const D = bounds.max[2] - bounds.min[2];
+  const aspect = H / Math.max(W, D);
+  if (aspect > 2.0) score += 10;
+  else if (aspect > 1.3) score += 5;
+
+  // Symmetry check on slicing arm span
+  if (sliced.flags?.arms) {
+    const verts = [];
+    // We don't have the vertex list here; approximate via joint positions.
+    const leftReach = Math.abs(sliced.joints.LeftHand?.[0] - sliced.joints.Hips?.[0]) || 0;
+    const rightReach = Math.abs(sliced.joints.RightHand?.[0] - sliced.joints.Hips?.[0]) || 0;
+    const avgReach = (leftReach + rightReach) / 2;
+    if (avgReach > 0) {
+      const asym = Math.abs(leftReach - rightReach) / avgReach;
+      if (asym < 0.15) score += 10;
+      else if (asym < 0.35) score += 5;
+    }
+  }
+
+  return Math.max(0, Math.min(100, score));
+}
+
+function detectScaleUnit(bounds) {
+  const H = bounds.max[1] - bounds.min[1];
+  if (H >= 1.0 && H <= 3.5) return { unit: 'm', scale: 1.0, height: H };
+  if (H >= 100 && H <= 350) return { unit: 'cm', scale: 0.01, height: H * 0.01 };
+  if (H >= 39 && H <= 138) return { unit: 'in', scale: 0.0254, height: H * 0.0254 };
+  return { unit: 'unknown', scale: 1.0, height: H };
+}
+
 export async function guessJoints(buffer) {
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const skinXf = skinWorldXforms(doc);
   const bodyMeshes = selectBodyMeshes(doc, skinXf);
   const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
-  const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
-  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes);
+  const fwdResult = detectForwardZWithConfidence(doc, bounds, skinXf, bodyMeshes);
+  const fwd = fwdResult.sign;
+  const fwdCertainty = fwdResult.certainty;
+
+  const verts = collectWorldVertices(doc, skinXf, bodyMeshes);
+  const sliced = guessJointsFromMesh(verts, bounds, fwd);
+  sliced.method = 'slicing';
+
+  let topo = null;
+  let topoError = null;
+  try {
+    topo = guessJointsFromTopology(doc, skinXf, bounds, fwd, bodyMeshes);
+  } catch (e) {
+    topoError = e.message;
+    console.warn('[autorig] Topology pass failed:', e.message);
+  }
+
+  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, { verts, sliced, topo });
+  const scaleInfo = detectScaleUnit(bounds);
+  const score = computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds);
+  const { humanoid, reason } = isHumanoidGuess(sliced, topo, score, topoError);
+
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
     guess.joints = { ...guess.joints, ...seeded };
     guess.reRig = true;
   }
+
+  // Enrich response with validation metadata
+  guess.humanoid = humanoid;
+  guess.score = score;
+  guess.reason = reason;
+  guess.fwdCertainty = fwdCertainty;
+  guess.scaleInfo = scaleInfo;
+  guess.topoConfidence = topo ? topo.confidence : 0;
+  guess.slicingFlags = sliced.flags;
+
   return guess;
 }
 
@@ -1384,6 +1564,43 @@ function quatFromTwoVectors(a, b) {
     a[0]*b[1] - a[1]*b[0]
   ];
   return qNormalize([cross[0], cross[1], cross[2], 1 + dot]);
+}
+
+function vec3Cross(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+function vec3Dot(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/**
+ * Build a quaternion that rotates the local +Y axis to `dir` and keeps `up`
+ * as close as possible to the local +Z axis (so +X is roughly cross(up, dir)).
+ * Returns [x, y, z, w].
+ */
+function lookRotation(dir, up) {
+  const yAxis = vec3Normalize(dir);
+  if (vec3Length(yAxis) < 1e-6) return [0, 0, 0, 1];
+
+  let xAxis = vec3Normalize(vec3Cross(up, yAxis));
+  if (vec3Length(xAxis) < 1e-6) {
+    // dir and up are parallel: pick an orthogonal fallback.
+    const fallback = Math.abs(yAxis[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0];
+    xAxis = vec3Normalize(vec3Cross(fallback, yAxis));
+  }
+  const zAxis = vec3Cross(xAxis, yAxis);
+
+  // Rotation matrix (column-major for glTF) with columns xAxis, yAxis, zAxis.
+  const m = [
+    xAxis[0], xAxis[1], xAxis[2],
+    yAxis[0], yAxis[1], yAxis[2],
+    zAxis[0], zAxis[1], zAxis[2],
+  ];
+  return mat3ToQuat(m);
 }
 
 // ── Adjust an existing rig in place ──────────────────────────────────────────
@@ -1725,11 +1942,113 @@ const HIERARCHY = {
   Hips: null,
   Spine: 'Hips', Spine1: 'Spine', Spine2: 'Spine1', Neck: 'Spine2', Head: 'Neck',
   LeftShoulder: 'Spine2', LeftArm: 'LeftShoulder', LeftForeArm: 'LeftArm', LeftHand: 'LeftForeArm',
+  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2',
+  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2',
+  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
+  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2',
+  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2',
   RightShoulder: 'Spine2', RightArm: 'RightShoulder', RightForeArm: 'RightArm', RightHand: 'RightForeArm',
+  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2',
+  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2',
+  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
+  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2',
+  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
   RightUpLeg: 'Hips', RightLeg: 'RightUpLeg', RightFoot: 'RightLeg', RightToeBase: 'RightFoot',
 };
 const JOINT_ORDER = Object.keys(HIERARCHY);
+
+// Build a map child -> parent and parent -> first child for bone-roll work.
+const CHILD_OF = {};
+for (const [name, parent] of Object.entries(HIERARCHY)) {
+  CHILD_OF[name] = parent;
+}
+const FIRST_CHILD_OF = {};
+for (const [name, parent] of Object.entries(HIERARCHY)) {
+  if (parent) {
+    if (!FIRST_CHILD_OF[parent]) FIRST_CHILD_OF[parent] = name;
+  }
+}
+
+/**
+ * Compute anatomically-consistent local rotations for a fresh Mixamo-style
+ * skeleton. The goal is a stable bone roll: every limb's local Y axis points
+ * toward its child, and the roll axis is chosen so left/right sides mirror
+ * each other instead of twisting randomly.
+ *
+ * `flipRoot180` is true when the character faces -Z relative to Mixamo's +Z
+ * convention; in that case the whole skeleton (root only) is rotated 180°
+ * about Y so retargeted animations line up.
+ */
+function computeJointRotations(joints, flipRoot180 = false) {
+  const worldUp = [0, 1, 0];
+  const forward = [0, 0, 1]; // Mixamo convention
+  const worldRots = {};
+
+  const isSpineChain = (name) => /^(Spine|Spine1|Spine2|Neck|Head|Hips)$/.test(name);
+  const isArm = (name) => /(Shoulder|Arm|ForeArm|Hand)$/.test(name);
+  const isLeg = (name) => /(UpLeg|Leg|Foot|ToeBase)$/.test(name);
+  const isFinger = (name) => /Hand(Thumb|Index|Middle|Ring|Pinky)/.test(name);
+  const isLeft = (name) => name.startsWith('Left');
+  const isRight = (name) => name.startsWith('Right');
+
+  for (const name of JOINT_ORDER) {
+    const child = FIRST_CHILD_OF[name];
+    let dir;
+    if (child) {
+      dir = vec3Normalize(vec3Subtract(joints[child], joints[name]));
+    } else {
+      // Terminal joint: reuse the parent bone direction.
+      const parent = CHILD_OF[name];
+      dir = parent ? vec3Normalize(vec3Subtract(joints[name], joints[parent])) : worldUp;
+    }
+
+    let up;
+    if (isSpineChain(name)) {
+      up = worldUp;
+    } else if (isLeft(name) && isArm(name)) {
+      // Left arm: palm forward, thumb up → X local points up
+      up = forward;
+    } else if (isRight(name) && isArm(name)) {
+      // Right arm: mirror of left
+      up = [-forward[0], -forward[1], -forward[2]];
+    } else if (isLeft(name) && isLeg(name)) {
+      // Left leg: knee forward, X local points outward (-X world)
+      up = [-forward[0], -forward[1], -forward[2]];
+    } else if (isRight(name) && isLeg(name)) {
+      // Right leg: mirror of left
+      up = forward;
+    } else {
+      up = worldUp;
+    }
+
+    // Avoid gimbal lock when a limb happens to point parallel to its up vector.
+    if (Math.abs(vec3Dot(dir, up)) > 0.999) {
+      up = Math.abs(dir[1]) > 0.9 ? [0, 0, 1] : worldUp;
+    }
+
+    worldRots[name] = lookRotation(dir, up);
+  }
+
+  // Convert world rotations to local rotations relative to parent.
+  const localRots = {};
+  for (const name of JOINT_ORDER) {
+    const parent = CHILD_OF[name];
+    if (parent) {
+      localRots[name] = qNormalize(qMul(qInvert(worldRots[parent]), worldRots[name]));
+    } else {
+      localRots[name] = qNormalize(worldRots[name]);
+    }
+  }
+
+  // Apply global 180° Y flip for -Z-facing characters.
+  if (flipRoot180) {
+    const r180y = [0, 1, 0, 0];
+    localRots.Hips = qNormalize(qMul(r180y, localRots.Hips));
+  }
+
+  return { worldRots, localRots };
+}
 
 // Weighting segment per bone: [start joint, end joint or offset fn]
 function boneSegments(joints, H) {
@@ -1740,7 +2059,7 @@ function boneSegments(joints, H) {
     const l = Math.hypot(...d) || 1;
     return [d[0] / l * 0.10 * H, d[1] / l * 0.10 * H, d[2] / l * 0.10 * H];
   };
-  return {
+  const segments = {
     Hips: seg('Hips', 'Spine'),
     Spine: seg('Spine', 'Spine1'),
     Spine1: seg('Spine1', 'Spine2'),
@@ -1778,6 +2097,25 @@ function boneSegments(joints, H) {
     RightFoot: seg('RightFoot', 'RightToeBase'),
     RightToeBase: ext('RightToeBase', [0, 0, 0.05 * H * Math.sign(joints.RightToeBase[2] - joints.RightFoot[2] || 1)]),
   };
+
+  // Finger segments (5 digits × 3 joints per hand).
+  for (const side of ['Left', 'Right']) {
+    for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+      const b1 = `${side}Hand${finger}1`;
+      const b2 = `${side}Hand${finger}2`;
+      const b3 = `${side}Hand${finger}3`;
+      segments[b1] = seg(b1, b2);
+      segments[b2] = seg(b2, b3);
+      // Terminal phalanx extends a little past the last joint.
+      segments[b3] = ext(b3, [
+        (joints[b3][0] - joints[b2][0]) * 0.6,
+        (joints[b3][1] - joints[b2][1]) * 0.6,
+        (joints[b3][2] - joints[b2][2]) * 0.6,
+      ]);
+    }
+  }
+
+  return segments;
 }
 
 function distPointSegment(p, a, b) {
@@ -1877,6 +2215,271 @@ function smoothWeightField(W, nBones, adjacency, iters, lambda) {
   }
 }
 
+// Distance from point to segment plus closest point and parametric t.
+function distPointSegmentFull(p, a, b) {
+  const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+  const abLen2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+  let t = abLen2 > 0 ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / abLen2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const c = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+  const dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+  return { d: Math.sqrt(dx * dx + dy * dy + dz * dz), t, c };
+}
+
+function vec3Dist(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+// Per-bone source radius used to seed the heat field. Torso/head bones get a
+// larger capture so the chest/hips/skull are fully covered; thin limb bones
+// get a tighter radius to keep elbows/knees sharp.
+function boneSourceRadius(name, H) {
+  if (name === 'Head' || name === 'Neck') return 0.18 * H;
+  if (name === 'Hips' || name === 'Spine' || name === 'Spine1' || name === 'Spine2') return 0.08 * H;
+  if (name === 'LeftShoulder' || name === 'RightShoulder') return 0.05 * H;
+  if (name === 'LeftHand' || name === 'RightHand' ||
+      name === 'LeftFoot' || name === 'RightFoot' ||
+      name === 'LeftToeBase' || name === 'RightToeBase') return 0.06 * H;
+  if (/Hand(Thumb|Index|Middle|Ring|Pinky)/.test(name)) return 0.025 * H;
+  return 0.05 * H;
+}
+
+// ── Heat-diffusion source generation ─────────────────────────────────────────
+// For every bone, vertices within a bone-specific geodesic neighbourhood of the
+// bone segment become heat sources (value 1). The side gate keeps left/right
+// limb sources on their own side, so diffusion cannot carry them across the
+// body midline. The output field is 0/1; smoothing happens in diffuseWeightField.
+function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H) {
+  const count = positions.length / 3;
+  const nB = segList.length;
+  const field = new Float32Array(count * nB);
+  const sourceMask = new Uint8Array(count * nB);
+  const sideMargin = 0.02 * H;
+
+  for (let v = 0; v < count; v++) {
+    const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+    const ctr = centerAtY(p[1]);
+    const sd = leftAxisValid
+      ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
+      : p[0] - ctr[0];
+
+    for (let b = 0; b < nB; b++) {
+      const seg = segList[b];
+      const { d } = distPointSegmentFull(p, seg[0], seg[1]);
+      const radius = boneSourceRadius(JOINT_ORDER[b], H);
+
+      // Soft side gate for left/right limb bones.
+      const side = boneSide[b];
+      let gate = 1;
+      if (side !== 0) {
+        const signed = side * sd;
+        const g = (signed + sideMargin) / (2 * sideMargin);
+        gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g);
+      }
+
+      if (gate > 0.3 && d < radius) {
+        const idx = v * nB + b;
+        field[idx] = 1;
+        sourceMask[idx] = 1;
+      }
+    }
+  }
+  return { field, sourceMask };
+}
+
+// ── Dirichlet heat diffusion on the welded mesh graph ────────────────────────
+// Repeatedly Laplacian-smooth each bone's heat field while clamping source
+// vertices back to 1.0 after every pass. This is a discrete approximation of
+// the heat kernel (I - λL)u = δ with Dirichlet boundary conditions at the bone
+// sources. The result is a smooth, geometry-aware weight field that follows the
+// mesh surface instead of jumping through empty space.
+function diffuseWeightField(W, nBones, adjacency, sourceMask, iters, lambda) {
+  const { repOf, adjSet, count } = adjacency;
+
+  // Collapse duplicates onto their representative so seams are watertight.
+  const repCount = new Int32Array(count);
+  for (let v = 0; v < count; v++) {
+    const r = repOf[v];
+    if (r === v) continue;
+    repCount[r]++;
+    for (let b = 0; b < nBones; b++) W[r * nBones + b] += W[v * nBones + b];
+  }
+  for (let r = 0; r < count; r++) {
+    if (repCount[r] === 0) continue;
+    const inv = 1 / (repCount[r] + 1);
+    for (let b = 0; b < nBones; b++) W[r * nBones + b] *= inv;
+  }
+
+  const tmp = new Float32Array(W.length);
+  for (let it = 0; it < iters; it++) {
+    for (const [r, nbrs] of adjSet) {
+      const n = nbrs.size;
+      if (n === 0) continue;
+      const base = r * nBones;
+      for (let b = 0; b < nBones; b++) {
+        const idx = base + b;
+        if (sourceMask[idx]) { tmp[idx] = 1; continue; }
+        let acc = 0;
+        for (const nb of nbrs) acc += W[nb * nBones + b];
+        tmp[idx] = W[idx] * (1 - lambda) + (acc / n) * lambda;
+      }
+    }
+    for (const [r] of adjSet) {
+      const base = r * nBones;
+      for (let b = 0; b < nBones; b++) {
+        const idx = base + b;
+        W[idx] = sourceMask[idx] ? 1 : tmp[idx];
+      }
+    }
+  }
+
+  // Broadcast back to duplicated seam vertices.
+  for (let v = 0; v < count; v++) {
+    const r = repOf[v];
+    if (r === v) continue;
+    for (let b = 0; b < nBones; b++) W[v * nBones + b] = W[r * nBones + b];
+  }
+}
+
+// ── Rigid anatomical zones ───────────────────────────────────────────────────
+// Returns a per-vertex/per-bone field that overrides diffusion in regions that
+// should remain rigid (head, hands, feet, torso core). Values are normalized per
+// vertex; where no zone applies the row is all zero and the caller keeps the
+// diffused weights.
+function computeRigidZones(positions, joints, boneIndex, H) {
+  const count = positions.length / 3;
+  const nB = Object.keys(boneIndex).length;
+  const zone = new Float32Array(count * nB);
+
+  const set = (v, name, w) => {
+    const b = boneIndex[name];
+    if (b != null) zone[v * nB + b] = w;
+  };
+
+  const headY = joints.Neck[1] - 0.02 * H;
+  const footY = Math.min(joints.LeftFoot[1], joints.RightFoot[1]) + 0.05 * H;
+  const torsoBottom = joints.Hips[1] - 0.04 * H;
+  const torsoTop = joints.Spine2[1] + 0.04 * H;
+
+  for (let v = 0; v < count; v++) {
+    const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+
+    // Head zone: above neck, close to head joint. Generous radius catches
+    // disconnected hair/helmet geometry that shares no edges with the face.
+    if (p[1] >= headY && vec3Dist(p, joints.Head) < 0.30 * H) {
+      set(v, 'Head', 1);
+      continue;
+    }
+
+    // Hand zones: close to the hand joint. We skip the forearm comparison so
+    // the palm and nearby floating gloves stay locked to the hand.
+    const lHand = vec3Dist(p, joints.LeftHand);
+    const rHand = vec3Dist(p, joints.RightHand);
+    if (lHand < rHand && lHand < 0.06 * H) { set(v, 'LeftHand', 1); continue; }
+    if (rHand <= lHand && rHand < 0.06 * H) { set(v, 'RightHand', 1); continue; }
+
+    // Foot zones: low on the body, close to foot/toe chain.
+    if (p[1] <= footY) {
+      const lFoot = distPointSegmentFull(p, joints.LeftLeg, joints.LeftFoot).d;
+      const lToe = distPointSegmentFull(p, joints.LeftFoot, joints.LeftToeBase).d;
+      const rFoot = distPointSegmentFull(p, joints.RightLeg, joints.RightFoot).d;
+      const rToe = distPointSegmentFull(p, joints.RightFoot, joints.RightToeBase).d;
+      const best = Math.min(lFoot, lToe, rFoot, rToe);
+      if (best < 0.08 * H) {
+        if (best === lFoot) { set(v, 'LeftFoot', 1); continue; }
+        if (best === lToe) { set(v, 'LeftToeBase', 1); continue; }
+        if (best === rFoot) { set(v, 'RightFoot', 1); continue; }
+        if (best === rToe) { set(v, 'RightToeBase', 1); continue; }
+      }
+    }
+
+    // Torso core: inside the torso cylinder and not close to a limb segment.
+    if (p[1] >= torsoBottom && p[1] <= torsoTop) {
+      const spineT = (p[1] - joints.Hips[1]) / Math.max(joints.Spine2[1] - joints.Hips[1], 0.01 * H);
+      const spinePoint = [
+        joints.Hips[0] + (joints.Spine2[0] - joints.Hips[0]) * spineT,
+        p[1],
+        joints.Hips[2] + (joints.Spine2[2] - joints.Hips[2]) * spineT,
+      ];
+      const dSpine = vec3Dist(p, spinePoint);
+      if (dSpine < 0.12 * H) {
+        // Blend between Hips and Spine chain based on height.
+        if (spineT < 0.20) { set(v, 'Hips', 0.7); set(v, 'Spine', 0.3); }
+        else if (spineT < 0.45) { set(v, 'Spine', 0.5); set(v, 'Spine1', 0.5); }
+        else if (spineT < 0.70) { set(v, 'Spine1', 0.5); set(v, 'Spine2', 0.5); }
+        else { set(v, 'Spine2', 0.7); set(v, 'Neck', 0.3); }
+        continue;
+      }
+    }
+  }
+  return zone;
+}
+
+// Blend the diffused field with the rigid-zone overrides. `zoneBlend` controls
+// how dominant the rigid zone is (0.8 = 80% zone, 20% diffused).
+function blendRigidZones(field, zone, nBones, zoneBlend) {
+  const count = field.length / nBones;
+  const blend1 = 1 - zoneBlend;
+  for (let v = 0; v < count; v++) {
+    const base = v * nBones;
+    let zoneTotal = 0;
+    for (let b = 0; b < nBones; b++) zoneTotal += zone[base + b];
+    if (zoneTotal <= 0) continue;
+    for (let b = 0; b < nBones; b++) {
+      field[base + b] = zone[base + b] * zoneBlend + field[base + b] * blend1;
+    }
+  }
+}
+
+// Per-hand finger offsets in hand-local space. Y points toward the digits,
+// X spans across the palm (positive = thumb side on the left hand), Z is palm
+// normal. Values are fractions of the detected finger length.
+const FINGER_DEFS = [
+  { name: 'Thumb',  offsets: [[0.25, 0.12, 0.02], [0.22, 0.40, 0.05], [0.18, 0.68, 0.06]] },
+  { name: 'Index',  offsets: [[0.32, 0.06, 0.00], [0.32, 0.38, 0.00], [0.32, 0.72, 0.00]] },
+  { name: 'Middle', offsets: [[0.10, 0.06, 0.00], [0.10, 0.42, 0.00], [0.10, 0.78, 0.00]] },
+  { name: 'Ring',   offsets: [[-0.12, 0.06, 0.00], [-0.12, 0.40, 0.00], [-0.12, 0.74, 0.00]] },
+  { name: 'Pinky',  offsets: [[-0.34, 0.05, 0.00], [-0.34, 0.32, 0.00], [-0.34, 0.60, 0.00]] },
+];
+
+// Append Mixamo-style finger joints to the `joints` record. Fingers are
+// positioned procedurally from the hand orientation and character height, so
+// they work on meshes with no explicit finger geometry (they simply collapse
+// near the palm) and provide a reasonable starting pose for detailed hand meshes.
+function appendFingerJoints(joints, H) {
+  const handLen = Math.hypot(
+    joints.LeftHand[0] - joints.LeftForeArm[0],
+    joints.LeftHand[1] - joints.LeftForeArm[1],
+    joints.LeftHand[2] - joints.LeftForeArm[2]
+  );
+  const fingerLen = Math.min(0.14 * H, handLen * 1.6);
+  if (fingerLen <= 1e-4) return;
+
+  for (const side of ['Left', 'Right']) {
+    const handName = side + 'Hand';
+    const foreName = side + 'ForeArm';
+    const handPos = joints[handName];
+    const forePos = joints[foreName];
+    if (!handPos || !forePos) continue;
+    const dir = vec3Normalize(vec3Subtract(handPos, forePos));
+    const forward = [0, 0, 1];
+    const up = side === 'Left' ? forward : [-forward[0], -forward[1], -forward[2]];
+    const handRot = lookRotation(dir, Math.abs(vec3Dot(dir, up)) > 0.999 ? [0, 1, 0] : up);
+
+    // Mirror X offsets for the right hand so the thumb stays on the inner side.
+    const mirror = side === 'Right' ? -1 : 1;
+    for (const { name: fingerName, offsets } of FINGER_DEFS) {
+      for (let i = 0; i < 3; i++) {
+        const off = offsets[i];
+        const local = [off[0] * mirror * fingerLen, off[1] * fingerLen, off[2] * fingerLen];
+        const w = rotateVec3(local, handRot);
+        joints[`${side}Hand${fingerName}${i + 1}`] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
+      }
+    }
+  }
+}
+
 // ── Main: rig a skinless GLB ─────────────────────────────────────────────────
 /**
  * @param {Buffer|Uint8Array} buffer skinless GLB
@@ -1915,7 +2518,10 @@ export async function autoRigGLB(buffer, options = {}) {
   // canonical joint — adjusting them moves a handful of bones and scatters the
   // rest, producing a broken pose. For those, strip the useless rig and build a
   // fresh Mixamo skeleton from the markers (same as the skinless path).
-  if (root.listSkins().length > 0) {
+  if (root.listSkins().length > 0 && options.forceRebuild) {
+    console.log('[autorig] forceRebuild requested — stripping existing rig and rebuilding from markers.');
+    stripExistingRig(doc);
+  } else if (root.listSkins().length > 0) {
     let mappable = 0;
     const allNorms = new Set();
     for (const skin of root.listSkins()) {
@@ -2023,6 +2629,8 @@ export async function autoRigGLB(buffer, options = {}) {
   // 180° off the body (crossed arms, twisted limbs). So for -Z characters the
   // whole skeleton binds with a 180° Y rotation (on the root; children inherit).
   const flip = fwdSign === -1;
+  appendFingerJoints(joints, H);
+  const { worldRots, localRots } = computeJointRotations(joints, flip);
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
   for (const name of JOINT_ORDER) {
@@ -2032,13 +2640,15 @@ export async function autoRigGLB(buffer, options = {}) {
     if (parentName) {
       const p = joints[parentName];
       const d = [world[0] - p[0], world[1] - p[1], world[2] - p[2]];
-      // Parent world rotation is R180y when flipped: local = R180⁻¹ · Δworld
-      localT = flip ? [-d[0], d[1], -d[2]] : d;
+      // Convert world-space offset to parent's local space so the joint node
+      // hierarchy reproduces the intended world positions exactly.
+      localT = rotateVec3(d, qInvert(worldRots[parentName]));
     } else {
       localT = world.slice();
     }
-    const node = doc.createNode(name).setTranslation(localT);
-    if (!parentName && flip) node.setRotation([0, 1, 0, 0]); // 180° about Y
+    const node = doc.createNode(name)
+      .setTranslation(localT)
+      .setRotation(localRots[name]);
     jointNodes.set(name, node);
     if (parentName) jointNodes.get(parentName).addChild(node);
   }
@@ -2046,18 +2656,12 @@ export async function autoRigGLB(buffer, options = {}) {
   scene.addChild(jointNodes.get('Hips'));
 
   // ── 3. Inverse bind matrices ───────────────────────────────────────────────
-  // W_bind = T(p)·R, with R = identity or R180y. IBM = inv(W_bind) = R⁻¹·T(-p).
+  // W_bind = T(p)·R. IBM = inv(W_bind) = R⁻¹·T(-p).
   const ibmData = new Float32Array(JOINT_ORDER.length * 16);
   JOINT_ORDER.forEach((name, i) => {
-    const [px, py, pz] = joints[name];
-    const m = MAT4_IDENTITY.slice();
-    if (flip) {
-      m[0] = -1; m[10] = -1;             // diag(-1, 1, -1) = R180y
-      m[12] = px; m[13] = -py; m[14] = pz; // -R180y·p
-    } else {
-      m[12] = -px; m[13] = -py; m[14] = -pz;
-    }
-    ibmData.set(m, i * 16);
+    const W = composeMat4(joints[name], worldRots[name], [1, 1, 1]);
+    const IBM = invertRigidMat4(W);
+    ibmData.set(IBM, i * 16);
   });
   const ibmAcc = doc.createAccessor('autorig_ibm')
     .setType('MAT4')
@@ -2117,10 +2721,8 @@ export async function autoRigGLB(buffer, options = {}) {
     return last[1];
   };
 
-  const sideMargin = 0.02 * H;       // soft blend half-width around the midline
-  const eps = (0.01 * H) ** 2;
-  const CUTOFF = 2.2;
   const nB = segList.length;
+  const boneIndex = Object.fromEntries(JOINT_ORDER.map((n, i) => [n, i]));
 
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
@@ -2130,65 +2732,35 @@ export async function autoRigGLB(buffer, options = {}) {
       const count = arr.length / 3;
       const indices = prim.getIndices()?.getArray() || null;
 
-      // Dense per-vertex weight field (count × nB), built from proximity with a
-      // SOFT side gate, then Laplacian-smoothed across the mesh graph, then
-      // reduced to the glTF 4-influence limit.
-      const field = new Float32Array(count * nB);
-      const dists = new Float32Array(nB);
-
-      for (let v = 0; v < count; v++) {
-        const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
-        const ctr = centerAtY(p[1]);
-        // Signed distance from the midline along the anatomical left axis.
-        const sd = leftAxisValid
-          ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
-          : p[0] - ctr[0];
-
-        let dMin = Infinity;
-        for (let b = 0; b < nB; b++) {
-          const d = distPointSegment(p, segList[b][0], segList[b][1]);
-          dists[b] = d;
-          if (d < dMin) dMin = d;
-        }
-        const dMax = dMin * CUTOFF;
-
-        let total = 0;
-        const base = v * nB;
-        for (let b = 0; b < nB; b++) {
-          const d = dists[b];
-          if (d > dMax) continue;
-          let w = 1 / ((d * d + eps) * (d * d + eps));
-          // Soft side gate: a Left bone fades out as the vertex crosses to the
-          // right of the midline (and vice-versa) over a 2·sideMargin band, so
-          // inner thighs / cross-body bleed vanish without a hard cut that the
-          // smoothing pass would otherwise have to fight.
-          const side = boneSide[b];
-          if (side !== 0) {
-            const signed = side * sd; // >0 = correct side
-            const g = (signed + sideMargin) / (2 * sideMargin);
-            const gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g); // smoothstep
-            w *= gate;
-          }
-          field[base + b] = w;
-          total += w;
-        }
-        // Fallback: no bone survived the gate (vertex far off to one side) →
-        // assign full weight to the unconditionally nearest bone, gate ignored.
-        if (total <= 0) {
-          let nb = 0, nd = Infinity;
-          for (let b = 0; b < nB; b++) if (dists[b] < nd) { nd = dists[b]; nb = b; }
-          field[base + nb] = 1;
-        }
-      }
-
-      // ── Laplacian weight smoothing (crease-free joints) ────────────────────
+      // ── Heat-diffusion skin weights ────────────────────────────────────────
+      // Bone sources are pinned to 1.0 and diffused over the welded mesh graph.
+      // This produces geometry-aware blending that follows the surface instead
+      // of crossing through empty space. Rigid anatomical zones are blended in
+      // afterwards to keep the head, hands, feet and torso core from warping.
       const weldEps = 1e-4 * H;
       const adjacency = buildVertexAdjacency(arr, indices, weldEps);
-      smoothWeightField(field, nB, adjacency, 5, 0.6);
+
+      const { field, sourceMask } = computeBoneSources(arr, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H);
+      diffuseWeightField(field, nB, adjacency, sourceMask, 10, 0.5);
+
+      const zoneField = computeRigidZones(arr, joints, boneIndex, H);
+      blendRigidZones(field, zoneField, nB, 0.85);
 
       // ── Reduce to top-4 influences + normalize ─────────────────────────────
       const jointsOut = new Uint8Array(count * 4);
       const weightsOut = new Float32Array(count * 4);
+      // Precompute nearest bone per vertex for the zero-weight fallback.
+      const nearestBone = new Uint8Array(count);
+      for (let v = 0; v < count; v++) {
+        const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
+        let nb = 0, nd = Infinity;
+        for (let b = 0; b < nB; b++) {
+          const d = distPointSegment(p, segList[b][0], segList[b][1]);
+          if (d < nd) { nd = d; nb = b; }
+        }
+        nearestBone[v] = nb;
+      }
+
       for (let v = 0; v < count; v++) {
         const base = v * nB;
         const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
@@ -2201,10 +2773,15 @@ export async function autoRigGLB(buffer, options = {}) {
         }
         let total = 0;
         for (const [bi, w] of best) if (bi >= 0) total += w;
+        // Safety fallback for vertices that escaped every source and zone.
+        if (total <= 0) {
+          best[0] = [nearestBone[v], 1];
+          total = 1;
+        }
         for (let k = 0; k < 4; k++) {
           const [b, w] = best[k];
           jointsOut[v * 4 + k] = b >= 0 ? b : 0;
-          weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : (k === 0 ? 1 : 0);
+          weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : 0;
         }
       }
 

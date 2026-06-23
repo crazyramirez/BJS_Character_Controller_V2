@@ -1,0 +1,78 @@
+
+  BJS Character Controller Builder
+  → http://localhost:3000/builder.html
+
+[autorig] test_humanoid.glb (11 KB), custom joints: 0
+[autorig] Ignoring 4 non-body mesh(es) (ground/props/lights) for rigging.
+prune: No unused properties found.
+[autorig] Done. Output: 17 KB
+[autorig-joints] test_humanoid.glb (11 KB)
+[autorig] Ignoring 4 non-body mesh(es) (ground/props/lights) for rigging.
+[analyze] character_animated_1.glb (18536 KB)
+[autorig-joints] character.glb (18536 KB)
+[analyze] 3d_character_young_boy.glb (2907 KB)
+[merge] char=character.glb (2.84 MB)
+[merge] anim=animations-basic.glb (1.64 MB)
+[merge] Stripping synthetic root joint: "GLTF_created_0_rootJoint" from skin: ""
+[merge] Detected character pose style: CUSTOM
+[merge] Generating virtual T-pose alignment...
+[merge] Detected arm droop: 59.4° → A-pose correction enabled
+[merge] Root-motion vertical scale (hip-above-foot): char 0.893 / anim 0.955 = 0.935
+prune: No unused properties found.
+[merge] Done. Output: 3.31 MB
+[analyze] merged.glb (3386 KB)
+[autorig-joints] character.glb (2907 KB)
+[autorig] Ignoring 7 non-body mesh(es) (ground/props/lights) for rigging.
+[autorig] character.glb (2907 KB), custom joints: 22
+prune: No unused properties found.
+[autorig] Done. Output: 2898 KB
+[analyze] rigged.glb (2898 KB)
+[merge] char=character.glb (2.83 MB)
+[merge] anim=animations-basic.glb (1.64 MB)
+[merge] Stripping synthetic root joint: "GLTF_created_0_rootJoint" from skin: ""
+[merge] Detected character pose style: CUSTOM
+[merge] Generating virtual T-pose alignment...
+[merge] Detected arm droop: 59.4° → A-pose correction enabled
+[merge] Root-motion vertical scale (hip-above-foot): char 0.840 / anim 0.955 = 0.880
+prune: No unused properties found.
+[merge] Done. Output: 3.31 MB
+[analyze] merged.glb (3386 KB)
+[analyze] character_animated_4.glb (232 KB)
+[merge] char=character.glb (0.23 MB)
+[merge] anim=animations-basic.glb (1.64 MB)
+[merge] Stripping synthetic root joint: "_rootJoint" from skin: ""
+[merge] Detected character pose style: T-POSE
+[merge] Character already in T-pose — skipping virtual T-pose adjustment.
+[merge] Detected arm droop: 2.7° → near T-pose, no correction needed
+[merge] Root-motion vertical scale (hip-above-foot): char 1.085 / anim 0.955 = 1.136
+prune: No unused properties found.
+[merge] Done. Output: 1.23 MB
+[analyze] merged.glb (1256 KB)
+[autorig-joints] character.glb (232 KB)
+[autorig] character.glb (232 KB), custom joints: 22
+prune: No unused properties found.
+[autorig] Done. Output: 216 KB
+[analyze] rigged.glb (216 KB)
+[merge] char=character.glb (0.21 MB)
+[merge] anim=animations-basic.glb (1.64 MB)
+[merge] Stripping synthetic root joint: "_rootJoint" from skin: ""
+[merge] Detected character pose style: T-POSE
+[merge] Character already in T-pose — skipping virtual T-pose adjustment.
+[merge] Detected arm droop: 2.7° → near T-pose, no correction needed
+[merge] Root-motion vertical scale (hip-above-foot): char 1.085 / anim 0.955 = 1.136
+prune: Removed types... Accessor (94)
+[merge] Done. Output: 1.22 MB
+[analyze] merged.glb (1246 KB)
+[merge] char=character.glb (0.21 MB)
+[merge] anim=animations-basic.glb (1.64 MB)
+[merge] Stripping synthetic root joint: "_rootJoint" from skin: ""
+[merge] Detected character pose style: T-POSE
+[merge] Character already in T-pose — skipping virtual T-pose adjustment.
+[merge] Detected arm droop: 2.7° → near T-pose, no correction needed
+[merge] Root-motion vertical scale (hip-above-foot): char 1.085 / anim 0.955 = 1.136
+prune: Removed types... Accessor (94)
+[merge] Done. Output: 1.22 MB
+[analyze] character_animated_1.glb (18536 KB)
+[analyze] character_animated_1.glb (18536 KB)
+[analyze] character_animated_1.glb (18536 KB)
+[analyze] character_animated_1.glb (18536 KB)
