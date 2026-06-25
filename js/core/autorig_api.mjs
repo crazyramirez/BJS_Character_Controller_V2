@@ -1955,6 +1955,13 @@ const HIERARCHY = {
   RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
   RightUpLeg: 'Hips', RightLeg: 'RightUpLeg', RightFoot: 'RightLeg', RightToeBase: 'RightFoot',
+
+  // Twist bones are declared after their real first child so FIRST_CHILD_OF
+  // stays aimed at the next major joint (e.g. LeftArm → LeftForeArm).
+  LeftArmTwist: 'LeftArm', LeftForeArmTwist: 'LeftForeArm',
+  RightArmTwist: 'RightArm', RightForeArmTwist: 'RightForeArm',
+  LeftUpLegTwist: 'LeftUpLeg', LeftLegTwist: 'LeftLeg',
+  RightUpLegTwist: 'RightUpLeg', RightLegTwist: 'RightLeg',
 };
 const JOINT_ORDER = Object.keys(HIERARCHY);
 
@@ -1993,6 +2000,12 @@ function computeJointRotations(joints, flipRoot180 = false) {
   const isRight = (name) => name.startsWith('Right');
 
   for (const name of JOINT_ORDER) {
+    // Twist bones share the parent bone's orientation so their local bind
+    // rotation is identity and retargeted twist channels apply cleanly.
+    if (/Twist$/.test(name)) {
+      worldRots[name] = worldRots[CHILD_OF[name]];
+      continue;
+    }
     const child = FIRST_CHILD_OF[name];
     let dir;
     if (child) {
@@ -2097,6 +2110,24 @@ function boneSegments(joints, H) {
     RightFoot: seg('RightFoot', 'RightToeBase'),
     RightToeBase: ext('RightToeBase', [0, 0, 0.05 * H * Math.sign(joints.RightToeBase[2] - joints.RightFoot[2] || 1)]),
   };
+
+  // Twist-bone segments run through the middle of their parent bone so the
+  // diffusion step has a heat source in the limb mid-section.
+  const midSeg = (a, b, t0 = 0.2, t1 = 0.8) => {
+    const lerp = (v0, v1, t) => v0 + (v1 - v0) * t;
+    return [
+      [lerp(joints[a][0], joints[b][0], t0), lerp(joints[a][1], joints[b][1], t0), lerp(joints[a][2], joints[b][2], t0)],
+      [lerp(joints[a][0], joints[b][0], t1), lerp(joints[a][1], joints[b][1], t1), lerp(joints[a][2], joints[b][2], t1)],
+    ];
+  };
+  segments.LeftArmTwist = midSeg('LeftShoulder', 'LeftArm');
+  segments.LeftForeArmTwist = midSeg('LeftArm', 'LeftHand');
+  segments.RightArmTwist = midSeg('RightShoulder', 'RightArm');
+  segments.RightForeArmTwist = midSeg('RightArm', 'RightHand');
+  segments.LeftUpLegTwist = midSeg('Hips', 'LeftLeg');
+  segments.LeftLegTwist = midSeg('LeftUpLeg', 'LeftFoot');
+  segments.RightUpLegTwist = midSeg('Hips', 'RightLeg');
+  segments.RightLegTwist = midSeg('RightUpLeg', 'RightFoot');
 
   // Finger segments (5 digits × 3 joints per hand).
   for (const side of ['Left', 'Right']) {
@@ -2231,6 +2262,66 @@ function vec3Dist(a, b) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
+// After the top-4 normalization, steal a fraction of the parent bone's weight
+// in the limb mid-section and give it to the corresponding twist bone. This
+// guarantees the twist bone has real influence without having to win the
+// global heat-diffusion competition against the parent/child bones.
+function redistributeTwistWeights(positions, jointsOut, weightsOut, parentIdx, twistIdx, parentSeg, H, fraction = 0.4) {
+  const radius = 0.04 * H;
+  const count = positions.length / 3;
+  const [a, b] = parentSeg;
+  const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const abLen2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+
+  for (let v = 0; v < count; v++) {
+    const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+    const ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let t = abLen2 > 0 ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / abLen2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    if (t < 0.25 || t > 0.75) continue;
+
+    const closest = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    const d = Math.hypot(p[0] - closest[0], p[1] - closest[1], p[2] - closest[2]);
+    if (d > radius) continue;
+
+    const base = v * 4;
+    let parentSlot = -1, twistSlot = -1, minSlot = -1, minW = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const idx = jointsOut[base + k];
+      const w = weightsOut[base + k];
+      if (idx === parentIdx) parentSlot = k;
+      if (idx === twistIdx) twistSlot = k;
+      if (w < minW) { minW = w; minSlot = k; }
+    }
+    if (parentSlot < 0 || weightsOut[base + parentSlot] <= 1e-6) continue;
+
+    const transfer = weightsOut[base + parentSlot] * fraction;
+    weightsOut[base + parentSlot] -= transfer;
+
+    if (twistSlot >= 0) {
+      weightsOut[base + twistSlot] += transfer;
+    } else {
+      // Avoid evicting the parent if it happens to be the lowest slot.
+      if (minSlot === parentSlot) {
+        minW = Infinity; minSlot = -1;
+        for (let k = 0; k < 4; k++) {
+          if (k === parentSlot) continue;
+          const w = weightsOut[base + k];
+          if (w < minW) { minW = w; minSlot = k; }
+        }
+      }
+      jointsOut[base + minSlot] = twistIdx;
+      weightsOut[base + minSlot] = transfer;
+    }
+
+    let total = 0;
+    for (let k = 0; k < 4; k++) total += weightsOut[base + k];
+    if (total > 0) {
+      for (let k = 0; k < 4; k++) weightsOut[base + k] /= total;
+    }
+  }
+}
+
 // Per-bone source radius used to seed the heat field. Torso/head bones get a
 // larger capture so the chest/hips/skull are fully covered; thin limb bones
 // get a tighter radius to keep elbows/knees sharp.
@@ -2242,6 +2333,7 @@ function boneSourceRadius(name, H) {
       name === 'LeftFoot' || name === 'RightFoot' ||
       name === 'LeftToeBase' || name === 'RightToeBase') return 0.06 * H;
   if (/Hand(Thumb|Index|Middle|Ring|Pinky)/.test(name)) return 0.025 * H;
+  if (/Twist$/.test(name)) return 0.04 * H;
   return 0.05 * H;
 }
 
@@ -2447,6 +2539,25 @@ const FINGER_DEFS = [
 // positioned procedurally from the hand orientation and character height, so
 // they work on meshes with no explicit finger geometry (they simply collapse
 // near the palm) and provide a reasonable starting pose for detailed hand meshes.
+// Place a single twist bone at the midpoint of each major limb segment.
+function appendTwistJoints(joints, H) {
+  const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const pairs = [
+    ['LeftArmTwist', 'LeftShoulder', 'LeftArm'],
+    ['LeftForeArmTwist', 'LeftArm', 'LeftHand'],
+    ['RightArmTwist', 'RightShoulder', 'RightArm'],
+    ['RightForeArmTwist', 'RightArm', 'RightHand'],
+    ['LeftUpLegTwist', 'Hips', 'LeftLeg'],
+    ['LeftLegTwist', 'LeftUpLeg', 'LeftFoot'],
+    ['RightUpLegTwist', 'Hips', 'RightLeg'],
+    ['RightLegTwist', 'RightUpLeg', 'RightFoot'],
+  ];
+  for (const [name, a, b] of pairs) {
+    if (!joints[a] || !joints[b]) continue;
+    joints[name] = lerp3(joints[a], joints[b], 0.5);
+  }
+}
+
 function appendFingerJoints(joints, H) {
   const handLen = Math.hypot(
     joints.LeftHand[0] - joints.LeftForeArm[0],
@@ -2629,6 +2740,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // 180° off the body (crossed arms, twisted limbs). So for -Z characters the
   // whole skeleton binds with a 180° Y rotation (on the root; children inherit).
   const flip = fwdSign === -1;
+  appendTwistJoints(joints, H);
   appendFingerJoints(joints, H);
   const { worldRots, localRots } = computeJointRotations(joints, flip);
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
@@ -2783,6 +2895,12 @@ export async function autoRigGLB(buffer, options = {}) {
           jointsOut[v * 4 + k] = b >= 0 ? b : 0;
           weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : 0;
         }
+      }
+
+      // Carve out mid-limb weight for twist bones so they actually deform skin.
+      for (const twistName of JOINT_ORDER.filter(n => /Twist$/.test(n))) {
+        const parentName = CHILD_OF[twistName];
+        redistributeTwistWeights(arr, jointsOut, weightsOut, boneIndex[parentName], boneIndex[twistName], segments[parentName], H);
       }
 
       prim.setAttribute('JOINTS_0', doc.createAccessor()

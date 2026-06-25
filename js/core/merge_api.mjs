@@ -152,6 +152,18 @@ const BONE_MAP = {
   'pinky_01_r': ['righthandpinky1', 'mixamorig:righthandpinky1', 'pinky1r', 'r_pinky1'],
   'pinky_02_r': ['righthandpinky2', 'mixamorig:righthandpinky2', 'pinky2r', 'r_pinky2'],
   'pinky_03_r': ['righthandpinky3', 'mixamorig:righthandpinky3', 'pinky3r', 'r_pinky3'],
+
+  // ── Twist bones ─────────────────────────────────────────
+  // UE5/Mannequin uses upperarm_twist_01_l etc.; Mixamo-style/custom rigs use
+  // LeftArmTwist / LeftForeArmTwist / LeftUpLegTwist / LeftLegTwist.
+  'upperarm_twist_l': ['leftarmtwist', 'mixamorig:leftarmtwist', 'upperarm_twist_01_l', 'upperarm_twist_02_l', 'upperarm_twist_03_l', 'leftupperarmtwist'],
+  'upperarm_twist_r': ['rightarmtwist', 'mixamorig:rightarmtwist', 'upperarm_twist_01_r', 'upperarm_twist_02_r', 'upperarm_twist_03_r', 'rightupperarmtwist'],
+  'lowerarm_twist_l': ['leftforearmtwist', 'mixamorig:leftforearmtwist', 'lowerarm_twist_01_l', 'leftlowerarmtwist'],
+  'lowerarm_twist_r': ['rightforearmtwist', 'mixamorig:rightforearmtwist', 'lowerarm_twist_01_r', 'rightlowerarmtwist'],
+  'thigh_twist_l': ['leftuplegtwist', 'leftthightwist', 'mixamorig:leftuplegtwist', 'thigh_twist_01_l', 'thigh_twist_02_l', 'leftupperlegtwist'],
+  'thigh_twist_r': ['rightuplegtwist', 'rightthightwist', 'mixamorig:rightuplegtwist', 'thigh_twist_01_r', 'thigh_twist_02_r', 'rightupperlegtwist'],
+  'calf_twist_l': ['leftlegtwist', 'leftcalftwist', 'leftshintwist', 'mixamorig:leftlegtwist', 'calf_twist_01_l', 'leftlowerlegtwist'],
+  'calf_twist_r': ['rightlegtwist', 'rightcalftwist', 'rightshintwist', 'mixamorig:rightlegtwist', 'calf_twist_01_r', 'rightlowerlegtwist'],
 };
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -2690,3 +2702,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const buf = await io.writeBinary(charDoc);
   return Buffer.from(buf);
 }
+
+// Exposed for unit tests that verify name-normalization coverage.
+export { BONE_MAP, aliasNorm };
+

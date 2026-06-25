@@ -208,4 +208,43 @@ describe('autoRigGLB skin weights', () => {
     const dDist = Math.hypot(dist[0] - hand[0], dist[1] - hand[1], dist[2] - hand[2]);
     assert.ok(dDist > dProx, 'expected index fingertip to be farther from hand than knuckle');
   });
+
+  it('creates twist bones and assigns them weight in the limb mid-section', async () => {
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
+    const { prims, jointWorld, jointIndex } = await inspectRig(buffer);
+    for (const name of ['LeftArmTwist', 'LeftForeArmTwist', 'RightArmTwist', 'RightForeArmTwist',
+                         'LeftUpLegTwist', 'LeftLegTwist', 'RightUpLegTwist', 'RightLegTwist']) {
+      assert.ok(jointIndex[name] != null, `expected ${name}`);
+      const p = jointWorld[name];
+      assert.ok(Number.isFinite(p[0]) && Number.isFinite(p[1]) && Number.isFinite(p[2]), `${name} has finite position`);
+    }
+
+    // Check that some vertices around the middle of the left upper arm carry
+    // LeftArmTwist weight.
+    const shoulder = jointWorld.LeftShoulder;
+    const elbow = jointWorld.LeftArm;
+    const mid = [
+      (shoulder[0] + elbow[0]) * 0.5,
+      (shoulder[1] + elbow[1]) * 0.5,
+      (shoulder[2] + elbow[2]) * 0.5,
+    ];
+    const H = jointWorld.Head[1] * 1.15;
+    const twistIdx = jointIndex.LeftArmTwist;
+    let checked = 0, good = 0;
+    for (const prim of prims) {
+      for (let v = 0; v < prim.count; v++) {
+        const p = [prim.positions[v * 3], prim.positions[v * 3 + 1], prim.positions[v * 3 + 2]];
+        const d = Math.hypot(p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]);
+        if (d > 0.04 * H) continue;
+        let w = 0;
+        for (let k = 0; k < 4; k++) {
+          if (prim.joints[v * 4 + k] === twistIdx) w += prim.weights[v * 4 + k];
+        }
+        checked++;
+        if (w >= 0.15) good++;
+      }
+    }
+    assert.ok(checked > 0, 'expected mid-upper-arm vertices to check');
+    assert.ok(good >= checked * 0.3, `only ${good}/${checked} mid-upper-arm vertices have meaningful LeftArmTwist weight`);
+  });
 });
