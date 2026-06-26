@@ -347,6 +347,11 @@
                     title="Re-center every marker to the middle of the body along the current view depth.">
                     🧲 Snap all markers to body
                   </button>
+                  <button id="btn-autorig-mirror-lr" class="btn-action btn-secondary"
+                    style="margin-top: 6px; width: 100%;"
+                    title="Swap Left ↔ Right markers when the heuristic places them on the wrong sides.">
+                    ↔ Mirror Left / Right
+                  </button>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
@@ -355,8 +360,25 @@
                     title="Show the skeleton that will be generated, updated live as you move the markers.">
                     <input type="checkbox" id="autorig-show-skeleton" checked> Show skeleton preview
                   </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px; display: flex; align-items: center; gap: 8px;"
+                    title="How many fingers per hand the generated skeleton will have. Low-poly characters often use 2 (thumb + index).">
+                    <span>Hand fingers:</span>
+                    <select id="autorig-finger-count" style="flex:1; padding: 4px; border-radius: 4px; border: 1px solid #444; background: #1f2937; color: #e5e7eb;">
+                      <option value="1">1 (thumb only)</option>
+                      <option value="2">2 (thumb + index)</option>
+                      <option value="3">3</option>
+                      <option value="4">4</option>
+                      <option value="5" selected>5 (full hand)</option>
+                    </select>
+                  </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px; display: flex; align-items: center; gap: 8px;"
+                    title="Spread the knees outward in the bind pose so legs don't visually narrow/cross when crouching. Start with 3-6° for low-poly characters.">
+                    <span>Leg splay:</span>
+                    <input type="range" id="autorig-leg-splay" min="0" max="15" step="0.5" value="0" style="flex:1;">
+                    <span id="autorig-leg-splay-val" style="min-width: 36px; text-align: right;">0°</span>
+                  </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
-                    title="Show the 30 finger joint markers so you can adjust knuckles and fingertips.">
+                    title="Show the finger joint markers so you can adjust knuckles and fingertips.">
                     <input type="checkbox" id="autorig-finger-mode"> Edit fingers (detailed mode)
                   </label>
                   <div class="autorig-btn-row">
@@ -391,6 +413,18 @@
                 <span>Merges with current character</span>
                 <input type="file" id="anim-file-input" accept=".glb,.fbx" style="display:none;">
               </div>
+            </div>
+
+            <!-- Quick-merge bundled animation packs -->
+            <div class="quick-anim-packs" style="display:flex;gap:10px;margin-top:12px;">
+              <button id="btn-quick-anim-basic" class="btn-add-anim" style="flex:1;justify-content:center;"
+                title="Merge bundled assets/animations-basic.glb">
+                ⚡ Merge Basic Pack
+              </button>
+              <button id="btn-quick-anim-pro" class="btn-add-anim" style="flex:1;justify-content:center;"
+                title="Merge bundled assets/animations-pro.glb">
+                ⚡ Merge Pro Pack
+              </button>
             </div>
 
             <!-- Merge progress -->

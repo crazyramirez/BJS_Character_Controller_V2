@@ -2240,7 +2240,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         const cHAF = Math.abs(_restWorldPos(charDoc, cHip)[1] - _restWorldPos(charDoc, cFoot)[1]);
         const aHAF = Math.abs(_restWorldPos(animDoc, aHip)[1] - _restWorldPos(animDoc, aFoot)[1]);
         if (cHAF > 1e-3 && aHAF > 1e-3) rootMotionVScale = cHAF / aHAF;
-        console.log(`[merge] Root-motion vertical scale (hip-above-foot): char ${cHAF.toFixed(3)} / anim ${aHAF.toFixed(3)} = ${rootMotionVScale.toFixed(3)}`);
+        // Clamp to sane bounds: very stylised/low-poly rigs can produce extreme
+        // ratios that squash/stretch crouch and root-motion animations.
+        const prev = rootMotionVScale;
+        rootMotionVScale = Math.max(0.5, Math.min(2.0, rootMotionVScale));
+        console.log(`[merge] Root-motion vertical scale (hip-above-foot): char ${cHAF.toFixed(3)} / anim ${aHAF.toFixed(3)} = ${prev.toFixed(3)} (clamped ${rootMotionVScale.toFixed(3)})`);
       }
     } catch (e) { /* keep 1.0 */ }
 

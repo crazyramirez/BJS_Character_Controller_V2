@@ -30,6 +30,7 @@ let animationsFilename = 'animations-basic.glb';
 // an already-baked pose. See [[posture_preview_vs_export_parity]].
 let posturePreviewBaked = false;     // true while the loaded GLB already carries the pose
 let _postureRebakeTimer = null;      // debounce for the on-release bake
+let postureBakeAbortController = null; // abort controller for background posture merges
 let cleanPreviewBuffer = null;       // GLB merged with scale/anims but posture=0
 let _enteringLivePreview = false;    // guard while swapping to the clean buffer
 // Scale/Pivot are baked ON RELEASE into this buffer (accumulates onto the previous
@@ -37,6 +38,13 @@ let _enteringLivePreview = false;    // guard while swapping to the clean buffer
 // the same value. originalCharacterGlbBuffer stays pristine for animation imports.
 let scaledCharacterBuffer = null;    // original + accumulated scale/pivot, anim-free
 let _scalePivotBakeTimer = null;     // debounce for scale/pivot on-release bake
+let _scaleBakeInFlight = false;      // a bake POST is running — serialize to avoid races
+let _scaleBakePending = false;       // a new scale change arrived during an in-flight bake
+// After a scale bake, geometry grew by this factor but the config resets to ~1,
+// so applyLiveTransformations would reframe the camera and hide the size change.
+// Hold the factor across the post-bake reload to scale the camera radius once,
+// keeping the same world distance so the new size is actually visible.
+let _scaleBakeCameraFactor = null;
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
@@ -56,7 +64,7 @@ const STANDARD_ANIM_KEYS = [
   { key: 'Jump_Loop', label: 'Jump Mid-Air Loop', defaultKeyword: /jump.*(loop|mid|air)/i },
   { key: 'Jump_Land', label: 'Jump Land', defaultKeyword: /jump.*(land|ground)/i },
   { key: 'Roll', label: 'Dodge Roll', defaultKeyword: /roll/i },
-  { key: 'Punch', label: 'Punch', defaultKeyword: /^(?!.*jab)(?!.*cross).*punch/i },
+  { key: 'Punch', label: 'Punch', defaultKeyword: /^(?!.*kick)(?!.*cross).*(?:punch|jab)/i },
   { key: 'Punch_Jab', label: 'Punch Jab', defaultKeyword: /jab/i },
   { key: 'Punch_Cross', label: 'Punch Cross', defaultKeyword: /cross/i },
   { key: 'Spell_Simple_Enter', label: 'Spell Enter', defaultKeyword: /spell.*enter/i },
@@ -301,27 +309,14 @@ function computeMeshesBoundingRadius(meshes) {
   return Math.max(0.1, center.subtract(max).length());
 }
 
-// Minimum camera radius so the target point never sits inside the character mesh.
-// Computes the farthest world corner of every mesh bounding box from `target`.
-function computeMinCameraRadius(target, meshes) {
-  let maxDist = 0;
-  for (const m of meshes) {
-    if (!m.getBoundingInfo || !m.geometry) continue;
-    m.computeWorldMatrix(true);
-    const corners = m.getBoundingInfo().boundingBox.vectorsWorld;
-    for (const c of corners) {
-      const d = BABYLON.Vector3.Distance(target, c);
-      if (d > maxDist) maxDist = d;
-    }
-  }
-  return Math.max(0.5, maxDist);
-}
-
-// Enforce the camera limit in Auto-Rig mode so zooming in never clips the mesh.
+// Camera zoom floor in Auto-Rig mode. The markers (not the mesh) are what the
+// user edits, so allow getting close enough to grab a single node — including
+// fingers. Floor is a small fraction of scene height, not the full-body radius.
 function updateRigCameraLimits() {
-  if (!camera || !activeCharacter?.rawMeshes?.length) return;
-  const minR = computeMinCameraRadius(camera.target, activeCharacter.rawMeshes);
-  camera.lowerRadiusLimit = minR * 1.02;
+  if (!camera) return;
+  const h = autoRigState?.sceneHeight || 1.8;
+  camera.lowerRadiusLimit = Math.max(h * 0.06, 0.1); // ~11cm on a 1.8m char
+  camera.upperRadiusLimit = Math.max(h * 6, 20);
   if (camera.radius < camera.lowerRadiusLimit) {
     camera.radius = camera.lowerRadiusLimit;
   }
@@ -379,7 +374,15 @@ function applyLiveTransformations() {
       const charRadius = (activeCharacter.boundingRadius || 1.0) * scaleMax;
       camera.lowerRadiusLimit = Math.max(0.5, charRadius * 0.95);
       camera.upperRadiusLimit = 20 * scaleMax;
-      camera.radius = Math.max(camera.lowerRadiusLimit, Math.min(camera.upperRadiusLimit, ctrl.CAM_FOLLOW_DIST));
+      // After a scale bake, DON'T reframe — leave the camera where the user has it
+      // so the size change (bigger OR smaller) is actually visible on screen.
+      // Only clamp into the new limits. Outside the bake, restore follow distance.
+      if (_scaleBakeCameraFactor !== null) {
+        camera.radius = Math.max(camera.lowerRadiusLimit, Math.min(camera.upperRadiusLimit, camera.radius));
+        _scaleBakeCameraFactor = null;
+      } else {
+        camera.radius = Math.max(camera.lowerRadiusLimit, Math.min(camera.upperRadiusLimit, ctrl.CAM_FOLLOW_DIST));
+      }
 
       camera.wheelPrecision = 55 / sy;
       camera.pinchPrecision = 55 / sy;
@@ -396,9 +399,14 @@ function applyLiveTransformations() {
           ptrs.pinchPrecision = 55 / sy;
         }
       }
-      camera.panningSensibility = 1000 / sy;
-      camera.angularSensibilityX = (ctrl._originalSensibilityX || 1000) / sy;
-      camera.angularSensibilityY = (camera.angularSensibilityY || 1000) / sy;
+      // Use FIXED base sensibilities (Babylon ArcRotateCamera default = 1000),
+      // never the live camera value. Reading camera.angularSensibilityY and
+      // dividing by sy each call compounded — every applyLiveTransformations
+      // shrank rotation further until orbit froze after a scale drag.
+      const BASE_SENS = 1000;
+      camera.panningSensibility = BASE_SENS / sy;
+      camera.angularSensibilityX = BASE_SENS / sy;
+      camera.angularSensibilityY = BASE_SENS / sy;
     }
 
     // Sync camera distance HUD slider limits and value
@@ -629,6 +637,7 @@ function setupCharTransformControls() {
   };
   postureSliders.forEach(s => {
     s?.addEventListener('input', onPostureInput);
+    s?.addEventListener('change', schedulePostureRebake); // release → bake in the background
   });
 
   resetBtn?.addEventListener('click', () => {
@@ -1514,8 +1523,58 @@ async function updateSkeletonInfoAfterMerge(mergedBuffer) {
   }
 }
 
-// Posture baking functions removed. Preview now runs entirely with the real-time boneOffsetObserver,
-// and posture is baked on the server only during final export.
+// On posture slider release: bake the posture in the background on the server to update the stored character GLB.
+// The preview scene continues to run in real-time via the boneOffsetObserver to prevent reload glitches.
+function schedulePostureRebake() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return; // observer-only fallback (offline)
+  if (_postureRebakeTimer) clearTimeout(_postureRebakeTimer);
+  _postureRebakeTimer = setTimeout(() => { _postureRebakeTimer = null; rebakePosturePreview(); }, 350);
+}
+
+async function rebakePosturePreview() {
+  if (!isServerAvailable || !originalCharacterGlbBuffer) return;
+  
+  if (postureBakeAbortController) {
+    postureBakeAbortController.abort();
+  }
+  postureBakeAbortController = new AbortController();
+  const { signal } = postureBakeAbortController;
+
+  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
+  const stripAnims = hasAnim || animationsCleared;
+  
+  showMergeProgress(true, 'Baking posture in background…');
+  try {
+    const formData = new FormData();
+    // Bake posture from the scale-baked baseline if it exists (so accumulated
+    // scale/pivot is preserved), else the CLEAN original. Posture is applied once,
+    // not stacked, because the base never carries posture.
+    const postureBase = scaledCharacterBuffer || originalCharacterGlbBuffer;
+    formData.append('character', new Blob([postureBase], { type: 'model/gltf-binary' }), 'character.glb');
+    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
+    // Bake POSTURE only — scale/pivot are already in the baseline geometry (or the
+    // live wrapper applies them), so zero them here to avoid doubling.
+    const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
+    opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
+    opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
+    formData.append('options', JSON.stringify(opts));
+
+    const res = await fetch('/api/merge', { method: 'POST', body: formData, signal });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Server merge failed');
+    }
+    const mergedBuffer = await res.arrayBuffer();
+    characterGlbBuffer = mergedBuffer;          // this is what export uses
+    if (hasAnim) animationsCleared = false;     // only real new anims un-clear; cleared state persists otherwise
+    
+    completeMergeProgress();
+  } catch (err) {
+    if (err.name === 'AbortError') return; // ignore aborts
+    console.error('[posture-rebake] server merge failed:', err);
+    completeMergeProgress();
+  }
+}
 
 // On scale/pivot slider release: fold the current scale/pivot into the geometry
 // (accumulating onto the previous baked result), reload, then reset the sliders to
@@ -1526,12 +1585,26 @@ function scheduleScalePivotBake() {
   const sx = charTransformConfig.SCALE_X, sy = charTransformConfig.SCALE_Y, sz = charTransformConfig.SCALE_Z;
   const neutral = Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6 && Math.abs(sz - 1) < 1e-6;
   if (neutral) return;
+  // A bake is already running — mark that another fold is needed afterwards
+  // instead of POSTing a second concurrent merge (concurrent bakes race on
+  // scaledCharacterBuffer + the config reset, corrupting the final scale).
+  if (_scaleBakeInFlight) { _scaleBakePending = true; return; }
   if (_scalePivotBakeTimer) clearTimeout(_scalePivotBakeTimer);
   _scalePivotBakeTimer = setTimeout(() => { _scalePivotBakeTimer = null; bakeScalePivot(); }, 350);
 }
 
 async function bakeScalePivot() {
   if (!isServerAvailable || !originalCharacterGlbBuffer) return;
+  if (_scaleBakeInFlight) { _scaleBakePending = true; return; }
+  _scaleBakeInFlight = true;
+  _scaleBakePending = false;
+  // Snapshot the scale we are about to fold. If the user moves the slider while
+  // this POST is in flight, the config will hold a NEWER total; on completion we
+  // compute the residual (newTotal / bakedScale) and re-bake that, instead of
+  // blindly resetting to 1 and losing the new value.
+  const bakedSX = charTransformConfig.SCALE_X;
+  const bakedSY = charTransformConfig.SCALE_Y;
+  const bakedSZ = charTransformConfig.SCALE_Z;
   const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
   const stripAnims = hasAnim || animationsCleared;
   showLoading('Applying scale…');
@@ -1549,6 +1622,9 @@ async function bakeScalePivot() {
       'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
     opts.POSE_OFFSETS = {};
     opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
+    // Fold the SNAPSHOT scale, not whatever the live config holds now — the user
+    // may have moved the slider while this POST was scheduled/in flight.
+    opts.SCALE_X = bakedSX; opts.SCALE_Y = bakedSY; opts.SCALE_Z = bakedSZ;
     formData.append('options', JSON.stringify(opts));
 
     const res = await fetch('/api/merge', { method: 'POST', body: formData });
@@ -1560,12 +1636,23 @@ async function bakeScalePivot() {
     scaledCharacterBuffer = merged;   // new accumulated baseline (scale in geometry)
     characterGlbBuffer = merged;      // export uses this
     if (hasAnim) animationsCleared = false;
+    // Geometry changed: any previously remembered rig joints are now stale
+    // (they referred to the pre-scale mesh), so drop the memory to avoid
+    // restoring unscaled marker positions on the next Auto-Rig session.
+    lastAppliedRig = null;
 
-    // Reset SCALE sliders/config to neutral — scale now lives in geometry. Pivot is
-    // NOT touched (it was never baked; it stays a live wrapper offset).
-    charTransformConfig.SCALE_X = 1; charTransformConfig.SCALE_Y = 1; charTransformConfig.SCALE_Z = 1;
-    charTransformConfig.SCALE_UNIFORM = 1;
+    // The baked scale now lives in geometry. Subtract the SNAPSHOT we folded from
+    // the live config — the RESIDUAL is whatever the user added while this POST was
+    // running (1,1,1 if nothing moved). Never hard-reset to 1: that would discard a
+    // concurrent slider move. Divide because scales compose multiplicatively.
+    charTransformConfig.SCALE_X = charTransformConfig.SCALE_X / bakedSX;
+    charTransformConfig.SCALE_Y = charTransformConfig.SCALE_Y / bakedSY;
+    charTransformConfig.SCALE_Z = charTransformConfig.SCALE_Z / bakedSZ;
+    charTransformConfig.SCALE_UNIFORM = charTransformConfig.SCALE_UNIFORM / bakedSY;
     cleanPreviewBuffer = null;        // stale: baseline changed
+    // Geometry grew by the baked factor; keep the camera at the same world
+    // distance after reload so the size change is visible (not auto-reframed).
+    _scaleBakeCameraFactor = bakedSY;
     syncCharTransformToUI();
 
     await _loadGlbIntoScene(merged, 'scaled.glb'); // posturePreviewBaked=false → wrapper re-applies live pivot
@@ -1576,6 +1663,16 @@ async function bakeScalePivot() {
     console.error('[scale-bake] server merge failed:', err);
     hideLoading();
     showToast('Failed to apply scale: ' + err.message, true);
+  } finally {
+    _scaleBakeInFlight = false;
+    // A scale change arrived mid-flight, or the residual is non-neutral → fold it.
+    const residual = Math.abs(charTransformConfig.SCALE_X - 1) > 1e-6 ||
+      Math.abs(charTransformConfig.SCALE_Y - 1) > 1e-6 ||
+      Math.abs(charTransformConfig.SCALE_Z - 1) > 1e-6;
+    if (_scaleBakePending || residual) {
+      _scaleBakePending = false;
+      scheduleScalePivotBake();
+    }
   }
 }
 
@@ -1742,6 +1839,28 @@ async function loadAnimationBatchFile(file) {
 // ═══════════════════════════════════════════════════════════
 async function addSingleAnimationFile(file) {
   await loadAnimationBatchFile(file); // same pipeline — additive merge
+}
+
+// Quick-merge a bundled animation pack shipped under assets/.
+// Fetches the GLB, wraps it in a File, and runs the same merge pipeline.
+async function mergeBundledAnimationPack(assetUrl) {
+  if (!characterGlbBuffer) {
+    showToast('Load a character mesh first!', true);
+    return;
+  }
+  try {
+    showLoading(`Fetching ${assetUrl}…`);
+    const res = await fetch(assetUrl);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const buf = await res.arrayBuffer();
+    const filename = assetUrl.split('/').pop();
+    const file = new File([buf], filename, { type: 'model/gltf-binary' });
+    await loadAnimationBatchFile(file); // same pipeline — server merge + retarget
+  } catch (err) {
+    hideLoading();
+    console.error('Bundled pack merge failed:', err);
+    showToast(`Failed to load ${assetUrl}: ${err.message}`, true);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2637,28 +2756,36 @@ let lastAppliedRig = null; // { joints: {name:[x,y,z]}, forBuffer: ArrayBuffer }
 let skeletonViewer = null;
 
 // Marker color groups (Mixamo-style legend: each anatomical group gets a color)
-const AUTORIG_FINGER_JOINTS = (() => {
+// Finger count is configurable so low-poly characters with 1-4 digits per hand
+// don't get 5 invisible/collapsed finger chains.
+const AUTORIG_ALL_FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
+
+function getAutoRigFingerJoints(fingerCount = 5) {
+  const n = Math.max(1, Math.min(5, Math.round(fingerCount || 5)));
+  const fingers = AUTORIG_ALL_FINGERS.slice(0, n);
   const names = [];
   for (const side of ['Left', 'Right']) {
-    for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+    for (const finger of fingers) {
       for (let i = 1; i <= 3; i++) names.push(`${side}Hand${finger}${i}`);
     }
   }
   return names;
-})();
+}
 
-const AUTORIG_JOINT_GROUPS = [
-  { id: 'head', label: 'Head / Neck', color: '#22d3ee', joints: ['Head', 'Neck'] },
-  { id: 'spine', label: 'Spine', color: '#a78bfa', joints: ['Spine', 'Spine1', 'Spine2'] },
-  { id: 'shoulder', label: 'Shoulders', color: '#60a5fa', joints: ['LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm'] },
-  { id: 'elbow', label: 'Elbows', color: '#fde047', joints: ['LeftForeArm', 'RightForeArm'] },
-  { id: 'wrist', label: 'Wrists', color: '#4ade80', joints: ['LeftHand', 'RightHand'] },
-  { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
-  { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
-  { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
-  // Fingers go last and are shown in the legend only when Edit fingers is on.
-  { id: 'fingers', label: 'Fingers', color: '#fbbf24', joints: AUTORIG_FINGER_JOINTS },
-];
+function getAutoRigJointGroups(fingerCount = 5) {
+  return [
+    { id: 'head', label: 'Head / Neck', color: '#22d3ee', joints: ['Head', 'Neck'] },
+    { id: 'spine', label: 'Spine', color: '#a78bfa', joints: ['Spine', 'Spine1', 'Spine2'] },
+    { id: 'shoulder', label: 'Shoulders', color: '#60a5fa', joints: ['LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm'] },
+    { id: 'elbow', label: 'Elbows', color: '#fde047', joints: ['LeftForeArm', 'RightForeArm'] },
+    { id: 'wrist', label: 'Wrists', color: '#4ade80', joints: ['LeftHand', 'RightHand'] },
+    { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
+    { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
+    { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
+    // Fingers go last and are shown in the legend only when Edit fingers is on.
+    { id: 'fingers', label: 'Fingers', color: '#fbbf24', joints: getAutoRigFingerJoints(fingerCount) },
+  ];
+}
 
 // Friendly anatomical names shown in the hover tooltip
 const AUTORIG_JOINT_LABELS = {
@@ -2670,8 +2797,8 @@ const AUTORIG_JOINT_LABELS = {
   RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
 };
 
-// Auto-generate readable labels for the 30 finger joints.
-for (const name of AUTORIG_FINGER_JOINTS) {
+// Auto-generate readable labels for all possible finger joints (up to 5 digits).
+for (const name of getAutoRigFingerJoints(5)) {
   const side = name.startsWith('Left') ? 'Left' : 'Right';
   const rest = name.slice(side.length); // e.g. "HandIndex1"
   const finger = rest.replace('Hand', '').replace(/\d+$/, '');
@@ -2681,49 +2808,54 @@ for (const name of AUTORIG_FINGER_JOINTS) {
 }
 
 // Parent→child pairs used for the live skeleton preview in Auto-Rig mode.
-const AUTORIG_SKELETON_PREVIEW_HIERARCHY = [
-  ['Hips', 'Spine'],
-  ['Spine', 'Spine1'],
-  ['Spine1', 'Spine2'],
-  ['Spine2', 'Neck'],
-  ['Neck', 'Head'],
-  ['Spine2', 'LeftShoulder'],
-  ['LeftShoulder', 'LeftArm'],
-  ['LeftArm', 'LeftForeArm'],
-  ['LeftForeArm', 'LeftHand'],
-  ['Spine2', 'RightShoulder'],
-  ['RightShoulder', 'RightArm'],
-  ['RightArm', 'RightForeArm'],
-  ['RightForeArm', 'RightHand'],
-  ['Hips', 'LeftUpLeg'],
-  ['LeftUpLeg', 'LeftLeg'],
-  ['LeftLeg', 'LeftFoot'],
-  ['LeftFoot', 'LeftToeBase'],
-  ['Hips', 'RightUpLeg'],
-  ['RightUpLeg', 'RightLeg'],
-  ['RightLeg', 'RightFoot'],
-  ['RightFoot', 'RightToeBase'],
-];
-
-// Add finger chains to the preview: hand → proximal → intermediate → distal.
-for (const side of ['Left', 'Right']) {
-  const hand = side + 'Hand';
-  for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
-    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([hand, `${side}Hand${finger}1`]);
-    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([`${side}Hand${finger}1`, `${side}Hand${finger}2`]);
-    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([`${side}Hand${finger}2`, `${side}Hand${finger}3`]);
+function getAutoRigSkeletonPreviewHierarchy(fingerCount = 5) {
+  const fingers = AUTORIG_ALL_FINGERS.slice(0, Math.max(1, Math.min(5, Math.round(fingerCount || 5))));
+  const hierarchy = [
+    ['Hips', 'Spine'],
+    ['Spine', 'Spine1'],
+    ['Spine1', 'Spine2'],
+    ['Spine2', 'Neck'],
+    ['Neck', 'Head'],
+    ['Spine2', 'LeftShoulder'],
+    ['LeftShoulder', 'LeftArm'],
+    ['LeftArm', 'LeftForeArm'],
+    ['LeftForeArm', 'LeftHand'],
+    ['Spine2', 'RightShoulder'],
+    ['RightShoulder', 'RightArm'],
+    ['RightArm', 'RightForeArm'],
+    ['RightForeArm', 'RightHand'],
+    ['Hips', 'LeftUpLeg'],
+    ['LeftUpLeg', 'LeftLeg'],
+    ['LeftLeg', 'LeftFoot'],
+    ['LeftFoot', 'LeftToeBase'],
+    ['Hips', 'RightUpLeg'],
+    ['RightUpLeg', 'RightLeg'],
+    ['RightLeg', 'RightFoot'],
+    ['RightFoot', 'RightToeBase'],
+  ];
+  // Add finger chains to the preview: hand → proximal → intermediate → distal.
+  for (const side of ['Left', 'Right']) {
+    const hand = side + 'Hand';
+    for (const finger of fingers) {
+      hierarchy.push([hand, `${side}Hand${finger}1`]);
+      hierarchy.push([`${side}Hand${finger}1`, `${side}Hand${finger}2`]);
+      hierarchy.push([`${side}Hand${finger}2`, `${side}Hand${finger}3`]);
+    }
   }
+  return hierarchy;
 }
 
 function autoRigGroupOf(jointName) {
-  return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
+  const fingerCount = autoRigState?.fingerCount || 5;
+  return getAutoRigJointGroups(fingerCount).find(g => g.joints.includes(jointName)) || null;
 }
 
 // Create / update the live skeleton preview (cylinders between markers).
 function buildAutoRigSkeletonPreview(markerParent, sceneHeight) {
   const preview = [];
   const baseRadius = Math.max(0.004 * sceneHeight, 0.003);
-  for (const [parentName, childName] of AUTORIG_SKELETON_PREVIEW_HIERARCHY) {
+  const fingerCount = autoRigState?.fingerCount || 5;
+  for (const [parentName, childName] of getAutoRigSkeletonPreviewHierarchy(fingerCount)) {
     const group = autoRigGroupOf(childName);
     const isFinger = group?.id === 'fingers';
     const radius = isFinger ? baseRadius * 0.45 : baseRadius;
@@ -2751,11 +2883,12 @@ function updateAutoRigSkeletonPreview(state) {
   if (!state || !state.skeletonPreview) return;
   const show = document.getElementById('autorig-show-skeleton')?.checked ?? true;
   const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
+  const fingerCount = state?.fingerCount || 5;
   const V = BABYLON.Vector3;
   const up = V.Up();
   for (const entry of state.skeletonPreview) {
     const { bone, parentName, childName } = entry;
-    const childIsFinger = isFingerJoint(childName);
+    const childIsFinger = isFingerJoint(childName, fingerCount);
     // Follow the displayed marker positions (not just the rest-space canonical)
     // so T-Pose / A-Pose previews and live drags are reflected immediately.
     const m0 = state.markers?.get(parentName);
@@ -2803,9 +2936,11 @@ function renderAutoRigLegend(markers, gizmoManager) {
 
   const attachedJoint = activeGizmo?.attachedMesh?.metadata?.autorigJoint;
   const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
+  const fingerCount = autoRigState?.fingerCount || 5;
+  const jointGroups = getAutoRigJointGroups(fingerCount);
 
   el.innerHTML = `<div class="autorig-legend-title" style="margin-bottom: 8px;">Joint Markers<br>(Ctrl+Click Mesh to Place)</div>` +
-    AUTORIG_JOINT_GROUPS.filter(g => g.id !== 'fingers' || fingerMode).map(g => {
+    jointGroups.filter(g => g.id !== 'fingers' || fingerMode).map(g => {
       const jointButtons = g.joints.map(j => {
         const activeClass = (j === attachedJoint) ? 'active' : '';
         const label = AUTORIG_JOINT_LABELS[j] || j;
@@ -2893,6 +3028,7 @@ function setupAutoRigControls() {
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
+  document.getElementById('btn-autorig-mirror-lr')?.addEventListener('click', mirrorAutoRigLeftRight);
   document.getElementById('btn-autorig-apply-vp')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel-vp')?.addEventListener('click', cancelAutoRigAdjust);
   document.querySelectorAll('.autorig-view-btn').forEach(btn => {
@@ -2918,6 +3054,41 @@ function setupAutoRigControls() {
     updateFingerMarkerVisibility();
     updateAutoRigSkeletonPreview(autoRigState);
     renderAutoRigLegend();
+  });
+  document.getElementById('autorig-finger-count')?.addEventListener('change', (e) => {
+    const val = parseInt(e.target.value || '5', 10);
+    if (autoRigState) {
+      // Changing finger count changes the whole joint set, so regenerate the
+      // rig preview automatically. Any body-marker drags are lost, but this
+      // guarantees the displayed nodes match the selected finger count.
+      autoRigState.fingerCount = val;
+      showToast(`Regenerating skeleton preview with ${val} fingers…`);
+      cancelAutoRigAdjust();
+      startAutoRigAdjust();
+    }
+  });
+  const legSplaySlider = document.getElementById('autorig-leg-splay');
+  const legSplayVal = document.getElementById('autorig-leg-splay-val');
+  let _legSplayRegenTimer = null;
+  legSplaySlider?.addEventListener('input', () => {
+    const val = parseFloat(legSplaySlider.value || '0');
+    if (legSplayVal) legSplayVal.textContent = val.toFixed(1) + '°';
+    if (autoRigState) autoRigState.legSplayDeg = val;
+  });
+  legSplaySlider?.addEventListener('change', () => {
+    const val = parseFloat(legSplaySlider.value || '0');
+    if (autoRigState) {
+      autoRigState.legSplayDeg = val;
+      // Leg splay is baked into the server-side joint proposal, so refresh the
+      // preview when the user releases the slider.
+      if (_legSplayRegenTimer) clearTimeout(_legSplayRegenTimer);
+      _legSplayRegenTimer = setTimeout(() => {
+        _legSplayRegenTimer = null;
+        showToast(`Regenerating skeleton preview with ${val.toFixed(1)}° leg splay…`);
+        cancelAutoRigAdjust();
+        startAutoRigAdjust();
+      }, 250);
+    }
   });
   document.getElementById('skeleton-show-viewer')?.addEventListener('change', () => {
     updateSkeletonViewer();
@@ -3412,8 +3583,91 @@ function mirrorJointName(name) {
   return null;
 }
 
-function isFingerJoint(name) {
-  return /^((Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d+)$/.test(name);
+// Swap Left ↔ Right markers and their stored joint data. The physical markers do
+// not move; only their names (and therefore which server joint they represent)
+// trade places. This fixes heuristics that place left/right on the wrong sides.
+function mirrorAutoRigLeftRight() {
+  const st = autoRigState;
+  if (!st || !st.markers) return;
+
+  const pairs = [];
+  for (const name of st.markers.keys()) {
+    if (name.startsWith('Left')) {
+      const twin = mirrorJointName(name);
+      if (st.markers.has(twin)) pairs.push([name, twin]);
+    }
+  }
+  if (!pairs.length) return;
+
+  // Swap marker meshes and their metadata/name labels.
+  const newMarkers = new Map();
+  for (const [leftName, rightName] of pairs) {
+    const leftMesh = st.markers.get(leftName);
+    const rightMesh = st.markers.get(rightName);
+    if (leftMesh) {
+      leftMesh.name = `autorig_${rightName}`;
+      if (leftMesh.metadata) leftMesh.metadata.autorigJoint = rightName;
+    }
+    if (rightMesh) {
+      rightMesh.name = `autorig_${leftName}`;
+      if (rightMesh.metadata) rightMesh.metadata.autorigJoint = leftName;
+    }
+    newMarkers.set(leftName, rightMesh);
+    newMarkers.set(rightName, leftMesh);
+  }
+  for (const [name, mesh] of st.markers) {
+    if (!mirrorJointName(name)) newMarkers.set(name, mesh);
+  }
+  st.markers = newMarkers;
+
+  // Swap canonical/rest positions under the new names.
+  for (const maps of [st.canonical, st.restLayout]) {
+    if (!maps) continue;
+    const snapshot = new Map(maps);
+    for (const [leftName, rightName] of pairs) {
+      maps.set(leftName, snapshot.get(rightName));
+      maps.set(rightName, snapshot.get(leftName));
+    }
+  }
+
+  // Swap the server-side original guess so un-dragged markers send mirrored coords.
+  if (st.serverGuess) {
+    const snapshot = { ...st.serverGuess };
+    for (const [leftName, rightName] of pairs) {
+      st.serverGuess[leftName] = snapshot[rightName];
+      st.serverGuess[rightName] = snapshot[leftName];
+    }
+  }
+
+  // Swap bone bindings so pose previews remain consistent on skinned re-rigs.
+  if (st.boneBindings) {
+    const snapshot = new Map(st.boneBindings);
+    for (const [leftName, rightName] of pairs) {
+      st.boneBindings.set(leftName, snapshot.get(rightName));
+      st.boneBindings.set(rightName, snapshot.get(leftName));
+    }
+  }
+
+  // Re-attach the gizmo to the marker that now carries the previously selected name.
+  const attached = st.gizmoManager?.attachedMesh;
+  if (attached?.metadata?.autorigJoint) {
+    const newName = mirrorJointName(attached.metadata.autorigJoint);
+    if (newName) {
+      const newMesh = st.markers.get(newName);
+      if (newMesh) st.gizmoManager.attachToMesh(newMesh);
+    }
+  }
+
+  // Update visual dependents.
+  updateAutoRigSkeletonPreview(st);
+  renderAutoRigLegend(st.markers, st.gizmoManager);
+  st.mirrored = !st.mirrored;
+  showToast(st.mirrored ? 'Left/Right mirrored.' : 'Left/Right restored.');
+}
+
+function isFingerJoint(name, fingerCount = 5) {
+  const fingers = AUTORIG_ALL_FINGERS.slice(0, Math.max(1, Math.min(5, Math.round(fingerCount || 5)))).join('|');
+  return new RegExp(`^((Left|Right)Hand(${fingers})\\d+)$`).test(name);
 }
 
 function updateFingerMarkerVisibility() {
@@ -3629,12 +3883,17 @@ async function startAutoRigAdjust() {
     return;
   }
 
-  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  // Use the scale-baked baseline if it exists so marker positions and the server
+  // analysis work on the same geometry. Falls back to original / current buffer.
+  const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  const fingerCount = parseInt(document.getElementById('autorig-finger-count')?.value || '5', 10);
+  const legSplayDeg = parseFloat(document.getElementById('autorig-leg-splay')?.value || '0');
   showLoading('Analyzing mesh proportions…');
   let guess;
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    formData.append('options', JSON.stringify({ fingerCount, legSplayDeg }));
     const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -3648,10 +3907,13 @@ async function startAutoRigAdjust() {
   }
   hideLoading();
 
-  // Humanoid validation gate
+  // Humanoid validation: a low-confidence detection is NOT a hard stop. The
+  // mesh is a character without a skeleton — that's exactly the case this tool
+  // exists for. guessJoints always returns an editable joint set (slicing +
+  // procedural fingers), so warn and continue into manual marker editing
+  // instead of aborting. The user can drag every node into place by hand.
   if (guess.humanoid === false) {
-    showToast(`Cannot auto-rig: ${guess.reason || 'Model does not appear to be a humanoid character.'}`, true);
-    return;
+    showToast(`Low-confidence detection: ${guess.reason || 'shape is ambiguous'}. Loading editable markers — adjust the nodes manually, then Apply.`, true);
   }
 
   // Show detection confidence to the user
@@ -3671,10 +3933,17 @@ async function startAutoRigAdjust() {
   // from the post-merge bind, which drifts from what the user placed; if we have
   // an exact memory for this character, use it and skip the bone-snap re-fit so
   // markers land precisely where they were applied.
+  // BUT only restore when the rig settings match — changing finger count or leg
+  // splay means the user wants a fresh skeleton, not the old joint set.
   if (lastAppliedRig?.joints) {
-    guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
-    guess.restored = true;
-    showToast('Restored your last joint positions.');
+    const settingsMatch =
+      (lastAppliedRig.fingerCount || 5) === fingerCount &&
+      (lastAppliedRig.legSplayDeg || 0) === legSplayDeg;
+    if (settingsMatch) {
+      guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
+      guess.restored = true;
+      showToast('Restored your last joint positions.');
+    }
   }
 
   cancelAutoRigAdjust();
@@ -3787,7 +4056,7 @@ async function startAutoRigAdjust() {
 
   const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
   Object.entries(guess.joints).forEach(([name, pos]) => {
-    const isFinger = isFingerJoint(name);
+    const isFinger = isFingerJoint(name, fingerCount);
     const markerDiameter = isFinger ? diameter * 0.30 : diameter;
     const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter: markerDiameter, segments: isFinger ? 5 : 10 }, scene);
     m.material = matFor(name);
@@ -3869,7 +4138,7 @@ async function startAutoRigAdjust() {
       const sv = guess.joints[name];
       // Do not include fingers in the coordinate-fitting system, as their procedural guesses
       // can deviate significantly from the actual bones and distort the global affine transform.
-      if (sv && !isFingerJoint(name)) {
+      if (sv && !isFingerJoint(name, fingerCount)) {
         fitPairs.push({ local: m.position.clone(), server: sv });
       }
     });
@@ -4224,6 +4493,7 @@ async function startAutoRigAdjust() {
 
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
+    fingerCount, legSplayDeg,
     groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
     // Server's original joint guess (its own render-world space) per name — the
@@ -4369,7 +4639,8 @@ function bodyLateralAxis() {
 function snapMarkerToMeshDepth(marker) {
   if (!activeCharacter?.rawMeshes?.length || !marker) return false;
   const name = marker.metadata?.autorigJoint;
-  if (name && (DEPTH_SNAP_SKIP.has(name) || isFingerJoint(name))) return false;
+  const fingerCount = autoRigState?.fingerCount || 5;
+  if (name && (DEPTH_SNAP_SKIP.has(name) || isFingerJoint(name, fingerCount))) return false;
 
   marker.computeWorldMatrix(true);
   const origin = marker.getAbsolutePosition();
@@ -4490,12 +4761,19 @@ async function applyAutoRig() {
     }
   });
 
-  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  // Use the scale-baked baseline so the rigged GLB matches the current scaled
+  // geometry, not the original unscaled one.
+  const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
   // Remember exactly what the user applied so re-entering Auto-Rig restores
   // these positions verbatim (the post-Apply animation merge nudges the bind
   // pose, so re-guessing from the merged bones would move the markers). Tied to
   // the base buffer it was rigged from.
-  lastAppliedRig = { joints: JSON.parse(JSON.stringify(joints)), forBuffer: baseBuffer };
+  lastAppliedRig = {
+    joints: JSON.parse(JSON.stringify(joints)),
+    forBuffer: baseBuffer,
+    fingerCount: autoRigState?.fingerCount || 5,
+    legSplayDeg: autoRigState?.legSplayDeg ?? 0,
+  };
   cancelAutoRigAdjust();
 
   showLoading('Generating skeleton & skin weights…');
@@ -4503,7 +4781,11 @@ async function applyAutoRig() {
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-    formData.append('options', JSON.stringify({ joints }));
+    formData.append('options', JSON.stringify({
+      joints,
+      fingerCount: autoRigState?.fingerCount || 5,
+      legSplayDeg: autoRigState?.legSplayDeg ?? 0,
+    }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData });
     if (!res.ok) {
@@ -4709,13 +4991,14 @@ function autoMapAnimations() {
     }
 
     let bestMatch = 'None', from = 0, to = 100;
-    for (let detName of detectedAnimations) {
-      if (stdKey.defaultKeyword.test(detName)) {
-        bestMatch = detName;
-        const group = activeCharacter && activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === detName);
-        if (group) { from = Math.round(group.from || 0); to = Math.round(group.to || 100); }
-        break;
-      }
+    // Prefer an exact name match (e.g. 'Idle_Loop' over 'Idle_LookAround_Loop',
+    // 'Sprint_Loop' over 'Sprint_Enter'); fall back to first keyword match.
+    const exact = detectedAnimations.find(d => d === stdKey.key);
+    const matched = exact || detectedAnimations.find(d => stdKey.defaultKeyword.test(d));
+    if (matched) {
+      bestMatch = matched;
+      const group = activeCharacter && activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === matched);
+      if (group) { from = Math.round(group.from || 0); to = Math.round(group.to || 100); }
     }
     // Note: if no keyword match is found, bestMatch stays 'None'.
     // The user can manually assign the animation in the Animations tab.
@@ -4838,13 +5121,12 @@ function resetSingleAnimMapping(key) {
   const stdKey = STANDARD_ANIM_KEYS.find(s => s.key === key);
   if (!stdKey) return;
   let bestMatch = 'None', from = 0, to = 100;
-  for (const detName of detectedAnimations) {
-    if (stdKey.defaultKeyword.test(detName)) {
-      bestMatch = detName;
-      const group = activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === detName);
-      if (group) { from = Math.round(group.from || 0); to = Math.round(group.to || 100); }
-      break;
-    }
+  const exact = detectedAnimations.find(d => d === stdKey.key);
+  const matched = exact || detectedAnimations.find(d => stdKey.defaultKeyword.test(d));
+  if (matched) {
+    bestMatch = matched;
+    const group = activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === matched);
+    if (group) { from = Math.round(group.from || 0); to = Math.round(group.to || 100); }
   }
   animMappings[key] = { animName: bestMatch, from, to };
   applyAnimationsToController();
@@ -5379,6 +5661,12 @@ function setupSidebarControls() {
       singleInput.value = '';
     });
   }
+
+  // Quick-merge bundled animation packs
+  const btnQuickBasic = document.getElementById('btn-quick-anim-basic');
+  const btnQuickPro = document.getElementById('btn-quick-anim-pro');
+  if (btnQuickBasic) btnQuickBasic.addEventListener('click', () => mergeBundledAnimationPack('assets/animations-basic.glb'));
+  if (btnQuickPro) btnQuickPro.addEventListener('click', () => mergeBundledAnimationPack('assets/animations-pro.glb'));
 
   // Clear character button
   const btnClearChar = document.getElementById('btn-clear-character');

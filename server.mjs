@@ -127,7 +127,11 @@ app.post('/api/autorig-joints', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
     console.log(`[autorig-joints] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB)`);
-    const result = await guessJoints(req.file.buffer);
+    let options = {};
+    if (req.body?.options) {
+      try { options = JSON.parse(req.body.options); } catch (_) { /* ignore */ }
+    }
+    const result = await guessJoints(req.file.buffer, options);
     res.json(result);
   } catch (err) {
     console.error('[autorig-joints] Error:', err);

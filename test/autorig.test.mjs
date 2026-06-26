@@ -221,12 +221,12 @@ describe('autoRigGLB skin weights', () => {
 
     // Check that some vertices around the middle of the left upper arm carry
     // LeftArmTwist weight.
-    const shoulder = jointWorld.LeftShoulder;
-    const elbow = jointWorld.LeftArm;
+    const arm = jointWorld.LeftArm;
+    const forearm = jointWorld.LeftForeArm;
     const mid = [
-      (shoulder[0] + elbow[0]) * 0.5,
-      (shoulder[1] + elbow[1]) * 0.5,
-      (shoulder[2] + elbow[2]) * 0.5,
+      (arm[0] + forearm[0]) * 0.5,
+      (arm[1] + forearm[1]) * 0.5,
+      (arm[2] + forearm[2]) * 0.5,
     ];
     const H = jointWorld.Head[1] * 1.15;
     const twistIdx = jointIndex.LeftArmTwist;
