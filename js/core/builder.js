@@ -282,6 +282,51 @@ function savePreferences() {
   } catch (e) { console.error('Failed to save preferences', e); }
 }
 
+// Compute a world-space bounding-sphere radius for an array of meshes.
+// Used to stop the camera before it clips through the character.
+function computeMeshesBoundingRadius(meshes) {
+  const min = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+  const max = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+  let count = 0;
+  for (const m of meshes) {
+    if (!m.getBoundingInfo || !m.geometry) continue;
+    m.computeWorldMatrix(true);
+    const bb = m.getBoundingInfo().boundingBox;
+    min.minimizeInPlace(bb.minimumWorld);
+    max.maximizeInPlace(bb.maximumWorld);
+    count++;
+  }
+  if (!count) return 1.0;
+  const center = min.add(max).scale(0.5);
+  return Math.max(0.1, center.subtract(max).length());
+}
+
+// Minimum camera radius so the target point never sits inside the character mesh.
+// Computes the farthest world corner of every mesh bounding box from `target`.
+function computeMinCameraRadius(target, meshes) {
+  let maxDist = 0;
+  for (const m of meshes) {
+    if (!m.getBoundingInfo || !m.geometry) continue;
+    m.computeWorldMatrix(true);
+    const corners = m.getBoundingInfo().boundingBox.vectorsWorld;
+    for (const c of corners) {
+      const d = BABYLON.Vector3.Distance(target, c);
+      if (d > maxDist) maxDist = d;
+    }
+  }
+  return Math.max(0.5, maxDist);
+}
+
+// Enforce the camera limit in Auto-Rig mode so zooming in never clips the mesh.
+function updateRigCameraLimits() {
+  if (!camera || !activeCharacter?.rawMeshes?.length) return;
+  const minR = computeMinCameraRadius(camera.target, activeCharacter.rawMeshes);
+  camera.lowerRadiusLimit = minR * 1.02;
+  if (camera.radius < camera.lowerRadiusLimit) {
+    camera.radius = camera.lowerRadiusLimit;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
 // CHARACTER TRANSFORMS (SCALE & PIVOT)
 // ═══════════════════════════════════════════════════════════
@@ -330,8 +375,10 @@ function applyLiveTransformations() {
     }
 
     if (camera) {
-      camera.lowerRadiusLimit = 2 * sy;
-      camera.upperRadiusLimit = 20 * sy;
+      const scaleMax = Math.max(sx, sy, sz);
+      const charRadius = (activeCharacter.boundingRadius || 1.0) * scaleMax;
+      camera.lowerRadiusLimit = Math.max(0.5, charRadius * 0.95);
+      camera.upperRadiusLimit = 20 * scaleMax;
       camera.radius = Math.max(camera.lowerRadiusLimit, Math.min(camera.upperRadiusLimit, ctrl.CAM_FOLLOW_DIST));
 
       camera.wheelPrecision = 55 / sy;
@@ -357,10 +404,12 @@ function applyLiveTransformations() {
     // Sync camera distance HUD slider limits and value
     const distSlider = document.getElementById('slider-cam-dist');
     const distVal = document.getElementById('slider-cam-dist-val');
+    const scaleMax = Math.max(sx, sy, sz);
+    const camMin = (camera && camera.lowerRadiusLimit) || Math.max(0.5, (activeCharacter.boundingRadius || 1.0) * scaleMax * 0.95);
     if (distSlider) {
-      distSlider.min = 2 * sy;
-      distSlider.max = 15 * sy;
-      distSlider.step = 0.1 * sy;
+      distSlider.min = camMin;
+      distSlider.max = 15 * scaleMax;
+      distSlider.step = 0.1 * scaleMax;
       distSlider.value = ctrl.CAM_FOLLOW_DIST;
     }
     if (distVal) {
@@ -1161,6 +1210,7 @@ async function initBabylonScene() {
   scene.collisionsEnabled = true;
 
   camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, Math.PI / 3.5, 8, new BABYLON.Vector3(0, 1.2, 0), scene);
+  camera.minZ = 0;
   camera.checkCollisions = false;
   camera.lowerRadiusLimit = 2;
   camera.upperRadiusLimit = 20;
@@ -2059,7 +2109,11 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     }
   });
 
-  activeCharacter = { playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups, rawMeshes: charRes.meshes, rawSkeletons: charRes.skeletons, charRoot, charTransformWrapper };
+  activeCharacter = {
+    playerCapsule, animCtrl, charCtrl, rawAnimationGroups: filteredGroups,
+    rawMeshes: charRes.meshes, rawSkeletons: charRes.skeletons, charRoot, charTransformWrapper,
+    boundingRadius: computeMeshesBoundingRadius(charRes.meshes),
+  };
 
   // Cache original bone rotations for manual posture adjustment (arm/leg spread offsets)
   const originalBoneRotations = new Map();
@@ -2670,6 +2724,16 @@ let lastAppliedRig = null; // { joints: {name:[x,y,z]}, forBuffer: ArrayBuffer }
 let skeletonViewer = null;
 
 // Marker color groups (Mixamo-style legend: each anatomical group gets a color)
+const AUTORIG_FINGER_JOINTS = (() => {
+  const names = [];
+  for (const side of ['Left', 'Right']) {
+    for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+      for (let i = 1; i <= 3; i++) names.push(`${side}Hand${finger}${i}`);
+    }
+  }
+  return names;
+})();
+
 const AUTORIG_JOINT_GROUPS = [
   { id: 'head', label: 'Head / Neck', color: '#22d3ee', joints: ['Head', 'Neck'] },
   { id: 'spine', label: 'Spine', color: '#a78bfa', joints: ['Spine', 'Spine1', 'Spine2'] },
@@ -2679,6 +2743,8 @@ const AUTORIG_JOINT_GROUPS = [
   { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
   { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
   { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
+  // Fingers go last and are shown in the legend only when Edit fingers is on.
+  { id: 'fingers', label: 'Fingers', color: '#fbbf24', joints: AUTORIG_FINGER_JOINTS },
 ];
 
 // Friendly anatomical names shown in the hover tooltip
@@ -2691,8 +2757,17 @@ const AUTORIG_JOINT_LABELS = {
   RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
 };
 
+// Auto-generate readable labels for the 30 finger joints.
+for (const name of AUTORIG_FINGER_JOINTS) {
+  const side = name.startsWith('Left') ? 'Left' : 'Right';
+  const rest = name.slice(side.length); // e.g. "HandIndex1"
+  const finger = rest.replace('Hand', '').replace(/\d+$/, '');
+  const num = rest.match(/\d+$/)?.[0] || '';
+  const suffix = num === '1' ? 'Base' : num === '2' ? 'Mid' : num === '3' ? 'Tip' : '';
+  AUTORIG_JOINT_LABELS[name] = `${side} ${finger} ${suffix}`.trim();
+}
+
 // Parent→child pairs used for the live skeleton preview in Auto-Rig mode.
-// (Fingers/twist bones are omitted — only the main markers are shown.)
 const AUTORIG_SKELETON_PREVIEW_HIERARCHY = [
   ['Hips', 'Spine'],
   ['Spine', 'Spine1'],
@@ -2717,6 +2792,16 @@ const AUTORIG_SKELETON_PREVIEW_HIERARCHY = [
   ['RightFoot', 'RightToeBase'],
 ];
 
+// Add finger chains to the preview: hand → proximal → intermediate → distal.
+for (const side of ['Left', 'Right']) {
+  const hand = side + 'Hand';
+  for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([hand, `${side}Hand${finger}1`]);
+    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([`${side}Hand${finger}1`, `${side}Hand${finger}2`]);
+    AUTORIG_SKELETON_PREVIEW_HIERARCHY.push([`${side}Hand${finger}2`, `${side}Hand${finger}3`]);
+  }
+}
+
 function autoRigGroupOf(jointName) {
   return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
 }
@@ -2724,17 +2809,20 @@ function autoRigGroupOf(jointName) {
 // Create / update the live skeleton preview (cylinders between markers).
 function buildAutoRigSkeletonPreview(markerParent, sceneHeight) {
   const preview = [];
-  const radius = Math.max(0.004 * sceneHeight, 0.003);
+  const baseRadius = Math.max(0.004 * sceneHeight, 0.003);
   for (const [parentName, childName] of AUTORIG_SKELETON_PREVIEW_HIERARCHY) {
     const group = autoRigGroupOf(childName);
+    const isFinger = group?.id === 'fingers';
+    const radius = isFinger ? baseRadius * 0.45 : baseRadius;
     const mat = new BABYLON.StandardMaterial(`autorigBoneMat_${parentName}_${childName}`, scene);
     mat.emissiveColor = group ? BABYLON.Color3.FromHexString(group.color) : new BABYLON.Color3(0.8, 0.8, 0.8);
     mat.disableLighting = true;
-    mat.alpha = 0.9;
+    mat.alpha = isFinger ? 0.6 : 0.9;
+    if (isFinger) mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
 
     const bone = BABYLON.MeshBuilder.CreateCylinder(`autorig_bone_${parentName}_${childName}`, {
       height: 1, diameterTop: radius * 0.7, diameterBottom: radius,
-      tessellation: 6, updatable: true,
+      tessellation: isFinger ? 5 : 6, updatable: true,
     }, scene);
     bone.material = mat;
     bone.parent = markerParent;
@@ -2749,10 +2837,12 @@ function buildAutoRigSkeletonPreview(markerParent, sceneHeight) {
 function updateAutoRigSkeletonPreview(state) {
   if (!state || !state.skeletonPreview) return;
   const show = document.getElementById('autorig-show-skeleton')?.checked ?? true;
+  const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
   const V = BABYLON.Vector3;
   const up = V.Up();
   for (const entry of state.skeletonPreview) {
     const { bone, parentName, childName } = entry;
+    const childIsFinger = isFingerJoint(childName);
     // Follow the displayed marker positions (not just the rest-space canonical)
     // so T-Pose / A-Pose previews and live drags are reflected immediately.
     const m0 = state.markers?.get(parentName);
@@ -2763,8 +2853,9 @@ function updateAutoRigSkeletonPreview(state) {
       bone.setEnabled(false);
       continue;
     }
-    bone.setEnabled(show);
-    if (!show) continue;
+    const showBone = show && (!childIsFinger || fingerMode);
+    bone.setEnabled(showBone);
+    if (!showBone) continue;
 
     const dir = p1.subtract(p0);
     const len = dir.length();
@@ -2798,9 +2889,10 @@ function renderAutoRigLegend(markers, gizmoManager) {
   if (!activeMarkers) return;
 
   const attachedJoint = activeGizmo?.attachedMesh?.metadata?.autorigJoint;
+  const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
 
   el.innerHTML = `<div class="autorig-legend-title" style="margin-bottom: 8px;">Joint Markers<br>(Ctrl+Click Mesh to Place)</div>` +
-    AUTORIG_JOINT_GROUPS.map(g => {
+    AUTORIG_JOINT_GROUPS.filter(g => g.id !== 'fingers' || fingerMode).map(g => {
       const jointButtons = g.joints.map(j => {
         const activeClass = (j === attachedJoint) ? 'active' : '';
         const label = AUTORIG_JOINT_LABELS[j] || j;
@@ -2908,6 +3000,11 @@ function setupAutoRigControls() {
   });
   document.getElementById('autorig-show-skeleton')?.addEventListener('change', () => {
     updateAutoRigSkeletonPreview(autoRigState);
+  });
+  document.getElementById('autorig-finger-mode')?.addEventListener('change', () => {
+    updateFingerMarkerVisibility();
+    updateAutoRigSkeletonPreview(autoRigState);
+    renderAutoRigLegend();
   });
   document.getElementById('skeleton-show-viewer')?.addEventListener('change', () => {
     updateSkeletonViewer();
@@ -3096,6 +3193,7 @@ function setRigView(view) {
   camera.alpha = alpha;
   camera.beta = beta;
   camera.radius = radius;
+  updateRigCameraLimits();
 }
 
 // ── Force pose: Rest / T-Pose / A-Pose ───────────────────────────────────────
@@ -3399,6 +3497,18 @@ function mirrorJointName(name) {
   if (name.startsWith('Left')) return 'Right' + name.slice(4);
   if (name.startsWith('Right')) return 'Left' + name.slice(5);
   return null;
+}
+
+function isFingerJoint(name) {
+  return /^((Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d+)$/.test(name);
+}
+
+function updateFingerMarkerVisibility() {
+  if (!autoRigState?.markers) return;
+  const show = document.getElementById('autorig-finger-mode')?.checked;
+  autoRigState.markers.forEach((m, name) => {
+    if (m.metadata?.isFinger) m.setEnabled(show);
+  });
 }
 
 // Map a dragged marker position to posture config angles in real-time
@@ -3710,6 +3820,11 @@ async function startAutoRigAdjust() {
         ? BABYLON.Color3.FromHexString(group.color)
         : new BABYLON.Color3(1, 0.85, 0.1);
       mat.disableLighting = true;
+      // Finger markers are semi-transparent so the hand mesh stays visible behind them.
+      if (group?.id === 'fingers') {
+        mat.alpha = 0.65;
+        mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
+      }
       groupMats.set(key, mat);
     }
     return groupMats.get(key);
@@ -3757,8 +3872,11 @@ async function startAutoRigAdjust() {
     });
   }
 
+  const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
   Object.entries(guess.joints).forEach(([name, pos]) => {
-    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
+    const isFinger = isFingerJoint(name);
+    const markerDiameter = isFinger ? diameter * 0.30 : diameter;
+    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter: markerDiameter, segments: isFinger ? 5 : 10 }, scene);
     m.material = matFor(name);
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
@@ -3767,7 +3885,8 @@ async function startAutoRigAdjust() {
     const local = BABYLON.Vector3.TransformCoordinates(
       new BABYLON.Vector3(pos[0], pos[1], pos[2]), toMarkerLocal);
     m.position.copyFrom(local);
-    m.metadata = { autorigJoint: name };
+    m.metadata = { autorigJoint: name, isFinger };
+    if (isFinger) m.setEnabled(fingerMode);
     markers.set(name, m);
   });
 
@@ -3971,6 +4090,64 @@ async function startAutoRigAdjust() {
 
   let isDraggingMarker = false;
 
+  // Attach direct screen-space pointer-dragging behaviors to all markers
+  markers.forEach((m, name) => {
+    const dragBehavior = new BABYLON.PointerDragBehavior();
+    dragBehavior.moveAttached = false; // Manually apply delta to prevent parent scale/orientation jumps
+    dragBehavior.useObjectOrientationForDragging = false;
+
+    dragBehavior.onDragStartObservable.add(() => {
+      isDraggingMarker = true;
+      if (camera) {
+        dragBehavior.options.dragPlaneNormal.copyFrom(camera.getForwardRay().direction);
+      }
+      gizmoManager.attachToMesh(m);
+      renderAutoRigLegend(markers, gizmoManager);
+    });
+
+    dragBehavior.onDragObservable.add((eventData) => {
+      // Translate the world-space drag delta to parent-local space (respects scale, rotation, and mirror)
+      const parentInv = markerParentInvRot(m);
+      const localDelta = BABYLON.Vector3.TransformNormal(eventData.delta, parentInv);
+      m.position.addInPlace(localDelta);
+
+      updateCanonicalFromMarker(m);
+      
+      const symmetric = document.getElementById('autorig-symmetry')?.checked;
+      if (symmetric) {
+        const twinName = mirrorJointName(name);
+        const twin = twinName ? markers.get(twinName) : null;
+        if (twin) {
+          twin.position.set(-m.position.x, m.position.y, m.position.z);
+          updateCanonicalFromMarker(twin);
+        }
+      }
+    });
+
+    dragBehavior.onDragEndObservable.add(() => {
+      isDraggingMarker = false;
+      
+      const snap = document.getElementById('autorig-depth-snap');
+      if ((!snap || snap.checked) && !document.getElementById('autorig-pose-profiling')?.checked) {
+        snapMarkerToMeshDepth(m);
+        updateCanonicalFromMarker(m);
+        
+        const symmetric = document.getElementById('autorig-symmetry')?.checked;
+        if (symmetric) {
+          const twinName = mirrorJointName(name);
+          const twin = twinName ? markers.get(twinName) : null;
+          if (twin) {
+            twin.position.set(-m.position.x, m.position.y, m.position.z);
+            snapMarkerToMeshDepth(twin);
+            updateCanonicalFromMarker(twin);
+          }
+        }
+      }
+    });
+
+    m.addBehavior(dragBehavior);
+  });
+
   // Mirror drag onto the contralateral marker when symmetry is on
   const posGizmo = gizmoManager.gizmos.positionGizmo;
   if (posGizmo) {
@@ -4124,6 +4301,7 @@ async function startAutoRigAdjust() {
       activeCharacter.rawSkeletons.forEach(sk => sk.prepare());
     }
 
+    updateRigCameraLimits();
     updateAutoRigSkeletonPreview(autoRigState);
   });
 
@@ -4240,21 +4418,56 @@ function bodyDepthAxis() {
   return new BABYLON.Vector3(-Math.cos(frontAlpha), 0, -Math.sin(frontAlpha));
 }
 
+// Fixed left↔right (lateral) world axis of the character, derived from body proportions
+// or facing yaw. This is the horizontal direction the SIDE view looks along.
+function bodyLateralAxis() {
+  const st = autoRigState;
+  const B = (n) => st?.boneBindings?.get(n);
+  const armL = B('LeftArm');
+  const armR = B('RightArm');
+  if (armL && armR) {
+    armL.computeWorldMatrix(true);
+    armR.computeWorldMatrix(true);
+    const up = BABYLON.Vector3.Up();
+    const lateralL = armL.getAbsolutePosition().subtract(armR.getAbsolutePosition());
+    if (lateralL.lengthSquared() > 1e-10) {
+      up.normalize();
+      lateralL.normalize();
+      lateralL.subtractInPlace(up.scale(BABYLON.Vector3.Dot(lateralL, up)));
+      if (lateralL.lengthSquared() > 1e-10) {
+        return lateralL.normalize();
+      }
+    }
+  }
+
+  // Fallback to capsule orientation
+  let rotY = 0;
+  const cap = activeCharacter?.playerCapsule;
+  if (cap?.rotationQuaternion) rotY = cap.rotationQuaternion.toEulerAngles().y;
+  else if (cap) rotY = cap.rotation.y;
+  const frontAlpha = -rotY + Math.PI / 2;
+  return new BABYLON.Vector3(Math.cos(frontAlpha + Math.PI / 2), 0, Math.sin(frontAlpha + Math.PI / 2));
+}
+
 function snapMarkerToMeshDepth(marker) {
   if (!activeCharacter?.rawMeshes?.length || !marker) return false;
   const name = marker.metadata?.autorigJoint;
-  if (name && DEPTH_SNAP_SKIP.has(name)) return false;
+  if (name && (DEPTH_SNAP_SKIP.has(name) || isFingerJoint(name))) return false;
 
   marker.computeWorldMatrix(true);
   const origin = marker.getAbsolutePosition();
-  // Depth axis = the character's fixed sagittal (front↔back) axis, NOT the live
-  // camera direction. Using the camera made the snap depend on the current view,
-  // so repeated snaps from different angles dragged markers along ever-changing
-  // axes and the layout drifted. A fixed body axis makes the snap idempotent:
-  // it always centers depth the same way regardless of where the camera sits.
-  const fwd = bodyDepthAxis();
-  if (!fwd || fwd.lengthSquared() < 1e-8) return false;
-  fwd.normalize();
+
+  // Viewport-aware smart snap axis (solves the axis you cannot see in 2D)
+  let snapAxis = bodyDepthAxis(); // default: sagittal (front-to-back)
+  const currentView = autoRigState?.currentRigView || 'front';
+  if (currentView === 'side') {
+    snapAxis = bodyLateralAxis(); // side view: solve lateral depth (left-to-right)
+  } else if (currentView === 'top') {
+    snapAxis = BABYLON.Vector3.Up(); // top view: solve vertical height (up-to-down)
+  }
+
+  if (!snapAxis || snapAxis.lengthSquared() < 1e-8) return false;
+  snapAxis.normalize();
 
   // The character meshes are set isPickable=false at load (so the gizmo never
   // grabs them), which makes scene.pick / multiPickWithRay skip them entirely —
@@ -4268,29 +4481,29 @@ function snapMarkerToMeshDepth(marker) {
   // the exit surface). Per mesh, intersectsMesh returns the nearest hit along
   // the ray; combining both directions brackets the body so mid = its center.
   let near = Infinity, far = -Infinity, hitAny = false;
-  for (const dir of [fwd, fwd.scale(-1)]) {
+  for (const dir of [snapAxis, snapAxis.scale(-1)]) {
     const start = origin.subtract(dir.scale(reach));
     const ray = new BABYLON.Ray(start, dir, reach * 2);
     for (const m of meshes) {
       m.computeWorldMatrix(true);
       const info = ray.intersectsMesh(m, false);
       if (!info?.hit) continue;
-      // Hit point = start + dir·distance; project onto fwd from the origin.
+      // Hit point = start + dir·distance; project onto snapAxis from the origin.
       const hit = start.add(dir.scale(info.distance));
-      const along = hit.subtract(origin).dot(fwd);
+      const along = hit.subtract(origin).dot(snapAxis);
       if (along < near) near = along;
       if (along > far) far = along;
       hitAny = true;
     }
   }
   if (!hitAny || !Number.isFinite(near) || far < near) {
-    if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: NO HIT (meshes=${meshes.length}, fwd=${fwd.x.toFixed(2)},${fwd.y.toFixed(2)},${fwd.z.toFixed(2)}, reach=${reach.toFixed(2)})`);
+    if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: NO HIT (meshes=${meshes.length}, snapAxis=${snapAxis.x.toFixed(2)},${snapAxis.y.toFixed(2)},${snapAxis.z.toFixed(2)}, reach=${reach.toFixed(2)})`);
     return false;
   }
   const mid = (near + far) / 2;
   if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: hit near=${near.toFixed(3)} far=${far.toFixed(3)} mid=${mid.toFixed(3)}`);
   marker.position.addInPlace(
-    BABYLON.Vector3.TransformNormal(fwd.scale(mid), markerParentInvRot(marker)));
+    BABYLON.Vector3.TransformNormal(snapAxis.scale(mid), markerParentInvRot(marker)));
   return true;
 }
 // Marker depth is moved in WORLD fwd but stored LOCAL — rotate the world delta

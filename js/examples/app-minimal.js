@@ -31,6 +31,7 @@ async function createMinimalScene() {
 
   // 2. Camera setup
   const camera = new BABYLON.ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3.5, 8, BABYLON.Vector3.Zero(), scene);
+  camera.minZ = 0;
   camera.attachControl(canvas, true);
 
   // 3. Lighting setup

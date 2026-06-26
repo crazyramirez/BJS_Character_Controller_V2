@@ -97,6 +97,7 @@ async function createDemoScene() {
   const initialBeta = isMobileCam ? Math.PI / 3.0 : Math.PI / 3.5; // Slightly lower perspective on mobile (dramatic hero angle)
 
   const camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, initialBeta, initialRadius, V3(0, 1.2, 0), scene);
+  camera.minZ = 0;
   camera.lowerRadiusLimit = 1.2;
   camera.upperRadiusLimit = 18;
   camera.lowerBetaLimit = 0.05;

@@ -1439,6 +1439,14 @@ export async function guessJoints(buffer) {
   }
 
   const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, { verts, sliced, topo });
+
+  // Add procedural finger joints to the proposal so the client can show and edit
+  // them. Existing-skin seeds will overwrite these below when present.
+  // Twist bones are intentionally omitted from the UI — they are created at rig
+  // time but are not meant to be edited manually.
+  const guessH = guess.height || (bounds.max[1] - bounds.min[1]);
+  appendFingerJoints(guess.joints, guessH);
+
   const scaleInfo = detectScaleUnit(bounds);
   const score = computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds);
   const { humanoid, reason } = isHumanoidGuess(sliced, topo, score, topoError);
@@ -2238,6 +2246,7 @@ function smoothWeightField(W, nBones, adjacency, iters, lambda) {
   }
   const tmp = new Float32Array(W.length);
   for (let it = 0; it < iters; it++) {
+    tmp.set(W);
     for (const [r, nbrs] of adjSet) {
       const n = nbrs.size;
       if (n === 0) continue;
@@ -2248,10 +2257,7 @@ function smoothWeightField(W, nBones, adjacency, iters, lambda) {
         tmp[base + b] = W[base + b] * (1 - lambda) + (acc / n) * lambda;
       }
     }
-    for (const [r] of adjSet) {
-      const base = r * nBones;
-      for (let b = 0; b < nBones; b++) W[base + b] = tmp[base + b];
-    }
+    W.set(tmp);
   }
   // Broadcast representative rows back to their duplicates (watertight seams).
   for (let v = 0; v < count; v++) {
@@ -2555,6 +2561,8 @@ const FINGER_DEFS = [
 // they work on meshes with no explicit finger geometry (they simply collapse
 // near the palm) and provide a reasonable starting pose for detailed hand meshes.
 // Place a single twist bone at the midpoint of each major limb segment.
+// Skip joints that already exist (e.g. seeded from an existing skeleton or
+// overridden by the user) so manual finger/twist edits survive the rig pass.
 function appendTwistJoints(joints, H) {
   const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   const pairs = [
@@ -2568,7 +2576,7 @@ function appendTwistJoints(joints, H) {
     ['RightLegTwist', 'RightUpLeg', 'RightFoot'],
   ];
   for (const [name, a, b] of pairs) {
-    if (!joints[a] || !joints[b]) continue;
+    if (joints[name] || !joints[a] || !joints[b]) continue;
     joints[name] = lerp3(joints[a], joints[b], 0.5);
   }
 }
@@ -2597,10 +2605,12 @@ function appendFingerJoints(joints, H) {
     const mirror = side === 'Right' ? -1 : 1;
     for (const { name: fingerName, offsets } of FINGER_DEFS) {
       for (let i = 0; i < 3; i++) {
+        const jointName = `${side}Hand${fingerName}${i + 1}`;
+        if (joints[jointName]) continue; // keep existing / user-overridden joints
         const off = offsets[i];
         const local = [off[0] * mirror * fingerLen, off[1] * fingerLen, off[2] * fingerLen];
         const w = rotateVec3(local, handRot);
-        joints[`${side}Hand${fingerName}${i + 1}`] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
+        joints[jointName] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
       }
     }
   }
@@ -2883,10 +2893,13 @@ export async function autoRigGLB(buffer, options = {}) {
       const adjacency = buildVertexAdjacency(arr, indices, weldEps);
 
       const { field, sourceMask } = computeBoneSources(arr, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H);
-      diffuseWeightField(field, nB, adjacency, sourceMask, 10, 0.5);
+      diffuseWeightField(field, nB, adjacency, sourceMask, 40, 0.5);
 
       const zoneField = computeRigidZones(arr, joints, boneIndex, H);
       blendRigidZones(field, zoneField, nB, 0.85);
+
+      // Run Laplacian smoothing to make all bone weight boundaries perfectly organic and soft
+      smoothWeightField(field, nB, adjacency, 5, 0.4);
 
       // ── Reduce to top-4 influences + normalize ─────────────────────────────
       const jointsOut = new Uint8Array(count * 4);
@@ -2915,10 +2928,25 @@ export async function autoRigGLB(buffer, options = {}) {
         }
         let total = 0;
         for (const [bi, w] of best) if (bi >= 0) total += w;
-        // Safety fallback for vertices that escaped every source and zone.
+        // Safety fallback for vertices that escaped every source and zone:
+        // Use smooth distance-based inverse square falloff for top 4 closest bones.
         if (total <= 0) {
-          best[0] = [nearestBone[v], 1];
-          total = 1;
+          const dists = [];
+          const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
+          for (let b = 0; b < nB; b++) {
+            const d = distPointSegment(p, segList[b][0], segList[b][1]);
+            dists.push({ index: b, dist: d });
+          }
+          dists.sort((x, y) => x.dist - y.dist);
+          let dTotal = 0;
+          const limit = Math.min(4, dists.length);
+          for (let k = 0; k < limit; k++) {
+            const dVal = Math.max(1e-4, dists[k].dist);
+            const w = 1.0 / (dVal * dVal);
+            best[k] = [dists[k].index, w];
+            dTotal += w;
+          }
+          total = dTotal;
         }
         for (let k = 0; k < 4; k++) {
           const [b, w] = best[k];

@@ -782,6 +782,29 @@ class AnimCtrl {
   }
 }
 
+// Compute a world-space bounding-sphere radius for a root node and its mesh
+// descendants. Used to stop the camera before it clips through the character.
+function computeVisualBoundingRadius(root) {
+  const min = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+  const max = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+  let count = 0;
+  const candidates = [];
+  if (root && root.getBoundingInfo && root.geometry) candidates.push(root);
+  if (root && root.getChildMeshes) {
+    candidates.push(...root.getChildMeshes(true).filter(m => m.getBoundingInfo && m.geometry));
+  }
+  for (const m of candidates) {
+    m.computeWorldMatrix(true);
+    const bb = m.getBoundingInfo().boundingBox;
+    min.minimizeInPlace(bb.minimumWorld);
+    max.maximizeInPlace(bb.maximumWorld);
+    count++;
+  }
+  if (!count) return 1.0;
+  const center = min.add(max).scale(0.5);
+  return Math.max(0.1, center.subtract(max).length());
+}
+
 // ═══════════════════════════════════════════════════════════
 // CHARACTER CONTROLLER
 // ═══════════════════════════════════════════════════════════
@@ -789,6 +812,7 @@ class CharCtrl {
   constructor(root, visualMesh, camera, anim, scene, options = {}) {
     this.root = root; // Capsule collider parent mesh
     this.visualMesh = visualMesh; // Visual character mesh
+    this._visualBoundingRadius = computeVisualBoundingRadius(visualMesh);
     this.camera = camera;
     if (this.camera) {
       this.camera.checkCollisions = false;
@@ -1008,7 +1032,8 @@ class CharCtrl {
       // Keep camera zoom speed, limits, and sensitivities in sync with character scale Y
       const scaleY = this._capScaleY || 1.0;
       if (this.camera) {
-        this.camera.lowerRadiusLimit = 2 * scaleY;
+        const charRadius = (this._visualBoundingRadius || 1.0) * scaleY;
+        this.camera.lowerRadiusLimit = Math.max(0.5, charRadius * 0.95);
         this.camera.upperRadiusLimit = 20 * scaleY;
         this.camera.wheelPrecision = 55 / scaleY;
         this.camera.pinchPrecision = 55 / scaleY;
@@ -1146,9 +1171,10 @@ class CharCtrl {
     this._baseCamFollowDist = this.CAM_FOLLOW_DIST / scaleY;
 
     if (this.camera) {
-      this.camera.lowerRadiusLimit = 2 * scaleY;
+      const charRadius = (this._visualBoundingRadius || 1.0) * scaleY;
+      this.camera.lowerRadiusLimit = Math.max(0.5, charRadius * 0.95);
       this.camera.upperRadiusLimit = 20 * scaleY;
-      this.camera.radius = this.CAM_FOLLOW_DIST;
+      this.camera.radius = Math.max(this.camera.lowerRadiusLimit, this.CAM_FOLLOW_DIST);
 
       this.camera.wheelPrecision = 55 / scaleY;
       this.camera.pinchPrecision = 55 / scaleY;
