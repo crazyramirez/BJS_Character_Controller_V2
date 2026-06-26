@@ -303,6 +303,10 @@
               <span class="chevron" id="chevron-skeleton">▸</span>
             </h3>
             <div id="skeleton-content" class="collapsible-body collapsed">
+              <label class="autorig-symmetry-row" style="margin: 10px 0;"
+                title="Draw the skeleton bones and joints over the character in the viewport.">
+                <input type="checkbox" id="skeleton-show-viewer"> Show skeleton bones
+              </label>
               <div id="skeleton-notice" class="skeleton-no-skin" style="display:none;">
                 <svg viewBox="0 0 24 24">
                   <path d="M12 2a5 5 0 1 0 0 10A5 5 0 0 0 12 2zm0 12c-5.33 0-8 2.67-8 4v2h16v-2c0-1.33-2.67-4-8-4z" />
@@ -346,6 +350,10 @@
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
+                  </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Show the skeleton that will be generated, updated live as you move the markers.">
+                    <input type="checkbox" id="autorig-show-skeleton" checked> Show skeleton preview
                   </label>
                   <div class="autorig-btn-row">
                     <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>

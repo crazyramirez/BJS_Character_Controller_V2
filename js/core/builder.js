@@ -2369,6 +2369,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
   renderCustomAnimationsTab();
   renderAnimationLibrary();
   updateExportCode();
+  updateSkeletonViewer();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2629,6 +2630,30 @@ function renderSkeletonSectionFromBJS() {
   if (countBadge) countBadge.textContent = `${totalBones} bone${totalBones !== 1 ? 's' : ''}`;
 }
 
+// Toggle the optional 3D skeleton viewer (bones drawn over the character).
+function updateSkeletonViewer() {
+  const checkbox = document.getElementById('skeleton-show-viewer');
+  const show = checkbox?.checked;
+  if (!show || !activeCharacter?.rawSkeletons?.length) {
+    if (skeletonViewer) { skeletonViewer.dispose(); skeletonViewer = null; }
+    return;
+  }
+  const skel = activeCharacter.rawSkeletons[0];
+  if (!skeletonViewer || skeletonViewer.skeleton !== skel) {
+    if (skeletonViewer) skeletonViewer.dispose();
+    const mesh = activeCharacter.rawMeshes.find(m => m.skeleton === skel) || activeCharacter.rawMeshes[0];
+    if (!mesh) return;
+    skeletonViewer = new BABYLON.SkeletonViewer(skel, mesh, scene, false, 1, {
+      displayMode: BABYLON.SkeletonViewer.DISPLAY_SPHERE_AND_SPURS,
+    });
+    skeletonViewer.color = BABYLON.Color3.Teal();
+  }
+}
+
+function disposeSkeletonViewer() {
+  if (skeletonViewer) { skeletonViewer.dispose(); skeletonViewer = null; }
+}
+
 // ═══════════════════════════════════════════════════════════
 // AUTO-RIG (skeleton generation for skinless meshes)
 // ═══════════════════════════════════════════════════════════
@@ -2640,6 +2665,9 @@ let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
 // markers jump on re-entry. Keyed nowhere: it's the whole joint map + a token
 // identifying which character buffer it belongs to.
 let lastAppliedRig = null; // { joints: {name:[x,y,z]}, forBuffer: ArrayBuffer }
+
+// Optional Babylon SkeletonViewer for the final rig.
+let skeletonViewer = null;
 
 // Marker color groups (Mixamo-style legend: each anatomical group gets a color)
 const AUTORIG_JOINT_GROUPS = [
@@ -2663,8 +2691,102 @@ const AUTORIG_JOINT_LABELS = {
   RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
 };
 
+// Parent→child pairs used for the live skeleton preview in Auto-Rig mode.
+// (Fingers/twist bones are omitted — only the main markers are shown.)
+const AUTORIG_SKELETON_PREVIEW_HIERARCHY = [
+  ['Hips', 'Spine'],
+  ['Spine', 'Spine1'],
+  ['Spine1', 'Spine2'],
+  ['Spine2', 'Neck'],
+  ['Neck', 'Head'],
+  ['Spine2', 'LeftShoulder'],
+  ['LeftShoulder', 'LeftArm'],
+  ['LeftArm', 'LeftForeArm'],
+  ['LeftForeArm', 'LeftHand'],
+  ['Spine2', 'RightShoulder'],
+  ['RightShoulder', 'RightArm'],
+  ['RightArm', 'RightForeArm'],
+  ['RightForeArm', 'RightHand'],
+  ['Hips', 'LeftUpLeg'],
+  ['LeftUpLeg', 'LeftLeg'],
+  ['LeftLeg', 'LeftFoot'],
+  ['LeftFoot', 'LeftToeBase'],
+  ['Hips', 'RightUpLeg'],
+  ['RightUpLeg', 'RightLeg'],
+  ['RightLeg', 'RightFoot'],
+  ['RightFoot', 'RightToeBase'],
+];
+
 function autoRigGroupOf(jointName) {
   return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
+}
+
+// Create / update the live skeleton preview (cylinders between markers).
+function buildAutoRigSkeletonPreview(markerParent, sceneHeight) {
+  const preview = [];
+  const radius = Math.max(0.004 * sceneHeight, 0.003);
+  for (const [parentName, childName] of AUTORIG_SKELETON_PREVIEW_HIERARCHY) {
+    const group = autoRigGroupOf(childName);
+    const mat = new BABYLON.StandardMaterial(`autorigBoneMat_${parentName}_${childName}`, scene);
+    mat.emissiveColor = group ? BABYLON.Color3.FromHexString(group.color) : new BABYLON.Color3(0.8, 0.8, 0.8);
+    mat.disableLighting = true;
+    mat.alpha = 0.9;
+
+    const bone = BABYLON.MeshBuilder.CreateCylinder(`autorig_bone_${parentName}_${childName}`, {
+      height: 1, diameterTop: radius * 0.7, diameterBottom: radius,
+      tessellation: 6, updatable: true,
+    }, scene);
+    bone.material = mat;
+    bone.parent = markerParent;
+    bone.isPickable = false;
+    bone.renderingGroupId = 1;
+    bone.rotationQuaternion = new BABYLON.Quaternion(0, 0, 0, 1);
+    preview.push({ bone, parentName, childName, mat });
+  }
+  return preview;
+}
+
+function updateAutoRigSkeletonPreview(state) {
+  if (!state || !state.skeletonPreview) return;
+  const show = document.getElementById('autorig-show-skeleton')?.checked ?? true;
+  const V = BABYLON.Vector3;
+  const up = V.Up();
+  for (const entry of state.skeletonPreview) {
+    const { bone, parentName, childName } = entry;
+    // Follow the displayed marker positions (not just the rest-space canonical)
+    // so T-Pose / A-Pose previews and live drags are reflected immediately.
+    const m0 = state.markers?.get(parentName);
+    const m1 = state.markers?.get(childName);
+    const p0 = m0?.position || state.canonical?.get(parentName);
+    const p1 = m1?.position || state.canonical?.get(childName);
+    if (!p0 || !p1) {
+      bone.setEnabled(false);
+      continue;
+    }
+    bone.setEnabled(show);
+    if (!show) continue;
+
+    const dir = p1.subtract(p0);
+    const len = dir.length();
+    if (len < 1e-6) {
+      bone.scaling.setAll(0);
+      continue;
+    }
+    dir.normalizeFromLength(len);
+
+    bone.position.set((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5, (p0.z + p1.z) * 0.5);
+    bone.scaling.set(1, len, 1);
+    BABYLON.Quaternion.FromUnitVectorsToRef(up, dir, bone.rotationQuaternion);
+  }
+}
+
+function disposeAutoRigSkeletonPreview(state) {
+  if (!state || !state.skeletonPreview) return;
+  for (const { bone, mat } of state.skeletonPreview) {
+    bone.dispose(false, false);
+    mat.dispose();
+  }
+  state.skeletonPreview = null;
 }
 
 function renderAutoRigLegend(markers, gizmoManager) {
@@ -2783,6 +2905,12 @@ function setupAutoRigControls() {
   });
   document.querySelectorAll('.autorig-pose-btn').forEach(btn => {
     btn.addEventListener('click', () => forceAutoRigPose(btn.dataset.pose));
+  });
+  document.getElementById('autorig-show-skeleton')?.addEventListener('change', () => {
+    updateAutoRigSkeletonPreview(autoRigState);
+  });
+  document.getElementById('skeleton-show-viewer')?.addEventListener('change', () => {
+    updateSkeletonViewer();
   });
   // Keyboard shortcuts: 1/2/3 views, Q/E rotate character, R/T/A poses, F focus toggle, while in rig mode
   window.addEventListener('keydown', (e) => {
@@ -3995,6 +4123,8 @@ async function startAutoRigAdjust() {
     if (profiling && activeCharacter.rawSkeletons) {
       activeCharacter.rawSkeletons.forEach(sk => sk.prepare());
     }
+
+    updateAutoRigSkeletonPreview(autoRigState);
   });
 
   autoRigState = {
@@ -4009,7 +4139,10 @@ async function startAutoRigAdjust() {
     pausedCtrlCallback: ctrlObserver?.callback || null,
     pausedCamLockCallback: camLockObserver?.callback || null,
     rigPoseBase: new Map(), // node.uniqueId → posed local quaternion (Force-Pose)
+    skeletonPreview: null,
   };
+  autoRigState.skeletonPreview = buildAutoRigSkeletonPreview(markerParent, sceneHeight);
+  updateAutoRigSkeletonPreview(autoRigState);
   enterRigViewportMode();
   // First-time skinless guess: auto-solve marker depth against the mesh so the
   // initial layout already sits inside the body (P1). Restored sessions and
@@ -4044,6 +4177,7 @@ function cancelAutoRigAdjust() {
     autoRigState.gizmoManager?.dispose();
     autoRigState.markers.forEach(m => m.dispose());
     autoRigState.groupMats?.forEach(mat => mat.dispose());
+    disposeAutoRigSkeletonPreview(autoRigState);
     // Resume the paused controller update loop (no-op after apply: reload replaces it)
     if (autoRigState.pausedCtrlCallback && activeCharacter?.charCtrl) {
       activeCharacter.charCtrl._updateObserver =
@@ -4297,6 +4431,7 @@ function clearCharacter() {
   if (ctrl) ctrl.style.display = 'none';
 
   if (activeCharacter) {
+    disposeSkeletonViewer();
     if (activeCharacter.charCtrl) {
       activeCharacter.charCtrl.destroy();
     }

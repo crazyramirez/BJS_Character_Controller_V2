@@ -563,6 +563,21 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     }
   }
 
+  // Closed-leg fallback: the split test often misses trousers/jeans/closed
+  // stances. The crotch is then the narrowest horizontal band between the hips
+  // and the knees that still has mass on both sides.
+  if (crotchY === null && !skirtMode) {
+    let narrowestY = null, narrowestW = Infinity;
+    const crotchLo = Math.floor(0.28 * BINS), crotchHi = Math.floor(0.52 * BINS);
+    for (let b = crotchLo; b <= crotchHi; b++) {
+      const bin = bins[b];
+      if (!bin || bin.n < 8 || bin.left.length < 3 || bin.right.length < 3) continue;
+      const w = median(bin.left) + median(bin.right);
+      if (w < narrowestW) { narrowestW = w; narrowestY = groundY + (b / BINS) * H; }
+    }
+    if (narrowestY !== null) crotchY = narrowestY;
+  }
+
   if (crotchY !== null) {
     const hipsY = Math.min(crotchY + 0.05 * H, groundY + 0.62 * H);
     const upLegY = Math.min(crotchY + 0.015 * H, hipsY - 0.02 * H);
@@ -2743,6 +2758,18 @@ export async function autoRigGLB(buffer, options = {}) {
   appendTwistJoints(joints, H);
   appendFingerJoints(joints, H);
   const { worldRots, localRots } = computeJointRotations(joints, flip);
+
+  // For a -Z-facing mesh the skeleton root is rotated 180° about Y so the bind
+  // pose matches the character's actual forward. The actual world rotation of
+  // every joint must include that flip when we compute local offsets and the
+  // inverse bind matrices — otherwise W_bind·IBM ≠ identity and the mesh is
+  // deformed/rotated at rest.
+  const r180y = [0, 1, 0, 0];
+  const bindWorldRots = {};
+  for (const name of JOINT_ORDER) {
+    bindWorldRots[name] = flip ? qNormalize(qMul(r180y, worldRots[name])) : worldRots[name];
+  }
+
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
   for (const name of JOINT_ORDER) {
@@ -2752,9 +2779,10 @@ export async function autoRigGLB(buffer, options = {}) {
     if (parentName) {
       const p = joints[parentName];
       const d = [world[0] - p[0], world[1] - p[1], world[2] - p[2]];
-      // Convert world-space offset to parent's local space so the joint node
-      // hierarchy reproduces the intended world positions exactly.
-      localT = rotateVec3(d, qInvert(worldRots[parentName]));
+      // Convert world-space offset to parent's LOCAL space so the joint node
+      // hierarchy reproduces the intended world positions exactly. Use the
+      // parent's actual bind world rotation (including the -Z flip).
+      localT = rotateVec3(d, qInvert(bindWorldRots[parentName]));
     } else {
       localT = world.slice();
     }
@@ -2769,9 +2797,11 @@ export async function autoRigGLB(buffer, options = {}) {
 
   // ── 3. Inverse bind matrices ───────────────────────────────────────────────
   // W_bind = T(p)·R. IBM = inv(W_bind) = R⁻¹·T(-p).
+  // Use bindWorldRots so the IBM matches the node's actual world rotation after
+  // the optional -Z root flip. This keeps W_bind·IBM = identity at rest.
   const ibmData = new Float32Array(JOINT_ORDER.length * 16);
   JOINT_ORDER.forEach((name, i) => {
-    const W = composeMat4(joints[name], worldRots[name], [1, 1, 1]);
+    const W = composeMat4(joints[name], bindWorldRots[name], [1, 1, 1]);
     const IBM = invertRigidMat4(W);
     ibmData.set(IBM, i * 16);
   });
