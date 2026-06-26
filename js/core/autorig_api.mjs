@@ -1268,6 +1268,27 @@ const SEED_ALIASES = {
   RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe', 'rtoebase', 'ballr', 'rball', 'rtoe0', 'rtoe'],
 };
 
+// Populate finger joint aliases dynamically
+for (const side of ['Left', 'Right']) {
+  const s = side.toLowerCase();
+  const sPrefix = side === 'Left' ? 'l' : 'r';
+  for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+    const f = finger.toLowerCase();
+    for (let i = 1; i <= 3; i++) {
+      const canon = `${side}Hand${finger}${i}`;
+      SEED_ALIASES[canon] = [
+        `${s}hand${f}${i}`,
+        `${sPrefix}hand${f}${i}`,
+        `${s}${f}${i}`,
+        `${sPrefix}${f}${i}`,
+        `${sPrefix}${f}0${i}`,
+        `${f}0${i}${sPrefix}`,
+        `${f}${i}${sPrefix}`,
+      ];
+    }
+  }
+}
+
 function seedNorm(name) {
   if (!name) return '';
   let n = name.toLowerCase();

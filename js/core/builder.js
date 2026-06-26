@@ -608,10 +608,6 @@ function setupCharTransformControls() {
   // PIVOT: NEVER baked — folding pivot into the geometry deforms the character.
   // It stays a live wrapper offset and is folded only at export via getMergeOptions.
   const onScalePivotInput = () => {
-    if (posturePreviewBaked) {
-      posturePreviewBaked = false;
-      enterLivePosturePreview();
-    }
     onSliderChange();
   };
   uniformToggle?.addEventListener('change', () => { onScalePivotInput(); scheduleScalePivotBake(); });
@@ -622,22 +618,17 @@ function setupCharTransformControls() {
   [pivotXSlider, pivotYSlider, pivotZSlider].forEach(s => {
     s?.addEventListener('input', onScalePivotInput); // live wrapper only, no bake
   });
-  // Posture sliders: live exact preview while dragging (observer), bake on release.
+  // Posture sliders: live exact preview while dragging (observer).
+  // No server bake on release: the live observer applies angles instantly and smoothly,
+  // and they are baked on final export/download.
   const postureSliders = [armSpreadSlider, armSplaySlider, shoulderRaiseSlider,
     legSpreadSlider, spineStraightenSlider, hipsTiltSlider, footToeOutSlider, handRelaxSlider];
 
-  // First drag after a bake → swap back to the clean buffer so the observer layers
-  // the live offset on a clean bind (not on the already-baked pose).
   const onPostureInput = () => {
-    if (posturePreviewBaked) {
-      posturePreviewBaked = false;
-      enterLivePosturePreview();
-    }
     onSliderChange();
   };
   postureSliders.forEach(s => {
     s?.addEventListener('input', onPostureInput);
-    s?.addEventListener('change', schedulePostureRebake); // release → bake into the GLB
   });
 
   resetBtn?.addEventListener('click', () => {
@@ -1523,94 +1514,8 @@ async function updateSkeletonInfoAfterMerge(mergedBuffer) {
   }
 }
 
-// Build (once) the posture-free GLB — same merge as export but with every posture
-// angle zeroed. Used as the live drag base so the observer layers its offset on a
-// clean bind, never on top of an already-baked pose (which would double it).
-async function ensureCleanPreviewBuffer() {
-  if (cleanPreviewBuffer) return cleanPreviewBuffer;
-  if (!isServerAvailable || !originalCharacterGlbBuffer) return null;
-  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
-  const opts = getMergeOptions({ removeExistingAnimations: hasAnim });
-  // Zero posture AND scale/pivot: the live drag preview applies these via the
-  // capsule/wrapper transform, so the base buffer must be neutral or they'd stack
-  // (baked geometry × wrapper = double size/offset).
-  for (const k of ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
-    'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE',
-    'PIVOT_X', 'PIVOT_Y', 'PIVOT_Z']) opts[k] = 0;
-  opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
-  const formData = new FormData();
-  formData.append('character', new Blob([originalCharacterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-  if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
-  formData.append('options', JSON.stringify(opts));
-  const res = await fetch('/api/merge', { method: 'POST', body: formData });
-  if (!res.ok) throw new Error('clean preview merge failed');
-  cleanPreviewBuffer = await res.arrayBuffer();
-  return cleanPreviewBuffer;
-}
-
-// First drag after a bake: swap the scene to the clean (posture-free) GLB so the
-// live observer offset applies on a clean bind. Keeps posturePreviewBaked=false.
-async function enterLivePosturePreview() {
-  if (!isServerAvailable || _enteringLivePreview) return;
-  _enteringLivePreview = true;
-  try {
-    const buf = await ensureCleanPreviewBuffer();
-    if (buf) await _loadGlbIntoScene(buf, 'clean-preview.glb'); // resets posturePreviewBaked=false
-  } catch (err) {
-    console.warn('[posture] clean preview load failed; observer may double on baked pose:', err);
-  } finally {
-    _enteringLivePreview = false;
-  }
-}
-
-// On slider release: bake the current posture on the server (the exact export
-// pipeline) and reload, so the clips carry the pose in their tracks — no snapping.
-function schedulePostureRebake() {
-  if (!isServerAvailable || !originalCharacterGlbBuffer) return; // observer-only fallback (offline)
-  if (_postureRebakeTimer) clearTimeout(_postureRebakeTimer);
-  _postureRebakeTimer = setTimeout(() => { _postureRebakeTimer = null; rebakePosturePreview(); }, 350);
-}
-
-async function rebakePosturePreview() {
-  if (!isServerAvailable || !originalCharacterGlbBuffer) return;
-  const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
-  // After "Clear All" the character must stay animation-free. Strip baked anims
-  // on every re-merge too, otherwise a posture/param change re-bakes from the
-  // original (which still carries its clips) and the groups reappear.
-  const stripAnims = hasAnim || animationsCleared;
-  showLoading('Applying posture…');
-  try {
-    const formData = new FormData();
-    // Bake posture from the scale-baked baseline if it exists (so accumulated
-    // scale/pivot is preserved), else the CLEAN original. Posture is applied once,
-    // not stacked, because the base never carries posture.
-    const postureBase = scaledCharacterBuffer || originalCharacterGlbBuffer;
-    formData.append('character', new Blob([postureBase], { type: 'model/gltf-binary' }), 'character.glb');
-    if (hasAnim) formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
-    // Bake POSTURE only — scale/pivot are already in the baseline geometry (or the
-    // live wrapper applies them), so zero them here to avoid doubling.
-    const opts = getMergeOptions({ removeExistingAnimations: stripAnims, keepTPose: stripAnims && !hasAnim });
-    opts.SCALE_X = 1; opts.SCALE_Y = 1; opts.SCALE_Z = 1;
-    opts.PIVOT_X = 0; opts.PIVOT_Y = 0; opts.PIVOT_Z = 0;
-    formData.append('options', JSON.stringify(opts));
-
-    const res = await fetch('/api/merge', { method: 'POST', body: formData });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || 'Server merge failed');
-    }
-    const mergedBuffer = await res.arrayBuffer();
-    characterGlbBuffer = mergedBuffer;          // this is what export uses
-    if (hasAnim) animationsCleared = false;     // only real new anims un-clear; cleared state persists otherwise
-    await _loadGlbIntoScene(mergedBuffer, 'merged.glb'); // sets posturePreviewBaked=false
-    posturePreviewBaked = true;                 // pose now lives in the GLB → observer holds at 0
-    hideLoading();
-  } catch (err) {
-    console.error('[posture-rebake] server merge failed:', err);
-    posturePreviewBaked = false;                // keep the live observer preview
-    hideLoading();
-  }
-}
+// Posture baking functions removed. Preview now runs entirely with the real-time boneOffsetObserver,
+// and posture is baked on the server only during final export.
 
 // On scale/pivot slider release: fold the current scale/pivot into the geometry
 // (accumulating onto the previous baked result), reload, then reset the sliders to
@@ -1685,7 +1590,11 @@ async function applyPreloadedAnimations() {
       formData.append('character', new Blob([characterGlbBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animationsGlbBuffer], { type: 'model/gltf-binary' }), 'animations-basic.glb');
 
-      formData.append('options', JSON.stringify(getMergeOptions()));
+      const opts = getMergeOptions();
+      // Zero posture: the live observer applies these in the preview scene, so the base buffer must be posture-free.
+      ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
+        'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
+      formData.append('options', JSON.stringify(opts));
 
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
       if (!res.ok) {
@@ -1774,7 +1683,11 @@ async function loadAnimationBatchFile(file) {
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animBuffer], { type: 'model/gltf-binary' }), file.name);
 
-      formData.append('options', JSON.stringify(getMergeOptions()));
+      const opts = getMergeOptions();
+      // Zero posture: the live observer applies these in the preview scene, so the base buffer must be posture-free.
+      ['ARM_SPREAD_ANGLE', 'ARM_SPLAY_ANGLE', 'SHOULDER_RAISE_ANGLE', 'LEG_SPREAD_ANGLE',
+        'SPINE_STRAIGHTEN_ANGLE', 'HIPS_TILT_ANGLE', 'FOOT_TOE_OUT_ANGLE', 'HAND_RELAX_ANGLE'].forEach(k => { opts[k] = 0; });
+      formData.append('options', JSON.stringify(opts));
 
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
       if (!res.ok) {
@@ -3954,7 +3867,11 @@ async function startAutoRigAdjust() {
         m.position.copyFrom(local);
       }
       const sv = guess.joints[name];
-      if (sv) fitPairs.push({ local: m.position.clone(), server: sv });
+      // Do not include fingers in the coordinate-fitting system, as their procedural guesses
+      // can deviate significantly from the actual bones and distort the global affine transform.
+      if (sv && !isFingerJoint(name)) {
+        fitPairs.push({ local: m.position.clone(), server: sv });
+      }
     });
     // Markers are now displayed in Babylon scene space (snapped to bones), but
     // the server rigs in its own RENDER-WORLD space (guessJoints / autorig). On
@@ -6139,6 +6056,41 @@ async function importBuilderConfigFile(file) {
   }
 }
 
+// Emits an ESM wrapper so the (custom) controller can be imported in a
+// TypeScript/bundler project. It imports the same Babylon build, registers
+// the glTF loader (fixes "addPendingData is not a function"), exposes the
+// globals the controller expects, then re-exports its public API.
+function downloadModuleWrapper(targetFile) {
+  const wrapper = `// ESM / TypeScript entry for ${targetFile} (no build step required).
+// USAGE: import { setupCharacter, initPhysics } from "./${targetFile.replace(/\.js$/, '.module.js')}";
+// NOTE: use ONE Babylon build everywhere — don't mix "babylonjs" and "@babylonjs/core".
+import * as BABYLON from "@babylonjs/core";
+import "@babylonjs/loaders/glTF";
+
+globalThis.BABYLON = BABYLON;
+
+try {
+  const { default: HavokPhysics } = await import("@babylonjs/havok");
+  globalThis.HavokPhysics = HavokPhysics;
+} catch {
+  // @babylonjs/havok not installed — kinematic mode still works.
+}
+
+await import("./${targetFile}");
+
+export const {
+  S, ACTION_STATES, AnimCtrl, CharCtrl, normBone, cleanAnimName,
+  lerp, lerpAngle, loadCharacterRuntime, swapCharacterAnimations,
+  setupCharacter, loadCharacter, initPhysics,
+} = globalThis;
+`;
+  const blob = new Blob([wrapper], { type: 'application/javascript' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = targetFile.replace(/\.js$/, '.module.js');
+  link.click();
+}
+
 async function downloadControllerFile() {
   showLoading('Generating custom character-controller.js…');
   try {
@@ -6188,8 +6140,13 @@ async function downloadControllerFile() {
     link.download = 'custom-character-controller.js';
     link.click();
 
+    // Also emit an ESM/TypeScript entry wrapper pointing at the custom file.
+    // Lets users import it in a bundler project without a build step:
+    //   import { setupCharacter, initPhysics } from "./custom-character-controller.module.js";
+    downloadModuleWrapper('custom-character-controller.js');
+
     hideLoading();
-    showToast('Downloaded custom-character-controller.js!');
+    showToast('Downloaded custom-character-controller.js (+ .module.js)!');
   } catch (err) {
     console.error(err);
     hideLoading();
