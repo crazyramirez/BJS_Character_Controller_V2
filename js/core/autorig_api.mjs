@@ -1392,7 +1392,7 @@ function seedJointsFromSkins(doc) {
   // with the merge-time chain shift (Spine→Waist, Spine1→Spine01, Spine2→Spine02)
   // so Spine2 gets a real seed instead of a mesh guess overlapping Spine1.
   if (worldByNorm.has('waist') && worldByNorm.has('spine01') &&
-      worldByNorm.has('spine02') && !worldByNorm.has('spine03')) {
+    worldByNorm.has('spine02') && !worldByNorm.has('spine03')) {
     seeded.Spine = worldByNorm.get('waist').pos;
     seeded.Spine1 = worldByNorm.get('spine01').pos;
     seeded.Spine2 = worldByNorm.get('spine02').pos;
@@ -1787,18 +1787,18 @@ function composeMat4([tx, ty, tz], [qx, qy, qz, qw], [sx, sy, sz]) {
 }
 
 function qNormalize(q) {
-  const len = Math.sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-  return len > 0 ? [q[0]/len, q[1]/len, q[2]/len, q[3]/len] : [0, 0, 0, 1];
+  const len = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  return len > 0 ? [q[0] / len, q[1] / len, q[2] / len, q[3] / len] : [0, 0, 0, 1];
 }
 function vec3Subtract(a, b) {
-  return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 function vec3Normalize(v) {
-  const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-  return len > 0 ? [v[0]/len, v[1]/len, v[2]/len] : [0, 0, 0];
+  const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 0, 0];
 }
 function vec3Length(v) {
-  return Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 }
 function qInvert(q) {
   return [-q[0], -q[1], -q[2], q[3]];
@@ -1825,20 +1825,20 @@ function rotateVec3(v, q) {
   ];
 }
 function quatFromTwoVectors(a, b) {
-  const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   if (dot < -0.99999) {
     let axis = [a[1], -a[0], 0];
-    if (Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1]) < 0.0001) {
+    if (Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1]) < 0.0001) {
       axis = [0, a[2], -a[1]];
     }
-    const len = Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
-    return qNormalize([axis[0]/len, axis[1]/len, axis[2]/len, 0]);
+    const len = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    return qNormalize([axis[0] / len, axis[1] / len, axis[2] / len, 0]);
   }
   if (dot > 0.99999) return [0, 0, 0, 1];
   const cross = [
-    a[1]*b[2] - a[2]*b[1],
-    a[2]*b[0] - a[0]*b[2],
-    a[0]*b[1] - a[1]*b[0]
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]
   ];
   return qNormalize([cross[0], cross[1], cross[2], 1 + dot]);
 }
@@ -1934,10 +1934,10 @@ function adjustExistingRig(doc, targetJoints = {}) {
   const origWorldRot = new Map();
   const origWorldScale = new Map();
   const matCache = new Map();
-  
+
   for (const node of doc.getRoot().listNodes()) {
     const W_render = worldMatrixOf(node, parentMap, matCache); // Node's bind matrix in GLTF world space
-    
+
     origWorldPos.set(node, [W_render[12], W_render[13], W_render[14]]);
 
     const sx = Math.hypot(W_render[0], W_render[1], W_render[2]) || 1;
@@ -1971,7 +1971,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
   // CC/AccuRig 3-bone spine: markers follow the same chain shift as the merge
   // (Spine→Waist, Spine1→Spine01, Spine2→Spine02); overrides the generic pass.
   if (normToNode.has('waist') && normToNode.has('spine01') &&
-      normToNode.has('spine02') && !normToNode.has('spine03')) {
+    normToNode.has('spine02') && !normToNode.has('spine03')) {
     for (const [canon, alias] of [['Spine', 'waist'], ['Spine1', 'spine01'], ['Spine2', 'spine02']]) {
       if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), [...targetJoints[canon]]);
     }
@@ -2048,7 +2048,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
     }
   }
   if (normToNode.has('waist') && normToNode.has('spine01') &&
-      normToNode.has('spine02') && !normToNode.has('spine03')) {
+    normToNode.has('spine02') && !normToNode.has('spine03')) {
     canonToNode.set('Spine', normToNode.get('waist'));
     canonToNode.set('Spine1', normToNode.get('spine01'));
     canonToNode.set('Spine2', normToNode.get('spine02'));
@@ -2671,8 +2671,8 @@ function boneSourceRadius(name, H) {
   if (name === 'Hips' || name === 'Spine' || name === 'Spine1' || name === 'Spine2') return 0.08 * H;
   if (name === 'LeftShoulder' || name === 'RightShoulder') return 0.05 * H;
   if (name === 'LeftHand' || name === 'RightHand' ||
-      name === 'LeftFoot' || name === 'RightFoot' ||
-      name === 'LeftToeBase' || name === 'RightToeBase') return 0.06 * H;
+    name === 'LeftFoot' || name === 'RightFoot' ||
+    name === 'LeftToeBase' || name === 'RightToeBase') return 0.06 * H;
   if (/Hand(Thumb|Index|Middle|Ring|Pinky)/.test(name)) return 0.025 * H;
   if (/Twist$/.test(name)) return 0.04 * H;
   return 0.05 * H;
@@ -2869,11 +2869,11 @@ function blendRigidZones(field, zone, nBones, zoneBlend) {
 // X spans across the palm (positive = thumb side on the left hand), Z is palm
 // normal. Values are fractions of the detected finger length.
 const FINGER_DEFS = [
-  { name: 'Thumb',  offsets: [[0.25, 0.12, 0.02], [0.22, 0.40, 0.05], [0.18, 0.68, 0.06]] },
-  { name: 'Index',  offsets: [[0.32, 0.06, 0.00], [0.32, 0.38, 0.00], [0.32, 0.72, 0.00]] },
+  { name: 'Thumb', offsets: [[0.25, 0.12, 0.02], [0.22, 0.40, 0.05], [0.18, 0.68, 0.06]] },
+  { name: 'Index', offsets: [[0.32, 0.06, 0.00], [0.32, 0.38, 0.00], [0.32, 0.72, 0.00]] },
   { name: 'Middle', offsets: [[0.10, 0.06, 0.00], [0.10, 0.42, 0.00], [0.10, 0.78, 0.00]] },
-  { name: 'Ring',   offsets: [[-0.12, 0.06, 0.00], [-0.12, 0.40, 0.00], [-0.12, 0.74, 0.00]] },
-  { name: 'Pinky',  offsets: [[-0.34, 0.05, 0.00], [-0.34, 0.32, 0.00], [-0.34, 0.60, 0.00]] },
+  { name: 'Ring', offsets: [[-0.12, 0.06, 0.00], [-0.12, 0.40, 0.00], [-0.12, 0.74, 0.00]] },
+  { name: 'Pinky', offsets: [[-0.34, 0.05, 0.00], [-0.34, 0.32, 0.00], [-0.34, 0.60, 0.00]] },
 ];
 
 // Append Mixamo-style finger joints to the `joints` record. Fingers are
