@@ -342,6 +342,10 @@
                     <input type="checkbox" id="autorig-depth-snap" checked> Auto-depth (solve the hidden axis from the
                     mesh)
                   </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="After you drag a marker, automatically center it inside the limb/body volume (solving both depth and lateral centering).">
+                    <input type="checkbox" id="autorig-volumetric-snap"> Volumetric snap (auto-center inside limb)
+                  </label>
                   <button id="btn-autorig-snap-body" class="btn-action btn-secondary"
                     style="margin-top: 6px; width: 100%;"
                     title="Re-center every marker to the middle of the body along the current view depth.">
@@ -981,8 +985,10 @@
               </button>
             </div>
             <div class="autorig-mockup-body">
-              <img src="assets/pose.webp" alt="Character pose reference — joint marker positions"
-                class="autorig-mockup-img" draggable="false" />
+              <div class="autorig-mockup-container" style="position: relative; width: 100%;">
+                <img src="assets/pose.webp" alt="Character pose reference — joint marker positions"
+                  class="autorig-mockup-img" draggable="false" />
+              </div>
               <p class="autorig-mockup-hint">Drag each colored marker onto the matching joint.</p>
             </div>
           </div>
@@ -1000,6 +1006,24 @@
         <div class="hud-panel">
           <h4>Current Speed</h4>
           <div class="hud-stat" id="hud-speed">0.00 m/s</div>
+        </div>
+        <!-- Rig Test Drive Panel -->
+        <div id="autorig-testdrive-panel" class="hud-panel" style="display: none; pointer-events: auto; min-width: 200px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 6px;">
+            <h4 style="margin: 0; font-size: 0.65rem; color: var(--cyan); letter-spacing: 0.1em;">🚗 RIG TEST DRIVE</h4>
+            <button id="btn-testdrive-close" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;">✕</button>
+          </div>
+          <p style="margin: 0 0 10px 0; font-size: 0.68rem; line-height: 1.35; color: var(--text-secondary);">
+            Test deforms under motion. If wrong, re-adjust the markers.
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <button id="btn-testdrive-idle" class="btn-testdrive active">Stand (Idle)</button>
+            <button id="btn-testdrive-walk" class="btn-testdrive">Walk Cycle</button>
+            <button id="btn-testdrive-run" class="btn-testdrive">Run Cycle</button>
+            <button id="btn-testdrive-adjust" class="btn-action btn-primary" style="font-size: 0.72rem; padding: 8px 12px; margin-top: 4px; background: linear-gradient(135deg, #7c3aed 0%, var(--accent) 55%, #6d28d9 100%);">
+              ⚙ Re-Adjust Rig
+            </button>
+          </div>
         </div>
       </div>
 

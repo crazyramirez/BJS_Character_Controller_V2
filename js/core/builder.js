@@ -2787,6 +2787,31 @@ function getAutoRigJointGroups(fingerCount = 5) {
   ];
 }
 
+const MOCKUP_COORDS = {
+  Head: { x: 50, y: 8 },
+  Neck: { x: 50, y: 15 },
+  Spine2: { x: 50, y: 22 },
+  Spine1: { x: 50, y: 29 },
+  Spine: { x: 50, y: 36 },
+  Hips: { x: 50, y: 44 },
+  LeftShoulder: { x: 56, y: 19 },
+  LeftArm: { x: 62, y: 21 },
+  LeftForeArm: { x: 74, y: 25 },
+  LeftHand: { x: 86, y: 29 },
+  RightShoulder: { x: 44, y: 19 },
+  RightArm: { x: 38, y: 21 },
+  RightForeArm: { x: 26, y: 25 },
+  RightHand: { x: 14, y: 29 },
+  LeftUpLeg: { x: 56, y: 50 },
+  LeftLeg: { x: 56, y: 70 },
+  LeftFoot: { x: 56, y: 88 },
+  LeftToeBase: { x: 56, y: 94 },
+  RightUpLeg: { x: 44, y: 50 },
+  RightLeg: { x: 44, y: 70 },
+  RightFoot: { x: 44, y: 88 },
+  RightToeBase: { x: 44, y: 94 }
+};
+
 // Friendly anatomical names shown in the hover tooltip
 const AUTORIG_JOINT_LABELS = {
   Hips: 'Hips', Spine: 'Lower Spine', Spine1: 'Mid Spine', Spine2: 'Chest',
@@ -2963,14 +2988,128 @@ function renderAutoRigLegend(markers, gizmoManager) {
     }).join('');
 
   el.querySelectorAll('.autorig-joint-btn').forEach(btn => {
+    const jointName = btn.dataset.joint;
+
     btn.addEventListener('click', () => {
-      const jointName = btn.dataset.joint;
       const m = activeMarkers.get(jointName);
       if (m && activeGizmo) {
         activeGizmo.attachToMesh(m);
         renderAutoRigLegend(activeMarkers, activeGizmo);
       }
     });
+
+    // Hover linkage (Sidebar -> 3D and 2D Mockup)
+    btn.addEventListener('pointerenter', () => {
+      btn.classList.add('hovered');
+      
+      const m = activeMarkers.get(jointName);
+      if (m) {
+        m.showBoundingBox = true;
+      }
+      
+      const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
+      if (dot) dot.classList.add('active');
+    });
+
+    btn.addEventListener('pointerleave', () => {
+      btn.classList.remove('hovered');
+      
+      const m = activeMarkers.get(jointName);
+      if (m) {
+        m.showBoundingBox = false;
+      }
+      
+      const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
+      if (dot) dot.classList.remove('active');
+    });
+  });
+}
+
+function setupAutoRigMockupDots(markers, gizmoManager) {
+  const mockup = document.getElementById('autorig-mockup');
+  if (!mockup) return;
+
+  const body = mockup.querySelector('.autorig-mockup-body');
+  if (!body) return;
+
+  // Make sure we have a relative container wrapping the img
+  let container = body.querySelector('.autorig-mockup-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.className = 'autorig-mockup-container';
+    container.style.position = 'relative';
+    container.style.width = '100%';
+    
+    const img = body.querySelector('.autorig-mockup-img');
+    if (img) {
+      body.insertBefore(container, img);
+      container.appendChild(img);
+    }
+  }
+
+  // Remove any existing dots
+  container.querySelectorAll('.autorig-mockup-dot').forEach(d => d.remove());
+
+  const activeMarkers = markers || autoRigState?.markers;
+  const activeGizmo = gizmoManager || autoRigState?.gizmoManager;
+  if (!activeMarkers) return;
+
+  const fingerCount = autoRigState?.fingerCount || 5;
+  const jointGroups = getAutoRigJointGroups(fingerCount);
+
+  Object.entries(MOCKUP_COORDS).forEach(([jointName, coord]) => {
+    // Only show if the marker actually exists
+    if (!activeMarkers.has(jointName)) return;
+
+    const group = jointGroups.find(g => g.joints.includes(jointName));
+    const dot = document.createElement('div');
+    dot.className = 'autorig-mockup-dot';
+    dot.setAttribute('data-joint', jointName);
+    dot.style.left = `${coord.x}%`;
+    dot.style.top = `${coord.y}%`;
+    if (group) {
+      dot.style.setProperty('--color', group.color);
+      dot.style.backgroundColor = group.color;
+    }
+    
+    const label = AUTORIG_JOINT_LABELS[jointName] || jointName;
+    dot.title = label;
+
+    // Hover linkage (Mockup -> 3D and Sidebar)
+    dot.addEventListener('pointerenter', () => {
+      dot.classList.add('active');
+      
+      const m = activeMarkers.get(jointName);
+      if (m) {
+        m.showBoundingBox = true;
+      }
+      
+      const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
+      if (btn) btn.classList.add('hovered');
+    });
+
+    dot.addEventListener('pointerleave', () => {
+      dot.classList.remove('active');
+      
+      const m = activeMarkers.get(jointName);
+      if (m) {
+        m.showBoundingBox = false;
+      }
+      
+      const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
+      if (btn) btn.classList.remove('hovered');
+    });
+
+    // Click to select joint
+    dot.addEventListener('click', () => {
+      const m = activeMarkers.get(jointName);
+      if (m && activeGizmo) {
+        activeGizmo.attachToMesh(m);
+        renderAutoRigLegend(activeMarkers, activeGizmo);
+      }
+    });
+
+    container.appendChild(dot);
   });
 }
 
@@ -3206,6 +3345,9 @@ function exitRigViewportMode(state) {
   }
   if (vm.pointerObserver) scene.onPointerObservable.remove(vm.pointerObserver);
   scene.stopAnimation(camera);
+  // Safety: if a marker drag was interrupted, camera controls may still be
+  // detached — make sure orbit/pan work again after leaving rig mode.
+  camera.attachControl(true);
   if (vm.prevPanningSensibility !== undefined) camera.panningSensibility = vm.prevPanningSensibility;
   if (vm.prevTarget) camera.target.copyFrom(vm.prevTarget); // undo any panning offset
   scene.clearColor = vm.prevClearColor;
@@ -3661,6 +3803,7 @@ function mirrorAutoRigLeftRight() {
   // Update visual dependents.
   updateAutoRigSkeletonPreview(st);
   renderAutoRigLegend(st.markers, st.gizmoManager);
+  setupAutoRigMockupDots(st.markers, st.gizmoManager);
   st.mirrored = !st.mirrored;
   showToast(st.mirrored ? 'Left/Right mirrored.' : 'Left/Right restored.');
 }
@@ -4177,6 +4320,22 @@ async function startAutoRigAdjust() {
     tipEl.style.display = 'block';
   };
   const hideTip = () => { if (tipEl) tipEl.style.display = 'none'; };
+  let lastHoveredJoint = null;
+  const clearLastHovered = () => {
+    if (lastHoveredJoint) {
+      const oldBtn = document.querySelector(`.autorig-joint-btn[data-joint="${lastHoveredJoint}"]`);
+      if (oldBtn) oldBtn.classList.remove('hovered');
+      
+      const oldDot = document.querySelector(`.autorig-mockup-dot[data-joint="${lastHoveredJoint}"]`);
+      if (oldDot) oldDot.classList.remove('active');
+
+      const oldMarker = markers.get(lastHoveredJoint);
+      if (oldMarker) oldMarker.showBoundingBox = false;
+
+      lastHoveredJoint = null;
+    }
+  };
+
   const hoverObserver = scene.onPointerObservable.add((pi) => {
     if (pi.type !== BABYLON.PointerEventTypes.POINTERMOVE) return;
     // While dragging a marker keep its label pinned to the gizmo-attached mesh
@@ -4186,9 +4345,27 @@ async function startAutoRigAdjust() {
       ? gizmoManager.attachedMesh
       : scene.pick(scene.pointerX, scene.pointerY, (m) => !!m.metadata?.autorigJoint)?.pickedMesh;
     if (mesh?.metadata?.autorigJoint) {
-      showTip(mesh.metadata.autorigJoint, scene.pointerX, scene.pointerY);
+      const jointName = mesh.metadata.autorigJoint;
+      showTip(jointName, scene.pointerX, scene.pointerY);
+      
+      if (lastHoveredJoint !== jointName) {
+        clearLastHovered();
+        lastHoveredJoint = jointName;
+        
+        // Highlight Sidebar button
+        const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
+        if (btn) btn.classList.add('hovered');
+        
+        // Highlight 2D Mockup dot
+        const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
+        if (dot) dot.classList.add('active');
+
+        // Show bounding box highlight
+        mesh.showBoundingBox = true;
+      }
     } else {
       hideTip();
+      clearLastHovered();
     }
   });
 
@@ -4276,6 +4453,24 @@ async function startAutoRigAdjust() {
 
   let isDraggingMarker = false;
 
+  // Freeze the camera the instant the pointer goes DOWN on a marker — before the
+  // ArcRotate camera can interpret the drag as an orbit. Detaching inside the
+  // drag-behavior's onDragStart is too late: the camera already captured the
+  // gesture on pointerdown. Re-attach on pointer up.
+  let cameraFrozenForMarker = false;
+  const markerCameraGuard = scene.onPointerObservable.add((pi) => {
+    if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) {
+      const hit = scene.pick(scene.pointerX, scene.pointerY, msh => !!msh.metadata?.autorigJoint);
+      if (hit?.hit && hit.pickedMesh?.metadata?.autorigJoint) {
+        camera.detachControl();
+        cameraFrozenForMarker = true;
+      }
+    } else if (pi.type === BABYLON.PointerEventTypes.POINTERUP && cameraFrozenForMarker) {
+      cameraFrozenForMarker = false;
+      camera.attachControl(true);
+    }
+  });
+
   // Attach direct screen-space pointer-dragging behaviors to all markers
   markers.forEach((m, name) => {
     const dragBehavior = new BABYLON.PointerDragBehavior();
@@ -4286,6 +4481,9 @@ async function startAutoRigAdjust() {
       isDraggingMarker = true;
       if (camera) {
         dragBehavior.options.dragPlaneNormal.copyFrom(camera.getForwardRay().direction);
+        // Freeze the camera while dragging a marker so the orbit/pan controls
+        // don't fight the drag (otherwise the camera moves with the marker).
+        camera.detachControl();
       }
       gizmoManager.attachToMesh(m);
       renderAutoRigLegend(markers, gizmoManager);
@@ -4312,7 +4510,9 @@ async function startAutoRigAdjust() {
 
     dragBehavior.onDragEndObservable.add(() => {
       isDraggingMarker = false;
-      
+      // Restore camera controls now that the drag is finished.
+      if (camera) camera.attachControl(true);
+
       const snap = document.getElementById('autorig-depth-snap');
       if ((!snap || snap.checked) && !document.getElementById('autorig-pose-profiling')?.checked) {
         snapMarkerToMeshDepth(m);
@@ -4339,9 +4539,13 @@ async function startAutoRigAdjust() {
   if (posGizmo) {
     [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
       if (g && g.dragBehavior) {
-        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
+        g.dragBehavior.onDragStartObservable.add(() => {
+          isDraggingMarker = true;
+          if (camera) camera.detachControl();
+        });
         g.dragBehavior.onDragEndObservable.add(() => {
           isDraggingMarker = false;
+          if (camera) camera.attachControl(true);
           // Auto-solve depth after a screen-plane drag so the user never has to
           // fight the third axis (toggle: #autorig-depth-snap, default on).
           const snap = document.getElementById('autorig-depth-snap');
@@ -4354,6 +4558,7 @@ async function startAutoRigAdjust() {
               const twin = markers.get(mirrorJointName(attached.metadata.autorigJoint) || '');
               if (twin) {
                 twin.position.set(-attached.position.x, attached.position.y, attached.position.z);
+                snapMarkerToMeshDepth(twin);
                 updateCanonicalFromMarker(twin);
               }
             }
@@ -4383,8 +4588,14 @@ async function startAutoRigAdjust() {
   if (rotGizmo) {
     [rotGizmo.xGizmo, rotGizmo.yGizmo, rotGizmo.zGizmo].forEach(g => {
       if (g && g.dragBehavior) {
-        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
-        g.dragBehavior.onDragEndObservable.add(() => { isDraggingMarker = false; });
+        g.dragBehavior.onDragStartObservable.add(() => {
+          isDraggingMarker = true;
+          if (camera) camera.detachControl();
+        });
+        g.dragBehavior.onDragEndObservable.add(() => {
+          isDraggingMarker = false;
+          if (camera) camera.attachControl(true);
+        });
       }
     });
     const syncMirrorRot = () => {
@@ -4494,7 +4705,7 @@ async function startAutoRigAdjust() {
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
     fingerCount, legSplayDeg,
-    groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
+    groupMats, hoverObserver, clickObserver, markerCameraGuard, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
@@ -4508,6 +4719,8 @@ async function startAutoRigAdjust() {
   };
   autoRigState.skeletonPreview = buildAutoRigSkeletonPreview(markerParent, sceneHeight);
   updateAutoRigSkeletonPreview(autoRigState);
+  renderAutoRigLegend(markers, gizmoManager);
+  setupAutoRigMockupDots(markers, gizmoManager);
   enterRigViewportMode();
   // First-time skinless guess: auto-solve marker depth against the mesh so the
   // initial layout already sits inside the body (P1). Restored sessions and
@@ -4535,8 +4748,17 @@ async function startAutoRigAdjust() {
 function cancelAutoRigAdjust() {
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
+    const mockup = document.getElementById('autorig-mockup');
+    if (mockup) {
+      mockup.querySelectorAll('.autorig-mockup-dot').forEach(d => d.remove());
+    }
+    const testDrivePanel = document.getElementById('autorig-testdrive-panel');
+    if (testDrivePanel) {
+      testDrivePanel.style.display = 'none';
+    }
     if (autoRigState.hoverObserver) scene.onPointerObservable.remove(autoRigState.hoverObserver);
     if (autoRigState.clickObserver) scene.onPointerObservable.remove(autoRigState.clickObserver);
+    if (autoRigState.markerCameraGuard) scene.onPointerObservable.remove(autoRigState.markerCameraGuard);
     if (autoRigState.followObserver) scene.onAfterAnimationsObservable.remove(autoRigState.followObserver);
     autoRigState.hideTip?.();
     autoRigState.gizmoManager?.dispose();
@@ -4648,50 +4870,68 @@ function snapMarkerToMeshDepth(marker) {
   // Viewport-aware smart snap axis (solves the axis you cannot see in 2D)
   let snapAxis = bodyDepthAxis(); // default: sagittal (front-to-back)
   const currentView = autoRigState?.currentRigView || 'front';
+  let lateralAxis = null;
   if (currentView === 'side') {
     snapAxis = bodyLateralAxis(); // side view: solve lateral depth (left-to-right)
+    lateralAxis = bodyDepthAxis();
   } else if (currentView === 'top') {
     snapAxis = BABYLON.Vector3.Up(); // top view: solve vertical height (up-to-down)
+    lateralAxis = bodyLateralAxis();
+  } else {
+    // front view
+    lateralAxis = bodyLateralAxis();
   }
 
   if (!snapAxis || snapAxis.lengthSquared() < 1e-8) return false;
   snapAxis.normalize();
 
-  // The character meshes are set isPickable=false at load (so the gizmo never
-  // grabs them), which makes scene.pick / multiPickWithRay skip them entirely —
-  // that is why the snap reported "no mesh hit". Ray.intersectsMesh is a direct
-  // geometric test and ignores the isPickable flag, so use it on each mesh.
-  // We only require that the mesh has geometry (subMeshes might not be initialized yet).
   const meshes = activeCharacter.rawMeshes.filter(m => m.geometry);
   const reach = (autoRigState?.sceneHeight || 1.8) * 1.2;
+  const volumetric = document.getElementById('autorig-volumetric-snap')?.checked ?? false;
 
-  // Cast from well in front (gets the entry surface) and from well behind (gets
-  // the exit surface). Per mesh, intersectsMesh returns the nearest hit along
-  // the ray; combining both directions brackets the body so mid = its center.
-  let near = Infinity, far = -Infinity, hitAny = false;
-  for (const dir of [snapAxis, snapAxis.scale(-1)]) {
-    const start = origin.subtract(dir.scale(reach));
-    const ray = new BABYLON.Ray(start, dir, reach * 2);
-    for (const m of meshes) {
-      m.computeWorldMatrix(true);
-      const info = ray.intersectsMesh(m, false);
-      if (!info?.hit) continue;
-      // Hit point = start + dir·distance; project onto snapAxis from the origin.
-      const hit = start.add(dir.scale(info.distance));
-      const along = hit.subtract(origin).dot(snapAxis);
-      if (along < near) near = along;
-      if (along > far) far = along;
-      hitAny = true;
+  let snapHit = false;
+  const solveCenterAlongAxis = (originPoint, axis) => {
+    if (!axis || axis.lengthSquared() < 1e-8) return 0;
+    axis.normalize();
+
+    let near = Infinity, far = -Infinity, hitAny = false;
+    for (const dir of [axis, axis.scale(-1)]) {
+      const start = originPoint.subtract(dir.scale(reach));
+      const ray = new BABYLON.Ray(start, dir, reach * 2);
+      for (const m of meshes) {
+        m.computeWorldMatrix(true);
+        const info = ray.intersectsMesh(m, false);
+        if (!info?.hit) continue;
+        const hit = start.add(dir.scale(info.distance));
+        const along = hit.subtract(originPoint).dot(axis);
+        if (along < near) near = along;
+        if (along > far) far = along;
+        hitAny = true;
+      }
     }
-  }
-  if (!hitAny || !Number.isFinite(near) || far < near) {
-    if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: NO HIT (meshes=${meshes.length}, snapAxis=${snapAxis.x.toFixed(2)},${snapAxis.y.toFixed(2)},${snapAxis.z.toFixed(2)}, reach=${reach.toFixed(2)})`);
+    if (!hitAny || !Number.isFinite(near) || far < near) return 0;
+    snapHit = true;
+    return (near + far) / 2;
+  };
+
+  const midDepth = solveCenterAlongAxis(origin, snapAxis);
+  if (!snapHit) {
+    if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: NO HIT (meshes=${meshes.length})`);
     return false;
   }
-  const mid = (near + far) / 2;
-  if (window.AUTORIG_DEBUG_SNAP) console.log(`[snap] ${name}: hit near=${near.toFixed(3)} far=${far.toFixed(3)} mid=${mid.toFixed(3)}`);
-  marker.position.addInPlace(
-    BABYLON.Vector3.TransformNormal(snapAxis.scale(mid), markerParentInvRot(marker)));
+
+  let finalPos = origin.add(snapAxis.scale(midDepth));
+
+  if (volumetric && lateralAxis) {
+    const midLateral = solveCenterAlongAxis(finalPos, lateralAxis);
+    finalPos.addInPlace(lateralAxis.scale(midLateral));
+  }
+
+  const delta = finalPos.subtract(origin);
+  if (delta.lengthSquared() > 1e-10) {
+    marker.position.addInPlace(
+      BABYLON.Vector3.TransformNormal(delta, markerParentInvRot(marker)));
+  }
   return true;
 }
 // Marker depth is moved in WORLD fwd but stored LOCAL — rotate the world delta
@@ -4811,6 +5051,15 @@ async function applyAutoRig() {
     const file = new File([riggedBuffer], 'rigged.glb');
     await loadCharacterMeshFile(file, riggedBuffer);
     showToast('✓ Skeleton generated and assigned!');
+
+    const testDrivePanel = document.getElementById('autorig-testdrive-panel');
+    if (testDrivePanel) {
+      testDrivePanel.style.display = 'block';
+      const btnIdle = document.getElementById('btn-testdrive-idle');
+      if (btnIdle) {
+        btnIdle.click();
+      }
+    }
   } catch (err) {
     completeMergeProgress();
     hideLoading();
@@ -5789,6 +6038,53 @@ function setupSidebarControls() {
   renderKeyBindingsUI();
   renderControllerPresets();
   injectPhysicsResetButtons();
+
+  // Rig Test Drive Panel Events
+  const testDrivePanel = document.getElementById('autorig-testdrive-panel');
+  if (testDrivePanel) {
+    const btnClose = document.getElementById('btn-testdrive-close');
+    const btnIdle = document.getElementById('btn-testdrive-idle');
+    const btnWalk = document.getElementById('btn-testdrive-walk');
+    const btnRun = document.getElementById('btn-testdrive-run');
+    const btnAdjust = document.getElementById('btn-testdrive-adjust');
+
+    const setTestDriveState = (mode) => {
+      [btnIdle, btnWalk, btnRun].forEach(b => b?.classList.toggle('active', false));
+      if (mode === 'idle') btnIdle?.classList.toggle('active', true);
+      if (mode === 'walk') btnWalk?.classList.toggle('active', true);
+      if (mode === 'run') btnRun?.classList.toggle('active', true);
+
+      if (activeCharacter && activeCharacter.charCtrl) {
+        const ctrl = activeCharacter.charCtrl;
+        ctrl.state = window.S ? window.S.IDLE : 'IDLE';
+        if (mode === 'idle') {
+          ctrl._previewLocoSpeed = 0;
+          ctrl._previewAnim = null;
+        } else if (mode === 'walk') {
+          ctrl._previewLocoSpeed = ctrl.SPD_WALK || physicsConfig.SPD_WALK || 1.2;
+          ctrl._previewAnim = null;
+        } else if (mode === 'run') {
+          ctrl._previewLocoSpeed = ctrl.SPD_SPRINT || physicsConfig.SPD_SPRINT || 4.5;
+          ctrl._previewAnim = null;
+        }
+      }
+    };
+
+    btnClose?.addEventListener('click', () => {
+      testDrivePanel.style.display = 'none';
+      setTestDriveState('idle');
+    });
+
+    btnIdle?.addEventListener('click', () => setTestDriveState('idle'));
+    btnWalk?.addEventListener('click', () => setTestDriveState('walk'));
+    btnRun?.addEventListener('click', () => setTestDriveState('run'));
+
+    btnAdjust?.addEventListener('click', () => {
+      testDrivePanel.style.display = 'none';
+      setTestDriveState('idle');
+      startAutoRigAdjust();
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

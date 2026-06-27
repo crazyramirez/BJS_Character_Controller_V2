@@ -579,8 +579,38 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   }
 
   if (crotchY !== null) {
-    const hipsY = Math.min(crotchY + 0.05 * H, groundY + 0.62 * H);
-    const upLegY = Math.min(crotchY + 0.015 * H, hipsY - 0.02 * H);
+    // Hips (pelvis root) sits ABOVE the leg roots, at the real pelvis/iliac
+    // crest — never glued to the crotch. We find the waist (narrowest body band
+    // above the crotch and below the shoulders) and place Hips ~40% of the way
+    // from crotch up to the waist. This gives the lower Spine a correct anchor
+    // to grow from instead of starting it down at the crotch.
+    const waistLo = Math.min(BINS - 2, Math.floor(((crotchY - groundY) / H) * BINS) + 1);
+    const waistHi = Math.min(BINS - 1, Math.floor(0.58 * BINS));
+    const widthAtB = b => {
+      const bin = bins[b];
+      if (!bin || bin.n < 8) return null;
+      const all = bin.left.concat(bin.right);
+      return all.length ? median(all) : null;
+    };
+    let waistB = -1, waistW = Infinity;
+    for (let b = waistLo; b <= waistHi; b++) {
+      const w = widthAtB(b);
+      if (w !== null && w < waistW) { waistW = w; waistB = b; }
+    }
+    // UpLeg (hip joint) roots at the crotch — the true femur split. This is the
+    // leg anchor and must NOT be moved (moving it breaks leg detection).
+    const upLegY = crotchY + 0.015 * H;
+
+    // Hips (pelvis root) sits ABOVE the leg roots, at the real pelvis. We push
+    // it up from the crotch toward the waist so it never collapses onto UpLeg
+    // and the lower Spine gets a correct anchor — but we anchor it RELATIVE to
+    // the crotch (not an absolute height band), so characters with short legs /
+    // long torsos keep Hips above their (high) crotch instead of being clamped
+    // below it, which would invert the leg hierarchy.
+    const waistY = waistB >= 0 ? groundY + ((waistB + 0.5) / BINS) * H : crotchY + 0.16 * H;
+    let hipsY = crotchY + Math.max(0.08 * H, (waistY - crotchY) * 0.4);
+    // Never below the leg roots, never above the waist.
+    hipsY = Math.max(upLegY + 0.06 * H, Math.min(hipsY, waistY));
     const ankleY = joints.LeftFoot[1];
     const kneeY = (upLegY + ankleY) / 2;
 
@@ -686,10 +716,11 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     const b = bins[Math.min(BINS - 1, Math.max(0, Math.floor(((f - groundY) / H) * BINS)))];
     return b && b.n >= 8 ? b.sumZ / b.n : cz; // follow hunched spines
   };
-  const lerpY = t => hipsY2 + (neckY - hipsY2) * t;
-  joints.Spine = [cx, lerpY(0.28), spineZ(lerpY(0.28))];
-  joints.Spine1 = [cx, lerpY(0.55), spineZ(lerpY(0.55))];
-  joints.Spine2 = [cx, lerpY(0.82), spineZ(lerpY(0.82))];
+  const targetSpine2Y = Math.max(hipsY2 + 0.1 * H, Math.min(shoulderY - 0.01 * H, neckY - 0.02 * H));
+  const lerpSpineY = t => hipsY2 + (targetSpine2Y - hipsY2) * t;
+  joints.Spine = [cx, lerpSpineY(0.33), spineZ(lerpSpineY(0.33))];
+  joints.Spine1 = [cx, lerpSpineY(0.66), spineZ(lerpSpineY(0.66))];
+  joints.Spine2 = [cx, targetSpine2Y, spineZ(targetSpine2Y)];
   joints.Neck = [cx, neckY, spineZ(neckY)];
 
   // ── Head = centroid of the skull blob ABOVE the neck ──────────────────────
@@ -1173,7 +1204,7 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, precomputed = {}) {
+export function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, precomputed = {}) {
   const verts = precomputed.verts || collectWorldVertices(doc, skinXforms, bodyMeshes);
   const sliced = precomputed.sliced || guessJointsFromMesh(verts, bounds, forwardZ);
   if (!sliced.method) sliced.method = 'slicing';
@@ -1185,6 +1216,10 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, p
     } catch (e) {
       console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
     }
+  }
+  if (topo && !isSkeletonAnatomicallySane(topo.joints)) {
+    console.warn('[autorig] Topology skeleton failed anatomical sanity checks (joints inverted). Rejecting topology guess.');
+    topo = null;
   }
   if (!topo) return sliced;
 
@@ -1246,8 +1281,8 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, p
 const SEED_ALIASES = {
   Hips: ['hips', 'pelvis', 'hip'],
   Spine: ['spine', 'spine01', 'lowerback', 'waist'],
-  Spine1: ['spine1', 'spine02', 'chest'],
-  Spine2: ['spine2', 'spine03', 'upperchest'],
+  Spine1: ['spine01', 'spine1', 'spine02', 'chest'],
+  Spine2: ['spine02', 'spine2', 'spine03', 'upperchest'],
   Neck: ['neck', 'neck01', 'necktwist01', 'necktwist'],
   Head: ['head'],
   LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar', 'lshoulder', 'collarl'],
@@ -1335,14 +1370,22 @@ function seedJointsFromSkins(doc) {
       const W = worldMatrixOf(joint, parentMap, cache);
       const p = [W[12], W[13], W[14]];
       for (const n of seedNormVariants(joint.getName())) {
-        if (n && !worldByNorm.has(n)) worldByNorm.set(n, p);
+        if (n && !worldByNorm.has(n)) worldByNorm.set(n, { name: joint.getName(), pos: p });
       }
     });
   }
   const seeded = {};
+  const assignedNames = new Set();
   for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
     for (const a of aliases) {
-      if (worldByNorm.has(a)) { seeded[canon] = worldByNorm.get(a); break; }
+      if (worldByNorm.has(a)) {
+        const item = worldByNorm.get(a);
+        if (!assignedNames.has(item.name)) {
+          seeded[canon] = item.pos;
+          assignedNames.add(item.name);
+          break;
+        }
+      }
     }
   }
   // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): align seeds
@@ -1350,11 +1393,189 @@ function seedJointsFromSkins(doc) {
   // so Spine2 gets a real seed instead of a mesh guess overlapping Spine1.
   if (worldByNorm.has('waist') && worldByNorm.has('spine01') &&
       worldByNorm.has('spine02') && !worldByNorm.has('spine03')) {
-    seeded.Spine = worldByNorm.get('waist');
-    seeded.Spine1 = worldByNorm.get('spine01');
-    seeded.Spine2 = worldByNorm.get('spine02');
+    seeded.Spine = worldByNorm.get('waist').pos;
+    seeded.Spine1 = worldByNorm.get('spine01').pos;
+    seeded.Spine2 = worldByNorm.get('spine02').pos;
   }
   return seeded;
+}
+
+function fillMissingSpineJoints(joints, H) {
+  // Ensure Hips and Head exist (they are baseline anchors)
+  if (!joints.Hips || !joints.Head) return;
+
+  // 1. If Neck is missing, place it between Head and Spine2 (or Hips)
+  if (!joints.Neck) {
+    const base = joints.Spine2 || joints.Spine1 || joints.Spine || joints.Hips;
+    joints.Neck = [
+      joints.Head[0],
+      base[1] + (joints.Head[1] - base[1]) * 0.7,
+      (joints.Head[2] + base[2]) / 2
+    ];
+  }
+
+  // 2. If Spine2 is missing, interpolate it between Spine1 (or Spine/Hips) and Neck
+  if (!joints.Spine2) {
+    const base = joints.Spine1 || joints.Spine || joints.Hips;
+    joints.Spine2 = [
+      base[0],
+      base[1] + (joints.Neck[1] - base[1]) * 0.65,
+      (base[2] + joints.Neck[2]) / 2
+    ];
+  }
+
+  // 3. If Spine1 is missing, interpolate it between Spine (or Hips) and Spine2 (or Neck)
+  if (!joints.Spine1) {
+    const base = joints.Spine || joints.Hips;
+    const top = joints.Spine2 || joints.Neck;
+    joints.Spine1 = [
+      base[0],
+      base[1] + (top[1] - base[1]) * 0.5,
+      (base[2] + top[2]) / 2
+    ];
+  }
+
+  // 4. If Spine is missing, interpolate it between Hips and Spine1 (or Spine2/Neck)
+  if (!joints.Spine) {
+    const top = joints.Spine1 || joints.Spine2 || joints.Neck;
+    joints.Spine = [
+      joints.Hips[0],
+      joints.Hips[1] + (top[1] - joints.Hips[1]) * 0.5,
+      (joints.Hips[2] + top[2]) / 2
+    ];
+  }
+}
+
+function sanitizeJoints(joints, H, bounds) {
+  if (!joints) return;
+
+  const hips = joints.Hips;
+  const head = joints.Head;
+  const neck = joints.Neck;
+  const spine2 = joints.Spine2;
+  const spine1 = joints.Spine1;
+  const spine = joints.Spine;
+  const shL = joints.LeftShoulder;
+  const shR = joints.RightShoulder;
+
+  // Hips and Head must exist for central Spine chain sanity
+  if (!hips || !head) return;
+
+  const groundY = bounds ? bounds.min[1] : hips[1] - 0.5 * H;
+
+  // 1. Enforce Hips Y bounds sanity. The upper bound must never pull Hips below
+  // the leg roots (UpLeg) — short-legged / long-torso characters legitimately
+  // have a high pelvis, and clamping it under the crotch inverts the leg
+  // hierarchy. So the cap is the higher of 0.58*H and just above the leg roots.
+  const upLegYs = [joints.LeftUpLeg, joints.RightUpLeg].filter(Boolean).map(j => j[1]);
+  const legRootY = upLegYs.length ? Math.max(...upLegYs) : -Infinity;
+  const maxHipsY = Math.max(groundY + 0.58 * H, legRootY + 0.06 * H);
+  const minHipsY = Math.max(groundY + 0.45 * H, legRootY + 0.06 * H);
+  if (hips[1] > maxHipsY) hips[1] = maxHipsY;
+  if (hips[1] < minHipsY) hips[1] = minHipsY;
+
+  // 2. Head must not exceed maximum height
+  if (bounds && head[1] > bounds.max[1]) {
+    head[1] = bounds.max[1] - 0.01 * H;
+  }
+
+  // 3. Neck must sit below Head and above Hips
+  if (neck) {
+    if (neck[1] >= head[1] - 0.02 * H) neck[1] = head[1] - 0.04 * H;
+    if (neck[1] <= hips[1] + 0.1 * H) neck[1] = hips[1] + (head[1] - hips[1]) * 0.8;
+  }
+
+  // 4. Clavicles (Shoulder joints) must sit below Neck and above Hips
+  const neckY = neck ? neck[1] : head[1] - 0.04 * H;
+  const shoulderY = shL && shR ? (shL[1] + shR[1]) / 2 : (shL ? shL[1] : (shR ? shR[1] : neckY - 0.04 * H));
+  const targetShoulderY = Math.max(hips[1] + 0.15 * H, Math.min(shoulderY, neckY - 0.02 * H));
+  if (shL) shL[1] = targetShoulderY;
+  if (shR) shR[1] = targetShoulderY;
+
+  // 5. Spine2 (Chest) must sit below Clavicles and Neck
+  const targetSpine2Y = targetShoulderY - 0.01 * H;
+  if (spine2) {
+    spine2[1] = Math.max(hips[1] + 0.1 * H, Math.min(spine2[1], targetSpine2Y));
+  }
+
+  // 6. Spine1 and Spine must sit between Hips and Spine2/Neck
+  const spine2ValY = spine2 ? spine2[1] : targetSpine2Y;
+  if (spine1) {
+    spine1[1] = Math.max(hips[1] + 0.05 * H, Math.min(spine1[1], spine2ValY - 0.02 * H));
+  }
+  if (spine) {
+    const nextY = spine1 ? spine1[1] : spine2ValY;
+    spine[1] = Math.max(hips[1] + 0.02 * H, Math.min(spine[1], nextY - 0.02 * H));
+  }
+
+  // 7. Leg hierarchy sequence check (UpLeg > Leg > Foot)
+  const sides = ['Left', 'Right'];
+  for (const side of sides) {
+    const upLeg = joints[side + 'UpLeg'];
+    const leg = joints[side + 'Leg'];
+    const foot = joints[side + 'Foot'];
+    if (upLeg && leg && foot) {
+      // UpLeg must sit below Hips. Only correct a genuine inversion/collapse —
+      // don't drag healthy leg roots down (that breaks leg detection).
+      if (upLeg[1] >= hips[1] - 0.02 * H) upLeg[1] = hips[1] - 0.06 * H;
+      if (leg[1] >= upLeg[1] || leg[1] <= foot[1]) {
+        leg[1] = foot[1] + (upLeg[1] - foot[1]) * 0.5;
+      }
+    }
+  }
+}
+
+/**
+ * Verifies that the guessed joints follow humanoid anatomy height relationships.
+ * In a +Y-up coordinate system, we expect the following vertical order:
+ * Head > Neck > Spine2 > Spine1 > Spine > Hips > Feet.
+ * We also verify legs layout: UpLeg > Leg > Foot.
+ */
+function isSkeletonAnatomicallySane(joints) {
+  if (!joints) return false;
+  const critical = ['Head', 'Neck', 'Spine2', 'Spine1', 'Spine', 'Hips', 'LeftFoot', 'RightFoot'];
+  for (const name of critical) {
+    if (!joints[name] || !Array.isArray(joints[name]) || joints[name].length < 2) {
+      return false;
+    }
+  }
+
+  const headY = joints.Head[1];
+  const neckY = joints.Neck[1];
+  const spine2Y = joints.Spine2[1];
+  const spine1Y = joints.Spine1[1];
+  const spineY = joints.Spine[1];
+  const hipsY = joints.Hips[1];
+  const leftFootY = joints.LeftFoot[1];
+  const rightFootY = joints.RightFoot[1];
+
+  // Head and neck must be higher than hips
+  if (headY <= neckY) return false;
+  if (neckY <= hipsY) return false;
+  if (headY <= hipsY) return false;
+
+  // Spine hierarchy sequence checks
+  if (neckY <= spine2Y) return false;
+  if (spine2Y <= spine1Y) return false;
+  if (spine1Y <= spineY) return false;
+  if (spineY <= hipsY) return false;
+
+  // Hips must be above the feet
+  if (hipsY <= leftFootY) return false;
+  if (hipsY <= rightFootY) return false;
+
+  // Leg hierarchy sequence checks
+  for (const side of ['Left', 'Right']) {
+    const upLeg = joints[side + 'UpLeg'];
+    const leg = joints[side + 'Leg'];
+    const foot = joints[side + 'Foot'];
+    if (upLeg && leg && foot) {
+      if (upLeg[1] <= leg[1]) return false;
+      if (leg[1] <= foot[1]) return false;
+    }
+  }
+
+  return true;
 }
 
 // ── Humanoid validation & confidence scoring ─────────────────────────────────
@@ -1454,6 +1675,11 @@ export async function guessJoints(buffer) {
   let topoError = null;
   try {
     topo = guessJointsFromTopology(doc, skinXf, bounds, fwd, bodyMeshes);
+    if (topo && !isSkeletonAnatomicallySane(topo.joints)) {
+      console.warn('[autorig] Topology skeleton failed anatomical sanity checks (joints inverted). Rejecting topology guess.');
+      topoError = 'Topology skeleton failed anatomical sanity checks (joints inverted).';
+      topo = null;
+    }
   } catch (e) {
     topoError = e.message;
     console.warn('[autorig] Topology pass failed:', e.message);
@@ -1461,12 +1687,7 @@ export async function guessJoints(buffer) {
 
   const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, { verts, sliced, topo });
 
-  // Add procedural finger joints to the proposal so the client can show and edit
-  // them. Existing-skin seeds will overwrite these below when present.
-  // Twist bones are intentionally omitted from the UI — they are created at rig
-  // time but are not meant to be edited manually.
   const guessH = guess.height || (bounds.max[1] - bounds.min[1]);
-  appendFingerJoints(guess.joints, guessH);
 
   const scaleInfo = detectScaleUnit(bounds);
   const score = computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds);
@@ -1476,8 +1697,20 @@ export async function guessJoints(buffer) {
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
     guess.joints = { ...guess.joints, ...seeded };
+    // Interpolate missing spine joints if they were not in the skin
+    fillMissingSpineJoints(guess.joints, guessH);
     guess.reRig = true;
   }
+
+  // Add procedural finger joints to the proposal so the client can show and edit
+  // them. Since existing-skin seeds have been matched, we append fingers afterwards
+  // so they are correctly positioned relative to the final hand markers.
+  // Twist bones are intentionally omitted from the UI — they are created at rig
+  // time but are not meant to be edited manually.
+  appendFingerJoints(guess.joints, guessH);
+
+  // Enforce strict anatomical/vertical height relationships to guarantee correct skeletal progression
+  sanitizeJoints(guess.joints, guessH, bounds);
 
   // Enrich response with validation metadata
   guess.humanoid = humanoid;
@@ -1696,27 +1929,26 @@ function adjustExistingRig(doc, targetJoints = {}) {
   );
   const invS = invertRigidMat4(S);
 
-  // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in skin space
+  // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in GLTF world space
   const origWorldPos = new Map();
   const origWorldRot = new Map();
   const origWorldScale = new Map();
   const matCache = new Map();
   
   for (const node of doc.getRoot().listNodes()) {
-    const W_render = worldMatrixOf(node, parentMap, matCache);
-    const B = mat4Mul(invS, W_render); // Node's bind matrix in skin space
+    const W_render = worldMatrixOf(node, parentMap, matCache); // Node's bind matrix in GLTF world space
     
-    origWorldPos.set(node, [B[12], B[13], B[14]]);
+    origWorldPos.set(node, [W_render[12], W_render[13], W_render[14]]);
 
-    const sx = Math.hypot(B[0], B[1], B[2]) || 1;
-    const sy = Math.hypot(B[4], B[5], B[6]) || 1;
-    const sz = Math.hypot(B[8], B[9], B[10]) || 1;
+    const sx = Math.hypot(W_render[0], W_render[1], W_render[2]) || 1;
+    const sy = Math.hypot(W_render[4], W_render[5], W_render[6]) || 1;
+    const sz = Math.hypot(W_render[8], W_render[9], W_render[10]) || 1;
     origWorldScale.set(node, [sx, sy, sz]);
 
     const m = [
-      B[0] / sx, B[1] / sx, B[2] / sx,
-      B[4] / sy, B[5] / sy, B[6] / sy,
-      B[8] / sz, B[9] / sz, B[10] / sz
+      W_render[0] / sx, W_render[1] / sx, W_render[2] / sx,
+      W_render[4] / sy, W_render[5] / sy, W_render[6] / sy,
+      W_render[8] / sz, W_render[9] / sz, W_render[10] / sz
     ];
     origWorldRot.set(node, mat3ToQuat(m));
   }
@@ -1733,7 +1965,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
   for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
     if (!targetJoints[canon]) continue;
     for (const a of aliases) {
-      if (normToNode.has(a)) { markerByNode.set(normToNode.get(a), transformPoint(invS, targetJoints[canon])); break; }
+      if (normToNode.has(a)) { markerByNode.set(normToNode.get(a), [...targetJoints[canon]]); break; }
     }
   }
   // CC/AccuRig 3-bone spine: markers follow the same chain shift as the merge
@@ -1741,31 +1973,68 @@ function adjustExistingRig(doc, targetJoints = {}) {
   if (normToNode.has('waist') && normToNode.has('spine01') &&
       normToNode.has('spine02') && !normToNode.has('spine03')) {
     for (const [canon, alias] of [['Spine', 'waist'], ['Spine1', 'spine01'], ['Spine2', 'spine02']]) {
-      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
+      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), [...targetJoints[canon]]);
     }
   }
 
-  // New world positions: markers win; others keep their offset to the parent (for ALL nodes in the scene)
-  const newWorldPos = new Map();
-  function computeNewPos(node) {
-    if (newWorldPos.has(node)) return newWorldPos.get(node);
-    const marker = markerByNode.get(node);
-    if (marker) { newWorldPos.set(node, marker); return marker; }
-    const p = parentMap.get(node);
-    const o = origWorldPos.get(node);
-    if (!p) { newWorldPos.set(node, o); return o; }
-    const pNew = computeNewPos(p);
-    const pOld = origWorldPos.get(p);
-    const np = [o[0] + pNew[0] - pOld[0], o[1] + pNew[1] - pOld[1], o[2] + pNew[2] - pOld[2]];
-    newWorldPos.set(node, np);
-    return np;
-  }
-  for (const node of doc.getRoot().listNodes()) computeNewPos(node);
-
-  // Initialize newWorldRot with a copy of origWorldRot (for ALL nodes in the scene)
-  const newWorldRot = new Map();
+  // Get original local transforms for all nodes to compute correct descendants world spaces later
+  const origLocalT = new Map();
+  const origLocalR = new Map();
+  const origLocalS = new Map();
   for (const node of doc.getRoot().listNodes()) {
-    newWorldRot.set(node, [...origWorldRot.get(node)]);
+    origLocalT.set(node, node.getTranslation() || [0, 0, 0]);
+    origLocalR.set(node, node.getRotation() || [0, 0, 0, 1]);
+    origLocalS.set(node, node.getScale() || [1, 1, 1]);
+  }
+
+  // New world positions, rotations, and scales: computed in downward hierarchical pass
+  const newWorldPos = new Map();
+  const newWorldRot = new Map();
+  const newWorldScale = new Map();
+  let resolved = new Set();
+
+  function resolveNode(node) {
+    if (resolved.has(node)) return;
+    resolved.add(node);
+
+    const parent = parentMap.get(node);
+    if (parent) {
+      resolveNode(parent);
+    }
+
+    // 1. Scale
+    newWorldScale.set(node, origWorldScale.get(node));
+
+    // 2. Rotation (inherits from parent)
+    if (parent) {
+      const pRot = newWorldRot.get(parent);
+      const localR = origLocalR.get(node);
+      newWorldRot.set(node, qNormalize(qMul(pRot, localR)));
+    } else {
+      newWorldRot.set(node, origWorldRot.get(node));
+    }
+
+    // 3. Position
+    if (markerByNode.has(node)) {
+      // If node is a joint mapped to a marker, its position is absolute (controlled by marker)
+      newWorldPos.set(node, markerByNode.get(node));
+    } else if (parent) {
+      // If node has no marker, it keeps its original local translation relative to parent's new world transform
+      const pPos = newWorldPos.get(parent);
+      const pRot = newWorldRot.get(parent);
+      const pScale = origWorldScale.get(parent) || [1, 1, 1];
+      const localT = origLocalT.get(node);
+      const scaledLocalT = [localT[0] * pScale[0], localT[1] * pScale[1], localT[2] * pScale[2]];
+      const rotated = rotateVec3(scaledLocalT, pRot);
+      newWorldPos.set(node, [pPos[0] + rotated[0], pPos[1] + rotated[1], pPos[2] + rotated[2]]);
+    } else {
+      // Scene root with no marker
+      newWorldPos.set(node, origWorldPos.get(node));
+    }
+  }
+
+  for (const node of doc.getRoot().listNodes()) {
+    resolveNode(node);
   }
 
   // canonical name → joint node (for fast lookup during alignment)
@@ -1839,6 +2108,34 @@ function adjustExistingRig(doc, targetJoints = {}) {
     }
   }
 
+  // Since aim corrections changed ancestor rotations, re-evaluate world positions for all non-marker nodes
+  resolved = new Set();
+  function resolveNodePositionFinal(node) {
+    if (resolved.has(node)) return;
+    resolved.add(node);
+
+    const parent = parentMap.get(node);
+    if (parent) {
+      resolveNodePositionFinal(parent);
+    }
+
+    if (markerByNode.has(node)) {
+      newWorldPos.set(node, markerByNode.get(node));
+    } else if (parent) {
+      const pPos = newWorldPos.get(parent);
+      const pRot = newWorldRot.get(parent);
+      const pScale = origWorldScale.get(parent) || [1, 1, 1];
+      const localT = origLocalT.get(node);
+      const scaledLocalT = [localT[0] * pScale[0], localT[1] * pScale[1], localT[2] * pScale[2]];
+      const rotated = rotateVec3(scaledLocalT, pRot);
+      newWorldPos.set(node, [pPos[0] + rotated[0], pPos[1] + rotated[1], pPos[2] + rotated[2]]);
+    }
+  }
+
+  for (const node of doc.getRoot().listNodes()) {
+    resolveNodePositionFinal(node);
+  }
+
   // Update node local translations and rotations
   for (const j of jointSet) {
     const np = newWorldPos.get(j);
@@ -1874,8 +2171,10 @@ function adjustExistingRig(doc, targetJoints = {}) {
   for (const { joints, acc, arr } of skinData) {
     const out = Float32Array.from(arr);
     joints.forEach((j, i) => {
-      const W_new = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
-      const IBM_new = invertRigidMat4(W_new);
+      const W_gltf = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
+      // Transform joint world bind matrix from GLTF world space back to skin space (S)
+      const W_skin = mat4Mul(invS, W_gltf);
+      const IBM_new = invertRigidMat4(W_skin);
       for (let k = 0; k < 16; k++) {
         out[i * 16 + k] = IBM_new[k];
       }

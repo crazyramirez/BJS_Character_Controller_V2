@@ -3331,3 +3331,70 @@ input[type="range"]::-moz-range-thumb {
   background: rgba(255, 255, 255, 0.05) !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
 }
+
+/* ============================================================
+   AUTORIG MOCKUP DOTS & TEST DRIVE PANEL
+   ============================================================ */
+
+.autorig-joint-btn.hovered {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: var(--border-hover) !important;
+  transform: translateY(-1px);
+}
+
+.autorig-mockup-dot {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color, #f59e0b);
+  border: 2px solid #fff;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.75);
+  transition: all 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+  z-index: 5;
+}
+
+.autorig-mockup-dot:hover, 
+.autorig-mockup-dot.active {
+  width: 13px;
+  height: 13px;
+  box-shadow: 0 0 10px var(--color, #f59e0b), 0 0 0 2px #fff;
+  z-index: 10;
+}
+
+.btn-testdrive {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 0;
+  box-shadow: none;
+}
+
+.btn-testdrive:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.btn-testdrive.active {
+  background: linear-gradient(135deg, #7c3aed 0%, var(--accent) 55%, #6d28d9 100%);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.25);
+}

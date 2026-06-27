@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
-import { guessJoints, autoRigGLB } from '../js/core/autorig_api.mjs';
+import { guessJoints, autoRigGLB, guessJointsAuto } from '../js/core/autorig_api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const assetsDir = join(__dirname, '..', 'assets');
@@ -93,6 +93,60 @@ describe('guessJoints humanoid validation', () => {
     assert.strictEqual(result.scaleInfo.unit, 'm');
     assert.ok(result.scaleInfo.height >= 1.5 && result.scaleInfo.height <= 2.2,
       `expected height ~1.5-2.2m, got ${result.scaleInfo.height}`);
+  });
+
+  it('rejects an anatomically insane topology skeleton and falls back to slicing', async () => {
+    const mockSliced = {
+      method: 'slicing',
+      height: 1.8,
+      joints: {
+        Head: [0, 1.8, 0],
+        Neck: [0, 1.6, 0],
+        Spine2: [0, 1.4, 0],
+        Spine1: [0, 1.2, 0],
+        Spine: [0, 1.0, 0],
+        Hips: [0, 0.9, 0],
+        LeftUpLeg: [0.1, 0.8, 0],
+        LeftLeg: [0.1, 0.4, 0],
+        LeftFoot: [0.1, 0.05, 0],
+        RightUpLeg: [-0.1, 0.8, 0],
+        RightLeg: [-0.1, 0.4, 0],
+        RightFoot: [-0.1, 0.05, 0]
+      }
+    };
+    const mockInsaneTopo = {
+      confidence: 0.9,
+      joints: {
+        Hips: [0, 1.5, 0],
+        Spine: [0, 1.4, 0],
+        Spine1: [0, 1.3, 0],
+        Spine2: [0, 1.2, 0],
+        Neck: [0, 1.1, 0],
+        Head: [0, 1.0, 0], // Inverted! Head is below Neck and Hips
+        LeftUpLeg: [0.1, 0.8, 0],
+        LeftLeg: [0.1, 0.4, 0],
+        LeftFoot: [0.1, 0.05, 0],
+        RightUpLeg: [-0.1, 0.8, 0],
+        RightLeg: [-0.1, 0.4, 0],
+        RightFoot: [-0.1, 0.05, 0]
+      }
+    };
+
+    const result = guessJointsAuto(
+      null,
+      null,
+      { min: [-0.5, 0, -0.5], max: [0.5, 1.8, 0.5] },
+      1,
+      null,
+      {
+        verts: [],
+        sliced: mockSliced,
+        topo: mockInsaneTopo
+      }
+    );
+
+    assert.strictEqual(result.method, 'slicing');
+    assert.deepStrictEqual(result.joints, mockSliced.joints);
   });
 });
 

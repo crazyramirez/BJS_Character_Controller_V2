@@ -1743,35 +1743,27 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
-    if (syntheticRootNode) {
-      syntheticRootNode.setTranslation([
-        -px / finalScale[0],
-        -py / finalScale[1],
-        -pz / finalScale[2]
-      ]);
-      rootNode.addChild(syntheticRootNode);
-      syntheticRootNode.addChild(hipsNode);
-    } else {
-      const hipsTrans = hipsNode.getTranslation() || [0, 0, 0];
-      // Apply pivot offset then bake ancestor coordinate rotation into Hips local transform.
-      // This keeps RootNode rotation-free so the BabylonJS scene root reset (charRoot.rotation=0)
-      // does not discard the coordinate-system conversion (e.g. +90°X for Z-up Sketchfab exports).
-      // World bind transform of every joint is unchanged, so IBMs remain valid.
-      const hipsTransAdjusted = [
-        hipsTrans[0] - px / finalScale[0],
-        hipsTrans[1] - py / finalScale[1],
-        hipsTrans[2] - pz / finalScale[2],
-      ];
-      hipsNode.setTranslation(rotateVec3(hipsTransAdjusted, normRot));
-      hipsNode.setRotation(qMul(normRot, hipsNode.getRotation() || [0, 0, 0, 1]));
-      rootNode.addChild(hipsNode);
-    }
-
     const meshNodes = [];
     for (const node of charDoc.getRoot().listNodes()) {
       if (node.getMesh() && node !== rootNode) {
         meshNodes.push(node);
       }
+    }
+
+    const meshAncestors = new Set();
+    for (const meshNode of meshNodes) {
+      let p = meshNode.getParent();
+      while (p && typeof p.getTranslation === 'function') {
+        meshAncestors.add(p);
+        p = p.getParent();
+      }
+    }
+
+    let topAncestor = hipsNode;
+    let currNode = hipsNode.getParent();
+    while (currNode && typeof currNode.getTranslation === 'function' && !meshAncestors.has(currNode)) {
+      topAncestor = currNode;
+      currNode = currNode.getParent();
     }
 
     // Decide whether mesh vertices still need the ancestor coordinate rotation
@@ -1805,6 +1797,36 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       const extY = maxY - minY, extZ = maxZ - minZ;
       vertsAreZup = Number.isFinite(extY) && Number.isFinite(extZ) && extZ > extY * 1.3;
     }
+
+    let finalNormRot = [...normRot];
+    if (!vertsAreZup) {
+      finalNormRot = [0, 0, 0, 1];
+    }
+
+    if (syntheticRootNode) {
+      syntheticRootNode.setTranslation([
+        -px / finalScale[0],
+        -py / finalScale[1],
+        -pz / finalScale[2]
+      ]);
+      rootNode.addChild(syntheticRootNode);
+      syntheticRootNode.addChild(topAncestor);
+    } else {
+      const hipsTrans = topAncestor.getTranslation() || [0, 0, 0];
+      // Apply pivot offset then bake ancestor coordinate rotation into topAncestor local transform.
+      // This keeps RootNode rotation-free so the BabylonJS scene root reset (charRoot.rotation=0)
+      // does not discard the coordinate-system conversion (e.g. +90°X for Z-up Sketchfab exports).
+      // World bind transform of every joint is unchanged, so IBMs remain valid.
+      const hipsTransAdjusted = [
+        hipsTrans[0] - px / finalScale[0],
+        hipsTrans[1] - py / finalScale[1],
+        hipsTrans[2] - pz / finalScale[2],
+      ];
+      topAncestor.setTranslation(rotateVec3(hipsTransAdjusted, finalNormRot));
+      topAncestor.setRotation(qMul(finalNormRot, topAncestor.getRotation() || [0, 0, 0, 1]));
+      rootNode.addChild(topAncestor);
+    }
+
     if (vertsAreZup) {
       console.log('[merge] Z-up vertices detected — baking coordinate rotation into mesh geometry.');
     }
@@ -1824,7 +1846,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               const el = new Array(dim).fill(0);
               for (let i = 0; i < acc.getCount(); i++) {
                 acc.getElement(i, el);
-                const r = rotateVec3([el[0], el[1], el[2]], normRot);
+                const r = rotateVec3([el[0], el[1], el[2]], finalNormRot);
                 el[0] = r[0]; el[1] = r[1]; el[2] = r[2]; // leave TANGENT.w sign untouched
                 acc.setElement(i, el);
               }
