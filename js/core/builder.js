@@ -14,6 +14,10 @@ let detectedAnimations = [];
 // Server-side pipeline state
 let characterGlbBuffer = null; // ArrayBuffer of the loaded character GLB
 let originalCharacterGlbBuffer = null; // Clean original character GLB
+// Pristine PRE-RIG geometry. Auto-rig must always run against un-rigged geometry:
+// re-rigging the server's own rigged output produces an invalid recursive node
+// hierarchy. A rig reload does NOT overwrite this, so a 2nd Apply re-rigs clean.
+let autoRigSourceBuffer = null;
 let animationsGlbBuffer = null; // ArrayBuffer of the preloaded animations GLB
 let animationsCleared = false; // true after "Clear All": force export to strip baked anims
 let isServerAvailable = false;
@@ -1416,7 +1420,8 @@ async function maybeConvertFbxFile(file) {
 // ═══════════════════════════════════════════════════════════
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
-async function loadCharacterMeshFile(file, preloadedBuffer = null) {
+async function loadCharacterMeshFile(file, preloadedBuffer = null, opts = {}) {
+  const isRigResult = !!opts.isRigResult;
   if (!preloadedBuffer && isFbxFile(file)) {
     try {
       file = await maybeConvertFbxFile(file);
@@ -1442,6 +1447,10 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
   const arrayBuffer = preloadedBuffer || await file.arrayBuffer();
   characterGlbBuffer = arrayBuffer;
   originalCharacterGlbBuffer = arrayBuffer;
+  // Preserve the pristine pre-rig geometry across rig reloads. Only a genuine
+  // import (or a non-rig reload) refreshes it; a rig result keeps the original so
+  // a subsequent Apply re-rigs clean geometry instead of the rigged output.
+  if (!isRigResult) autoRigSourceBuffer = arrayBuffer;
   animationsCleared = false; // fresh load resets the cleared state
   cleanPreviewBuffer = null; // new character → rebuild the posture-free preview base
   scaledCharacterBuffer = null; // new character → drop any accumulated scale/pivot
@@ -1881,7 +1890,9 @@ async function loadAnimationsOffline(arrayBuffer, filename) {
     throw new Error("No animation groups found in the animation file.");
   }
 
-  const skeleton = scene.skeletons[0];
+  // Use the active character's own skeleton, not scene.skeletons[0] — a leftover
+  // rig-preview skeleton could otherwise sit at index 0 and shadow the real one.
+  const skeleton = activeCharacter.rawSkeletons?.[0] || scene.skeletons[0];
   const characterRoot = activeCharacter.charRoot;
 
   // Save and temporarily adjust Character Creator A-pose arms to T-pose for sampling rest matrices
@@ -2906,6 +2917,12 @@ function buildAutoRigSkeletonPreview(markerParent, sceneHeight) {
 
 function updateAutoRigSkeletonPreview(state) {
   if (!state || !state.skeletonPreview) return;
+  // While the real-rig preview is shown, keep the colored connector bones hidden
+  // (the per-frame follow observer would otherwise re-enable them).
+  if (state.rigPreviewActive) {
+    state.skeletonPreview.forEach(({ bone }) => bone.setEnabled(false));
+    return;
+  }
   const show = document.getElementById('autorig-show-skeleton')?.checked ?? true;
   const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
   const fingerCount = state?.fingerCount || 5;
@@ -3164,6 +3181,7 @@ function hideAutoRigConfidence() {
 
 function setupAutoRigControls() {
   document.getElementById('btn-autorig-start')?.addEventListener('click', startAutoRigAdjust);
+  document.getElementById('btn-autorig-regen')?.addEventListener('click', regenerateSkeletonOneShot);
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
@@ -3206,27 +3224,22 @@ function setupAutoRigControls() {
       startAutoRigAdjust();
     }
   });
-  const legSplaySlider = document.getElementById('autorig-leg-splay');
-  const legSplayVal = document.getElementById('autorig-leg-splay-val');
-  let _legSplayRegenTimer = null;
-  legSplaySlider?.addEventListener('input', () => {
-    const val = parseFloat(legSplaySlider.value || '0');
-    if (legSplayVal) legSplayVal.textContent = val.toFixed(1) + '°';
-    if (autoRigState) autoRigState.legSplayDeg = val;
-  });
-  legSplaySlider?.addEventListener('change', () => {
-    const val = parseFloat(legSplaySlider.value || '0');
+  document.getElementById('autorig-flip-facing')?.addEventListener('change', (e) => {
+    // Forward facing drives the whole bind orientation, so regenerate the
+    // proposal then auto-show the real rig so the change is visible immediately.
     if (autoRigState) {
-      autoRigState.legSplayDeg = val;
-      // Leg splay is baked into the server-side joint proposal, so refresh the
-      // preview when the user releases the slider.
-      if (_legSplayRegenTimer) clearTimeout(_legSplayRegenTimer);
-      _legSplayRegenTimer = setTimeout(() => {
-        _legSplayRegenTimer = null;
-        showToast(`Regenerating skeleton preview with ${val.toFixed(1)}° leg splay…`);
-        cancelAutoRigAdjust();
-        startAutoRigAdjust();
-      }, 250);
+      autoRigState.flipFacing = e.target.checked;
+      regenAndPreviewAutoRig(`facing ${e.target.checked ? 'flipped 180°' : 'auto-detected'}`);
+    }
+  });
+  document.getElementById('autorig-force-rebuild')?.addEventListener('change', (e) => {
+    // Toggling rebuild changes whether markers seed from the existing (maybe
+    // flat) rig or from the upright mesh-bounds guess, so regenerate + preview.
+    if (autoRigState) {
+      autoRigState.forceRebuild = e.target.checked;
+      regenAndPreviewAutoRig(e.target.checked
+        ? 'fresh skeleton (existing rig ignored)'
+        : 'existing rig as basis');
     }
   });
   document.getElementById('skeleton-show-viewer')?.addEventListener('change', () => {
@@ -4026,17 +4039,19 @@ async function startAutoRigAdjust() {
     return;
   }
 
-  // Use the scale-baked baseline if it exists so marker positions and the server
-  // analysis work on the same geometry. Falls back to original / current buffer.
-  const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  // Always analyze against pristine PRE-RIG geometry (rigging the rigged output
+  // makes the server emit a recursive node hierarchy). Scale-baked baseline wins
+  // when present so marker positions match the scaled mesh.
+  const baseBuffer = scaledCharacterBuffer || autoRigSourceBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
   const fingerCount = parseInt(document.getElementById('autorig-finger-count')?.value || '5', 10);
-  const legSplayDeg = parseFloat(document.getElementById('autorig-leg-splay')?.value || '0');
+  const flipFacing = document.getElementById('autorig-flip-facing')?.checked || false;
+  const forceRebuild = document.getElementById('autorig-force-rebuild')?.checked || false;
   showLoading('Analyzing mesh proportions…');
   let guess;
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-    formData.append('options', JSON.stringify({ fingerCount, legSplayDeg }));
+    formData.append('options', JSON.stringify({ fingerCount, flipFacing, forceRebuild }));
     const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -4076,12 +4091,14 @@ async function startAutoRigAdjust() {
   // from the post-merge bind, which drifts from what the user placed; if we have
   // an exact memory for this character, use it and skip the bone-snap re-fit so
   // markers land precisely where they were applied.
-  // BUT only restore when the rig settings match — changing finger count or leg
-  // splay means the user wants a fresh skeleton, not the old joint set.
+  // BUT only restore when the rig settings match — changing finger count,
+  // facing or rebuild mode means the user wants a fresh skeleton, not the old
+  // joint set.
   if (lastAppliedRig?.joints) {
     const settingsMatch =
       (lastAppliedRig.fingerCount || 5) === fingerCount &&
-      (lastAppliedRig.legSplayDeg || 0) === legSplayDeg;
+      (lastAppliedRig.flipFacing || false) === flipFacing &&
+      (lastAppliedRig.forceRebuild || false) === forceRebuild;
     if (settingsMatch) {
       guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
       guess.restored = true;
@@ -4479,8 +4496,17 @@ async function startAutoRigAdjust() {
 
     dragBehavior.onDragStartObservable.add(() => {
       isDraggingMarker = true;
+      // A live edit invalidates the static rig preview — drop back to editing.
+      if (_rigPreview) clearRigPreview();
       if (camera) {
-        dragBehavior.options.dragPlaneNormal.copyFrom(camera.getForwardRay().direction);
+        // dragPlaneNormal may be undefined until the behavior's first internal
+        // drag setup — assign a fresh vector rather than copyFrom into nothing.
+        const fwd = camera.getForwardRay().direction;
+        if (dragBehavior.options.dragPlaneNormal?.copyFrom) {
+          dragBehavior.options.dragPlaneNormal.copyFrom(fwd);
+        } else {
+          dragBehavior.options.dragPlaneNormal = fwd.clone();
+        }
         // Freeze the camera while dragging a marker so the orbit/pan controls
         // don't fight the drag (otherwise the camera moves with the marker).
         camera.detachControl();
@@ -4704,7 +4730,7 @@ async function startAutoRigAdjust() {
 
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
-    fingerCount, legSplayDeg,
+    fingerCount, flipFacing, forceRebuild,
     groupMats, hoverObserver, clickObserver, markerCameraGuard, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
     // Server's original joint guess (its own render-world space) per name — the
@@ -4746,6 +4772,9 @@ async function startAutoRigAdjust() {
 }
 
 function cancelAutoRigAdjust() {
+  // Always tear down a pending rig preview first (also fires on Apply, toggle
+  // regen, and Cancel — every path that ends the current adjust session).
+  if (_rigPreview) clearRigPreview();
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
     const mockup = document.getElementById('autorig-mockup');
@@ -4956,32 +4985,24 @@ function snapAllMarkersToBody() {
   showToast(n > 0 ? `Snapped ${n} markers to body depth.` : 'No depth snap (no mesh hit).');
 }
 
-async function applyAutoRig() {
-  if (!autoRigState || !characterGlbBuffer) return;
-
-  // Collect adjusted joint positions (local to charRoot = glTF space).
-  // Use the canonical (rest-space) coordinates: displayed markers may be
-  // posed by the posture sliders, but the server rigs the BASE unposed GLB.
-  // Markers are placed/displayed in Babylon scene space (canonical = markerParent
-  // -local), but the server rigs in its own render-world space. On mirrored/
-  // flipped/scaled rigs these differ. Strategy that stays EXACT for the common
-  // case (markers left where the analysis put them):
-  //   • un-dragged marker  → send the server's own original guess verbatim
-  //   • dragged marker     → server guess + linear-mapped drag delta
-  //   • no server guess    → full affine of the current local position
-  // For clean rigs (no skeleton / identity space) this reduces to raw coords.
-  const st = autoRigState;
+// Collect adjusted joint positions (local to charRoot = glTF space) from the
+// current markers, mapped into the server's render-world space. Shared by Apply
+// and the on-demand rig preview so both bake identical joints.
+//
+// Use the canonical (rest-space) coordinates: displayed markers may be posed by
+// the posture sliders, but the server rigs the BASE unposed GLB. Markers are
+// placed/displayed in Babylon scene space (canonical = markerParent-local), but
+// the server rigs in its own render-world space. On mirrored/flipped/scaled rigs
+// these differ. Strategy that stays EXACT for the common case (markers left
+// where the analysis put them):
+//   • un-dragged marker  → send the server's own original guess verbatim
+//   • dragged marker     → server guess + linear-mapped drag delta
+//   • no server guess    → full affine of the current local position
+// For clean rigs (no skeleton / identity space) this reduces to raw coords.
+function collectAutoRigJoints(st) {
   const toServer = st.localToServerAffine;
   const rest = st.restLayout;
   const guessSrv = st.serverGuess || {};
-  // The rig server only repositions joints under the STATIC mesh (it doesn't
-  // re-deform the geometry), so baking the Force-Pose / slider posture into the
-  // joint positions would shear the skin. Force-Pose & sliders are therefore a
-  // VISUAL preview only — Apply always rigs at the mesh's actual rest shape:
-  //   • un-dragged marker → server's own ground-truth rest position
-  //   • dragged marker    → rest position + the user's drag delta
-  // `canonical` is kept in rest space (followObserver never writes it back from
-  // the posed bones), so it already holds the rest anatomy + any manual drags.
   const joints = {};
   st.markers.forEach((m, name) => {
     const p = st.canonical?.get(name) || m.position;
@@ -5000,10 +5021,34 @@ async function applyAutoRig() {
       joints[name] = [p.x, p.y, p.z];
     }
   });
+  return joints;
+}
 
-  // Use the scale-baked baseline so the rigged GLB matches the current scaled
-  // geometry, not the original unscaled one.
-  const baseBuffer = scaledCharacterBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+// Read the current rig settings off autoRigState (and the rebuild checkbox).
+function currentRigOptions(st) {
+  return {
+    fingerCount: st?.fingerCount || 5,
+    flipFacing: st?.flipFacing || false,
+    forceRebuild: st?.forceRebuild || false,
+  };
+}
+
+async function applyAutoRig() {
+  if (!autoRigState || !characterGlbBuffer) return;
+
+  const st = autoRigState;
+  // The rig server only repositions joints under the STATIC mesh (it doesn't
+  // re-deform the geometry), so Force-Pose / slider posture is a VISUAL preview
+  // only — Apply always rigs at the mesh's actual rest shape. `canonical` stays
+  // in rest space, so it already holds rest anatomy + any manual drags.
+  const joints = collectAutoRigJoints(st);
+
+  // Rig the pristine PRE-RIG geometry (re-rigging the rigged output produces an
+  // invalid recursive node hierarchy). Scale-baked baseline wins when present.
+  const baseBuffer = scaledCharacterBuffer || autoRigSourceBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  // Capture the rig settings BEFORE cancelAutoRigAdjust() nulls autoRigState —
+  // otherwise fingerCount/flipFacing/forceRebuild would be lost at bake time.
+  const rigOptions = currentRigOptions(st);
   // Remember exactly what the user applied so re-entering Auto-Rig restores
   // these positions verbatim (the post-Apply animation merge nudges the bind
   // pose, so re-guessing from the merged bones would move the markers). Tied to
@@ -5011,8 +5056,7 @@ async function applyAutoRig() {
   lastAppliedRig = {
     joints: JSON.parse(JSON.stringify(joints)),
     forBuffer: baseBuffer,
-    fingerCount: autoRigState?.fingerCount || 5,
-    legSplayDeg: autoRigState?.legSplayDeg ?? 0,
+    ...rigOptions,
   };
   cancelAutoRigAdjust();
 
@@ -5021,11 +5065,7 @@ async function applyAutoRig() {
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-    formData.append('options', JSON.stringify({
-      joints,
-      fingerCount: autoRigState?.fingerCount || 5,
-      legSplayDeg: autoRigState?.legSplayDeg ?? 0,
-    }));
+    formData.append('options', JSON.stringify({ joints, ...rigOptions }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData });
     if (!res.ok) {
@@ -5049,7 +5089,7 @@ async function applyAutoRig() {
     // Reload through the normal character pipeline: re-analyze, then merge
     // default/preloaded animations against the freshly rigged skeleton.
     const file = new File([riggedBuffer], 'rigged.glb');
-    await loadCharacterMeshFile(file, riggedBuffer);
+    await loadCharacterMeshFile(file, riggedBuffer, { isRigResult: true });
     showToast('✓ Skeleton generated and assigned!');
 
     const testDrivePanel = document.getElementById('autorig-testdrive-panel');
@@ -5066,6 +5106,223 @@ async function applyAutoRig() {
     console.error('[autorig] failed:', err);
     showToast('Auto-rig failed: ' + err.message, true);
   }
+}
+
+// ── One-click skeleton regeneration ─────────────────────────────────────────
+// Strip the model's current skeleton and build a fresh Mixamo rig from the mesh
+// automatically, then apply — no manual marker editing. The server proposes the
+// joints (forceRebuild) and rigs them in one pass. Re-enter Auto-Rig afterwards
+// to fine-tune. Always rigs the pristine PRE-RIG geometry.
+async function regenerateSkeletonOneShot() {
+  if (!characterGlbBuffer || !activeCharacter) {
+    showToast('Load a character mesh first!', true);
+    return;
+  }
+  if (!isServerAvailable) {
+    showToast('Server offline — auto-rig unavailable.', true);
+    return;
+  }
+  // Tear down any active rig-adjust session / preview so the reload is clean.
+  cancelAutoRigAdjust();
+
+  const baseBuffer = scaledCharacterBuffer || autoRigSourceBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  const rigOptions = {
+    fingerCount: parseInt(document.getElementById('autorig-finger-count')?.value || '5', 10),
+    flipFacing: document.getElementById('autorig-flip-facing')?.checked || false,
+    forceRebuild: true, // the whole point: discard the existing skeleton
+  };
+
+  showLoading('Analyzing mesh proportions…');
+  showMergeProgress(true, 'Regenerating skeleton…');
+  try {
+    // 1. Server proposes joints from the mesh (its own render-world space).
+    const fdJoints = new FormData();
+    fdJoints.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    fdJoints.append('options', JSON.stringify(rigOptions));
+    const jRes = await fetch('/api/autorig-joints', { method: 'POST', body: fdJoints });
+    if (!jRes.ok) {
+      const err = await jRes.json().catch(() => ({ error: jRes.statusText }));
+      throw new Error(err.error || 'Joint analysis failed');
+    }
+    const guess = await jRes.json();
+    const joints = guess.joints;
+    if (!joints || !Object.keys(joints).length) throw new Error('No joints proposed for this mesh.');
+
+    // 2. Rig those joints directly (no marker remapping — they are already in the
+    // server's render-world space).
+    showLoading('Generating skeleton & skin weights…');
+    const fdRig = new FormData();
+    fdRig.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    fdRig.append('options', JSON.stringify({ joints, ...rigOptions }));
+    const rRes = await fetch('/api/autorig', { method: 'POST', body: fdRig });
+    if (!rRes.ok) {
+      const err = await rRes.json().catch(() => ({ error: rRes.statusText }));
+      throw new Error(err.error || 'Auto-rig failed');
+    }
+    const riggedBuffer = await rRes.arrayBuffer();
+    completeMergeProgress();
+
+    // Remember the applied joints so re-entering Auto-Rig restores them.
+    lastAppliedRig = {
+      joints: JSON.parse(JSON.stringify(joints)),
+      forBuffer: baseBuffer,
+      ...rigOptions,
+    };
+
+    // Reflect the rebuild in the checkbox so a later Auto-Rig session uses the
+    // same setting — otherwise settingsMatch fails and the restored joints (and
+    // thus the regenerated skeleton) are discarded for a fresh, mismatched guess.
+    const rebuildChk = document.getElementById('autorig-force-rebuild');
+    if (rebuildChk) rebuildChk.checked = true;
+
+    // New skeleton = new bind pose: stale posture offsets no longer apply.
+    charTransformConfig.ARM_SPREAD_ANGLE = 0;
+    charTransformConfig.ARM_SPLAY_ANGLE = 0;
+    charTransformConfig.SHOULDER_RAISE_ANGLE = 0;
+    charTransformConfig.LEG_SPREAD_ANGLE = 0;
+    charTransformConfig.SPINE_STRAIGHTEN_ANGLE = 0;
+    charTransformConfig.HIPS_TILT_ANGLE = 0;
+    syncCharTransformToUI();
+
+    const file = new File([riggedBuffer], 'rigged.glb');
+    await loadCharacterMeshFile(file, riggedBuffer, { isRigResult: true });
+    showToast('✓ Skeleton regenerated! Re-enter Auto-Rig to fine-tune joints.');
+  } catch (err) {
+    completeMergeProgress();
+    hideLoading();
+    console.error('[regen-skeleton] failed:', err);
+    showToast('Regenerate failed: ' + err.message, true);
+  }
+}
+
+// ── On-demand real-rig preview ──────────────────────────────────────────────
+// Bakes the actual skeleton on the server (same call as Apply, minus the anim
+// merge) and shows the rigged mesh + its SkeletonViewer in the viewport, so the
+// effect of "Rebuild from scratch" / "faces backward" is visible BEFORE Apply.
+// It is a static snapshot: any marker drag or setting change reverts to the live
+// editor (the snapshot would otherwise drift from the markers).
+let _rigPreview = null; // { container, viewer, hiddenMeshes[], hiddenMarkers[] }
+
+function clearRigPreview() {
+  if (!_rigPreview) return;
+  const pv = _rigPreview;
+  // Null first so any re-entrant call (dispose side effects, marker drag) no-ops.
+  _rigPreview = null;
+  try { pv.viewer?.dispose(); } catch (e) { }
+  // Unparent the root from charTransformWrapper BEFORE disposing so a later
+  // character reload (which disposes the wrapper/capsule subtree) can't touch a
+  // half-disposed node. container.dispose() then disposes every entity it tracks
+  // (meshes, skeletons, materials) — including the reparented root — exactly once.
+  try { pv.previewRoot?.setParent(null); } catch (e) { }
+  try { pv.container?.removeAllFromScene(); } catch (e) { }
+  try { pv.container?.dispose(); } catch (e) { }
+  // Restore the editor visuals that were hidden under the preview.
+  pv.hiddenMeshes?.forEach(m => { try { m.setEnabled(true); } catch (e) { } });
+  pv.hiddenMarkers?.forEach(m => { try { m.setEnabled(true); } catch (e) { } });
+  if (autoRigState) {
+    autoRigState.rigPreviewActive = false;
+    // Re-show the colored marker-bone preview.
+    updateAutoRigSkeletonPreview(autoRigState);
+  }
+}
+
+// Regenerate the marker proposal (re-analyze with the new toggle settings) and
+// then auto-show the real rig preview. Used by the rebuild / facing toggles so
+// the effect is visible without a manual button.
+async function regenAndPreviewAutoRig(reason) {
+  showToast(`Regenerating skeleton — ${reason}…`);
+  cancelAutoRigAdjust();        // tears down current session + any active preview
+  await startAutoRigAdjust();   // re-fetches markers with the new DOM settings
+  if (autoRigState) await previewAutoRig();
+}
+
+async function previewAutoRig() {
+  if (!autoRigState) return;
+  // Refresh: if a preview is already up, tear it down before rebaking.
+  if (_rigPreview) clearRigPreview();
+
+  const st = autoRigState;
+  const joints = collectAutoRigJoints(st);
+  const rigOptions = currentRigOptions(st);
+  const baseBuffer = scaledCharacterBuffer || autoRigSourceBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  if (!baseBuffer) return;
+
+  showLoading('Generating skeleton preview…');
+  let riggedBuffer;
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    formData.append('options', JSON.stringify({ joints, ...rigOptions }));
+    const res = await fetch('/api/autorig', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Preview failed');
+    }
+    riggedBuffer = await res.arrayBuffer();
+  } catch (err) {
+    hideLoading();
+    showToast('Preview failed: ' + err.message, true);
+    return;
+  }
+
+  // The user may have cancelled the rig session while the bake was in flight.
+  if (!autoRigState) { hideLoading(); return; }
+
+  const blob = new Blob([riggedBuffer]);
+  const blobUrl = URL.createObjectURL(blob);
+  let container;
+  try {
+    container = await BABYLON.SceneLoader.LoadAssetContainerAsync('', blobUrl, scene, null, '.glb');
+  } catch (err) {
+    URL.revokeObjectURL(blobUrl);
+    hideLoading();
+    showToast('Preview load failed: ' + err.message, true);
+    return;
+  }
+  URL.revokeObjectURL(blobUrl);
+
+  if (!autoRigState) { try { container.dispose(); } catch (e) { } hideLoading(); return; }
+
+  container.addAllToScene();
+  container.animationGroups?.forEach(ag => { try { ag.stop(); ag.dispose(); } catch (e) { } });
+
+  // Align the preview to the editor mesh: the live character sits under
+  // charTransformWrapper (scaled/positioned to fit the viewport), but the loaded
+  // container is at the GLB origin. Parent the preview's root to the same wrapper
+  // with identity local transform so it overlays the markers exactly.
+  const previewRoot = container.meshes.find(m => !m.parent) || container.meshes[0];
+  if (previewRoot && activeCharacter?.charTransformWrapper) {
+    previewRoot.setParent(activeCharacter.charTransformWrapper);
+    previewRoot.position.set(0, 0, 0);
+    previewRoot.rotationQuaternion = null;
+    previewRoot.rotation.set(0, 0, 0);
+    previewRoot.scaling.set(1, 1, 1);
+  }
+
+  // Hide the live editor mesh + colored marker-bone preview so only the real
+  // rigged skeleton is visible. Keep the draggable marker dots so the user still
+  // sees joint positions.
+  const hiddenMeshes = (activeCharacter?.rawMeshes || []).filter(Boolean);
+  hiddenMeshes.forEach(m => { try { m.setEnabled(false); } catch (e) { } });
+  // Hide the colored connector bones.
+  st.skeletonPreview?.forEach(({ bone }) => { try { bone.setEnabled(false); } catch (e) { } });
+
+  // Show the real skeleton with a SkeletonViewer.
+  const skel = container.skeletons?.[0];
+  const previewMesh = container.meshes.find(m => m.skeleton === skel) || container.meshes[0];
+  let viewer = null;
+  if (skel && previewMesh) {
+    viewer = new BABYLON.SkeletonViewer(skel, previewMesh, scene, false, 3, {
+      displayMode: BABYLON.SkeletonViewer.DISPLAY_SPHERE_AND_SPURS,
+    });
+    viewer.color = BABYLON.Color3.FromHexString('#34d399'); // green = generated rig
+    viewer.isEnabled = true;
+  }
+
+  _rigPreview = { container, viewer, previewRoot, hiddenMeshes, hiddenMarkers: [] };
+  autoRigState.rigPreviewActive = true;
+  hideLoading();
+  showToast('Showing the real generated rig. Drag any marker to edit again.');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -5119,6 +5376,7 @@ function clearCharacter() {
 
   characterGlbBuffer = null;
   originalCharacterGlbBuffer = null;
+  autoRigSourceBuffer = null;
   animationsGlbBuffer = null;
   detectedAnimations = [];
   skeletonInfo = null;

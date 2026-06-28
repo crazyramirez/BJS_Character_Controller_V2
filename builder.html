@@ -319,6 +319,10 @@
               </div>
               <div id="autorig-controls" style="display:none;">
                 <button id="btn-autorig-start" class="btn-action">💀 Generate Skeleton (Auto-Rig)</button>
+                <button id="btn-autorig-regen" class="btn-action btn-secondary" style="width:100%; margin-top: 6px;"
+                  title="One-click: discard the model's current skeleton and build a fresh Mixamo skeleton from the mesh automatically, then apply it. No manual marker editing — re-enter Auto-Rig afterwards to fine-tune if needed.">
+                  ♻️ Regenerate Skeleton (auto)
+                </button>
                 <div id="autorig-confidence" class="autorig-confidence" style="display:none;">
                   <div class="autorig-confidence-label">
                     <span>Auto-Rig confidence</span>
@@ -375,15 +379,17 @@
                       <option value="5" selected>5 (full hand)</option>
                     </select>
                   </label>
-                  <label class="autorig-symmetry-row" style="margin-top: 6px; display: flex; align-items: center; gap: 8px;"
-                    title="Spread the knees outward in the bind pose so legs don't visually narrow/cross when crouching. Start with 3-6° for low-poly characters.">
-                    <span>Leg splay:</span>
-                    <input type="range" id="autorig-leg-splay" min="0" max="15" step="0.5" value="0" style="flex:1;">
-                    <span id="autorig-leg-splay-val" style="min-width: 36px; text-align: right;">0°</span>
-                  </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Show the finger joint markers so you can adjust knuckles and fingertips.">
                     <input type="checkbox" id="autorig-finger-mode"> Edit fingers (detailed mode)
+                  </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Discard the model's existing skeleton (e.g. Character Creator / AccuRig CC_Base_* bones) and build a fresh Mixamo skeleton from the markers. Use this when the existing rig is lying flat / on its back, or uses scaleCompensation bones. The new rig is built upright from the marker positions.">
+                    <input type="checkbox" id="autorig-force-rebuild"> Rebuild skeleton from scratch (ignore existing rig)
+                  </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Force the character's forward facing. Non-human shapes (tails, snouts, digitigrade legs) can fool the auto-detector, flipping the whole skeleton 180° even when the markers look right. Toggle this if the generated rig comes out collapsed or animations play backwards.">
+                    <input type="checkbox" id="autorig-flip-facing"> Character faces backward (flip 180°)
                   </label>
                   <div class="autorig-btn-row">
                     <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>
@@ -1165,7 +1171,7 @@
 
   <!-- Builder & Controller Scripts -->
   <script src="js/character-controller.js?v=2.3"></script>
-  <script src="js/core/builder.js?v=3.0"></script>
+  <script src="js/core/builder.js?v=3.3"></script>
 
 </body>
 

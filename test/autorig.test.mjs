@@ -301,4 +301,83 @@ describe('autoRigGLB skin weights', () => {
     assert.ok(checked > 0, 'expected mid-upper-arm vertices to check');
     assert.ok(good >= checked * 0.3, `only ${good}/${checked} mid-upper-arm vertices have meaningful LeftArmTwist weight`);
   });
+
+  it('does not drift joint positions when rigging multiple times', async () => {
+    // Helper to normalize names
+    const getNormName = (name) => {
+      if (!name) return '';
+      let n = name.toLowerCase();
+      if (n.includes(':')) n = n.split(':').pop();
+      n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/, '');
+      n = n.replace(/^mixamorig\d*/, '');
+      n = n.replace(/\.([lr])$/, '$1');
+      n = n.replace(/_(\d+)$/, '');
+      return n.replace(/[:_\-\.\s]/g, '');
+    };
+
+    // 1. Guess joints on the original model
+    const guess1 = await guessJoints(load('character_animated_1.glb'));
+    const joints1 = guess1.joints;
+    
+    // 2. Rig the model once
+    const riggedBuffer1 = await autoRigGLB(load('character_animated_1.glb'), { joints: joints1 });
+    
+    // 3. Inspect rigged 1 to get joint positions
+    const rig1 = await inspectRig(riggedBuffer1);
+    
+    // 4. Rig the model again, feeding the rigged GLB as input
+    const riggedBuffer2 = await autoRigGLB(riggedBuffer1, { joints: joints1 });
+    
+    // 5. Inspect rigged 2 to check joint positions
+    const rig2 = await inspectRig(riggedBuffer2);
+    
+    // Assert that the joint positions are identical between the two rig runs
+    for (const name of Object.keys(joints1)) {
+      const normCanon = getNormName(name);
+      const key1 = Object.keys(rig1.jointWorld).find(k => getNormName(k) === normCanon);
+      const key2 = Object.keys(rig2.jointWorld).find(k => getNormName(k) === normCanon);
+      
+      if (!key1 || !key2) continue;
+      
+      const p1 = rig1.jointWorld[key1];
+      const p2 = rig2.jointWorld[key2];
+      const dist = Math.hypot(p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2]);
+      assert.ok(dist < 1e-4, `joint ${key1} drifted by ${dist} between rig runs (p1=[${p1}], p2=[${p2}])`);
+    }
+  });
+
+  it('assigns twist weights uniformly across the entire cross-section of the limb (no radius gate)', async () => {
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
+    const { prims, jointWorld, jointIndex } = await inspectRig(buffer);
+    
+    const arm = jointWorld.LeftArm;
+    const forearm = jointWorld.LeftForeArm;
+    const mid = [
+      (arm[0] + forearm[0]) * 0.5,
+      (arm[1] + forearm[1]) * 0.5,
+      (arm[2] + forearm[2]) * 0.5,
+    ];
+    const H = jointWorld.Head[1] * 1.15;
+    const twistIdx = jointIndex.LeftArmTwist;
+    
+    // Check that vertices FARTHER from the bone axis (outer shell: 0.04 * H < d < 0.08 * H)
+    // still receive twist weights.
+    let checked = 0, good = 0;
+    for (const prim of prims) {
+      for (let v = 0; v < prim.count; v++) {
+        const p = [prim.positions[v * 3], prim.positions[v * 3 + 1], prim.positions[v * 3 + 2]];
+        const d = Math.hypot(p[0] - mid[0], p[1] - mid[1], p[2] - mid[2]);
+        if (d <= 0.04 * H || d > 0.08 * H) continue;
+        
+        let w = 0;
+        for (let k = 0; k < 4; k++) {
+          if (prim.joints[v * 4 + k] === twistIdx) w += prim.weights[v * 4 + k];
+        }
+        checked++;
+        if (w >= 0.05) good++;
+      }
+    }
+    assert.ok(checked > 0, 'expected outer upper-arm vertices to check');
+    assert.ok(good >= checked * 0.3, `outer upper-arm vertices should have twist weights, only got ${good}/${checked}`);
+  });
 });

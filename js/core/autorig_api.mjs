@@ -98,6 +98,57 @@ function worldMatrixOf(node, parentMap, cache) {
   return world;
 }
 
+function computeBindWorldMatrices(doc) {
+  const root = doc.getRoot();
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+
+  // 1. Map skin to the mesh nodes that use it
+  const skinMeshes = new Map();
+  for (const node of root.listNodes()) {
+    const skin = node.getSkin();
+    if (skin) {
+      if (!skinMeshes.has(skin)) skinMeshes.set(skin, []);
+      skinMeshes.get(skin).push(node);
+    }
+  }
+
+  // 2. Pre-populate bind world matrices for all joints using skins
+  const tempCache = new Map();
+  for (const skin of root.listSkins()) {
+    const joints = skin.listJoints();
+    const ibmAcc = skin.getInverseBindMatrices();
+    const ibmArr = ibmAcc ? ibmAcc.getArray() : null;
+    if (!ibmArr) continue;
+
+    // Find a mesh node using this skin
+    const meshes = skinMeshes.get(skin) || [];
+    const meshNode = meshes[0];
+
+    // S is the mesh node's world transform.
+    // If no mesh node, fallback to identity.
+    const S = meshNode 
+      ? worldMatrixOf(meshNode, parentMap, tempCache) 
+      : new Float32Array(MAT4_IDENTITY);
+
+    joints.forEach((joint, idx) => {
+      const ibm = ibmArr.slice(idx * 16, idx * 16 + 16);
+      const invIbm = invertRigidMat4(ibm);
+      const W_bind = mat4Mul(S, invIbm);
+      cache.set(joint, W_bind);
+    });
+  }
+
+  // 3. For any other nodes (non-joints, or joints not in a skin), fall back to worldMatrixOf
+  for (const node of root.listNodes()) {
+    if (!cache.has(node)) {
+      cache.set(node, worldMatrixOf(node, parentMap, tempCache));
+    }
+  }
+
+  return cache;
+}
+
 // ── Skin space → render world ────────────────────────────────────────────────
 // Skinned vertices are authored in skin space and rendered as jointWorld·IBM·v.
 // At bind pose jointWorld·IBM is the same matrix S for every joint that actually
@@ -131,7 +182,7 @@ function dominantJointIndex(mesh) {
 
 function skinWorldXforms(doc) {
   const parentMap = buildParentMap(doc);
-  const cache = new Map();
+  const bindWorldMatrices = computeBindWorldMatrices(doc);
   const byMesh = new Map();
   for (const node of doc.getRoot().listNodes()) {
     const skin = node.getSkin();
@@ -146,7 +197,7 @@ function skinWorldXforms(doc) {
     // Reference on a joint that actually weights this mesh (fall back to 0).
     let ref = dominantJointIndex(mesh);
     if (ref < 0 || ref * 16 + 16 > ibm.length || !joints[ref]) ref = 0;
-    const W = worldMatrixOf(joints[ref], parentMap, cache);
+    const W = bindWorldMatrices.get(joints[ref]) || worldMatrixOf(joints[ref], parentMap, new Map());
     byMesh.set(mesh, mat4Mul(W, ibm.slice(ref * 16, ref * 16 + 16)));
   }
   return byMesh;
@@ -1355,19 +1406,13 @@ function seedNormVariants(name) {
  * canonical Mixamo joint names. Used to pre-place markers when re-rigging.
  */
 function seedJointsFromSkins(doc) {
-  const parentMap = buildParentMap(doc);
-  const cache = new Map();
   const worldByNorm = new Map();
+  const bindWorldMatrices = computeBindWorldMatrices(doc);
   for (const skin of doc.getRoot().listSkins()) {
     const joints = skin.listJoints();
     if (!joints.length) continue;
-    // Bind position = the joint's NODE world transform. This is the render-world
-    // ground truth and already includes any ancestor coordinate fix (e.g. the
-    // -90°X on Sketchfab_model/.fbx wrappers). The earlier S = jointWorld₀·IBM₀
-    // approach double-applied that rotation on rigs whose IBMs are authored in
-    // render space (UE5/Fortnite Sketchfab exports), flipping markers to Z-up.
     joints.forEach((joint) => {
-      const W = worldMatrixOf(joint, parentMap, cache);
+      const W = bindWorldMatrices.get(joint) || MAT4_IDENTITY;
       const p = [W[12], W[13], W[14]];
       for (const n of seedNormVariants(joint.getName())) {
         if (n && !worldByNorm.has(n)) worldByNorm.set(n, { name: joint.getName(), pos: p });
@@ -1657,14 +1702,19 @@ function detectScaleUnit(bounds) {
   return { unit: 'unknown', scale: 1.0, height: H };
 }
 
-export async function guessJoints(buffer) {
+export async function guessJoints(buffer, options = {}) {
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const skinXf = skinWorldXforms(doc);
   const bodyMeshes = selectBodyMeshes(doc, skinXf);
   const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
   const fwdResult = detectForwardZWithConfidence(doc, bounds, skinXf, bodyMeshes);
-  const fwd = fwdResult.sign;
+  // Allow the client to override the detected facing. Keeps the marker proposal
+  // consistent with the same override applied at rig-bake time:
+  //   options.forwardZ (+1/-1) → absolute, options.flipFacing → invert detected.
+  let fwd = fwdResult.sign;
+  if (options.forwardZ === 1 || options.forwardZ === -1) fwd = options.forwardZ;
+  else if (options.flipFacing) fwd = -fwdResult.sign;
   const fwdCertainty = fwdResult.certainty;
 
   const verts = collectWorldVertices(doc, skinXf, bodyMeshes);
@@ -1693,8 +1743,12 @@ export async function guessJoints(buffer) {
   const score = computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds);
   const { humanoid, reason } = isHumanoidGuess(sliced, topo, score, topoError);
 
-  // Existing skeleton (re-rig): seed markers from current bind pose where names match
-  if (doc.getRoot().listSkins().length > 0) {
+  // Existing skeleton (re-rig): seed markers from current bind pose where names
+  // match. Skipped when forceRebuild is requested — a flat / on-its-back source
+  // rig (e.g. Character Creator Z-up scaleCompensation bones) would seed the
+  // markers in that broken pose. Without seeding, markers come from the upright
+  // mesh-bounds guess instead.
+  if (doc.getRoot().listSkins().length > 0 && !options.forceRebuild) {
     const seeded = seedJointsFromSkins(doc);
     guess.joints = { ...guess.joints, ...seeded };
     // Interpolate missing spine joints if they were not in the skin
@@ -1912,7 +1966,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
   // Sketchfab wrappers) as the body joints — using it lays the rig flat on its
   // back. Pick the most-weighted joint of the skin's mesh instead (same logic as
   // skinWorldXforms), so the markers↔skin-space round-trip stays upright.
-  const matCache0 = new Map();
+  const bindWorldMatrices = computeBindWorldMatrices(doc);
   let sRefJoint = skinData[0].joints[0];
   let sRefIdx = 0;
   {
@@ -1924,7 +1978,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
     if (dom >= 0 && dom < skinData[0].joints.length) { sRefIdx = dom; sRefJoint = skinData[0].joints[dom]; }
   }
   const S = mat4Mul(
-    worldMatrixOf(sRefJoint, parentMap, matCache0),
+    bindWorldMatrices.get(sRefJoint) || MAT4_IDENTITY,
     skinData[0].arr.slice(sRefIdx * 16, sRefIdx * 16 + 16)
   );
   const invS = invertRigidMat4(S);
@@ -1933,10 +1987,9 @@ function adjustExistingRig(doc, targetJoints = {}) {
   const origWorldPos = new Map();
   const origWorldRot = new Map();
   const origWorldScale = new Map();
-  const matCache = new Map();
 
   for (const node of doc.getRoot().listNodes()) {
-    const W_render = worldMatrixOf(node, parentMap, matCache); // Node's bind matrix in GLTF world space
+    const W_render = bindWorldMatrices.get(node) || MAT4_IDENTITY; // Node's bind matrix in GLTF world space
 
     origWorldPos.set(node, [W_render[12], W_render[13], W_render[14]]);
 
@@ -2203,7 +2256,7 @@ function stripExistingRig(doc) {
   // usually Z-up). S is anchored on the mesh's dominant (most-weighted) joint —
   // a synthetic _rootJoint at index 0 does NOT carry the body's coordinate fix.
   const parentMap = buildParentMap(doc);
-  const sCache = new Map();
+  const bindWorldMatrices = computeBindWorldMatrices(doc);
   const skinXformByMesh = new Map();
   for (const node of root.listNodes()) {
     const skin = node.getSkin();
@@ -2214,7 +2267,8 @@ function stripExistingRig(doc) {
     if (!joints.length || !ibm || ibm.length < 16) { skinXformByMesh.set(mesh, MAT4_IDENTITY); continue; }
     let ref = dominantJointIndex(mesh);
     if (ref < 0 || ref * 16 + 16 > ibm.length || !joints[ref]) ref = 0;
-    skinXformByMesh.set(mesh, mat4Mul(worldMatrixOf(joints[ref], parentMap, sCache), ibm.slice(ref * 16, ref * 16 + 16)));
+    const W = bindWorldMatrices.get(joints[ref]) || worldMatrixOf(joints[ref], parentMap, new Map());
+    skinXformByMesh.set(mesh, mat4Mul(W, ibm.slice(ref * 16, ref * 16 + 16)));
   }
 
   const skinnedMeshes = new Set();
@@ -2463,14 +2517,14 @@ function boneSegments(joints, H) {
       [lerp(joints[a][0], joints[b][0], t1), lerp(joints[a][1], joints[b][1], t1), lerp(joints[a][2], joints[b][2], t1)],
     ];
   };
-  segments.LeftArmTwist = midSeg('LeftShoulder', 'LeftArm');
-  segments.LeftForeArmTwist = midSeg('LeftArm', 'LeftHand');
-  segments.RightArmTwist = midSeg('RightShoulder', 'RightArm');
-  segments.RightForeArmTwist = midSeg('RightArm', 'RightHand');
-  segments.LeftUpLegTwist = midSeg('Hips', 'LeftLeg');
-  segments.LeftLegTwist = midSeg('LeftUpLeg', 'LeftFoot');
-  segments.RightUpLegTwist = midSeg('Hips', 'RightLeg');
-  segments.RightLegTwist = midSeg('RightUpLeg', 'RightFoot');
+  segments.LeftArmTwist = midSeg('LeftArm', 'LeftForeArm');
+  segments.LeftForeArmTwist = midSeg('LeftForeArm', 'LeftHand');
+  segments.RightArmTwist = midSeg('RightArm', 'RightForeArm');
+  segments.RightForeArmTwist = midSeg('RightForeArm', 'RightHand');
+  segments.LeftUpLegTwist = midSeg('LeftUpLeg', 'LeftLeg');
+  segments.LeftLegTwist = midSeg('LeftLeg', 'LeftFoot');
+  segments.RightUpLegTwist = midSeg('RightUpLeg', 'RightLeg');
+  segments.RightLegTwist = midSeg('RightLeg', 'RightFoot');
 
   // Finger segments (5 digits × 3 joints per hand).
   for (const side of ['Left', 'Right']) {
@@ -2608,7 +2662,6 @@ function vec3Dist(a, b) {
 // guarantees the twist bone has real influence without having to win the
 // global heat-diffusion competition against the parent/child bones.
 function redistributeTwistWeights(positions, jointsOut, weightsOut, parentIdx, twistIdx, parentSeg, H, fraction = 0.4) {
-  const radius = 0.04 * H;
   const count = positions.length / 3;
   const [a, b] = parentSeg;
   const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
@@ -2619,11 +2672,7 @@ function redistributeTwistWeights(positions, jointsOut, weightsOut, parentIdx, t
     const ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
     let t = abLen2 > 0 ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / abLen2 : 0;
     t = Math.max(0, Math.min(1, t));
-    if (t < 0.25 || t > 0.75) continue;
-
-    const closest = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
-    const d = Math.hypot(p[0] - closest[0], p[1] - closest[1], p[2] - closest[2]);
-    if (d > radius) continue;
+    if (t < 0.2 || t > 0.8) continue;
 
     const base = v * 4;
     let parentSlot = -1, twistSlot = -1, minSlot = -1, minW = Infinity;
@@ -2636,7 +2685,8 @@ function redistributeTwistWeights(positions, jointsOut, weightsOut, parentIdx, t
     }
     if (parentSlot < 0 || weightsOut[base + parentSlot] <= 1e-6) continue;
 
-    const transfer = weightsOut[base + parentSlot] * fraction;
+    const localFraction = fraction * Math.sin(((t - 0.2) / 0.6) * Math.PI);
+    const transfer = weightsOut[base + parentSlot] * localFraction;
     weightsOut[base + parentSlot] -= transfer;
 
     if (twistSlot >= 0) {
@@ -2886,14 +2936,14 @@ const FINGER_DEFS = [
 function appendTwistJoints(joints, H) {
   const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   const pairs = [
-    ['LeftArmTwist', 'LeftShoulder', 'LeftArm'],
-    ['LeftForeArmTwist', 'LeftArm', 'LeftHand'],
-    ['RightArmTwist', 'RightShoulder', 'RightArm'],
-    ['RightForeArmTwist', 'RightArm', 'RightHand'],
-    ['LeftUpLegTwist', 'Hips', 'LeftLeg'],
-    ['LeftLegTwist', 'LeftUpLeg', 'LeftFoot'],
-    ['RightUpLegTwist', 'Hips', 'RightLeg'],
-    ['RightLegTwist', 'RightUpLeg', 'RightFoot'],
+    ['LeftArmTwist', 'LeftArm', 'LeftForeArm'],
+    ['LeftForeArmTwist', 'LeftForeArm', 'LeftHand'],
+    ['RightArmTwist', 'RightArm', 'RightForeArm'],
+    ['RightForeArmTwist', 'RightForeArm', 'RightHand'],
+    ['LeftUpLegTwist', 'LeftUpLeg', 'LeftLeg'],
+    ['LeftLegTwist', 'LeftLeg', 'LeftFoot'],
+    ['RightUpLegTwist', 'RightUpLeg', 'RightLeg'],
+    ['RightLegTwist', 'RightLeg', 'RightFoot'],
   ];
   for (const [name, a, b] of pairs) {
     if (joints[name] || !joints[a] || !joints[b]) continue;
@@ -3002,7 +3052,19 @@ export async function autoRigGLB(buffer, options = {}) {
 
   const bodyMeshes = selectBodyMeshes(doc, previouslySkinned);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
-  const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
+  // forwardZ override: the auto-detector mis-reads forward on non-human shapes
+  // (long tails, snouts, digitigrade legs), which flips the whole bind 180° and
+  // produces a collapsed/twisted skeleton even when the joint markers are right.
+  // The client can force the facing two ways:
+  //   options.forwardZ (+1/-1) → absolute override
+  //   options.flipFacing (bool) → invert whatever was auto-detected
+  const detectedForwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
+  let forwardZ = detectedForwardZ;
+  if (options.forwardZ === 1 || options.forwardZ === -1) forwardZ = options.forwardZ;
+  else if (options.flipFacing) forwardZ = -detectedForwardZ;
+  if (forwardZ !== detectedForwardZ) {
+    console.log(`[autorig] forwardZ overridden by client: ${detectedForwardZ} → ${forwardZ}`);
+  }
   const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes);
   const joints = { ...guess.joints, ...(options.joints || {}) };
   const H = guess.height;
@@ -3253,8 +3315,26 @@ export async function autoRigGLB(buffer, options = {}) {
         if (total <= 0) {
           const dists = [];
           const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
+          const ctr = centerAtY(p[1]);
+          const sd = leftAxisValid
+            ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
+            : p[0] - ctr[0];
+          const sideMargin = 0.02 * H;
+
           for (let b = 0; b < nB; b++) {
-            const d = distPointSegment(p, segList[b][0], segList[b][1]);
+            const side = boneSide[b];
+            let gate = 1;
+            if (side !== 0) {
+              const signed = side * sd;
+              const g = (signed + sideMargin) / (2 * sideMargin);
+              gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g);
+            }
+            let d = distPointSegment(p, segList[b][0], segList[b][1]);
+            if (gate <= 0) {
+              d = Infinity;
+            } else {
+              d /= Math.max(1e-4, gate);
+            }
             dists.push({ index: b, dist: d });
           }
           dists.sort((x, y) => x.dist - y.dist);
@@ -3262,7 +3342,8 @@ export async function autoRigGLB(buffer, options = {}) {
           const limit = Math.min(4, dists.length);
           for (let k = 0; k < limit; k++) {
             const dVal = Math.max(1e-4, dists[k].dist);
-            const w = 1.0 / (dVal * dVal);
+            // Ignore infinite distances
+            const w = dVal === Infinity ? 0 : 1.0 / (dVal * dVal);
             best[k] = [dists[k].index, w];
             dTotal += w;
           }
