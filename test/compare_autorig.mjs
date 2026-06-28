@@ -1,7 +1,7 @@
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
-import { guessJoints, autoRigGLB } from './js/core/autorig_api.mjs';
+import { guessJoints, autoRigGLB } from '../js/core/autorig_api.mjs';
 const dracoLib = draco3d.createDecoderModule ? draco3d : (draco3d.default || draco3d);
 const io = new NodeIO()
   .registerExtensions(ALL_EXTENSIONS)
@@ -51,20 +51,20 @@ function worldMatrixOf(node, parentMap, cache) {
 const refDoc2 = await io.read('assets/character_animated_1.glb');
 const refSkin = refDoc2.getRoot().listSkins()[0];
 const refJoints = refSkin.listJoints();
-const refMap = new Map(refJoints.map((j,i)=>[j.getName().replace('mixamorig:',''), {j,i}]));
+const refMap = new Map(refJoints.map((j, i) => [j.getName().replace('mixamorig:', ''), { j, i }]));
 const rigJoints = rigSkin.listJoints();
-const rigMap = new Map(rigJoints.map((j,i)=>[j.getName(), {j,i}]));
+const rigMap = new Map(rigJoints.map((j, i) => [j.getName(), { j, i }]));
 const refParentMap = buildParentMap(refDoc2);
 const rigParentMap = buildParentMap(rigDoc);
 const refCache = new Map(), rigCache = new Map();
 
 console.log('\nPosition differences (ref vs rig) for common joints:');
-for (const [name, {j: rj}] of rigMap) {
+for (const [name, { j: rj }] of rigMap) {
   const refItem = refMap.get(name);
   if (!refItem) continue;
   const refW = worldMatrixOf(refItem.j, refParentMap, refCache);
   const rigW = worldMatrixOf(rj, rigParentMap, rigCache);
-  const dp = [refW[12]-rigW[12], refW[13]-rigW[13], refW[14]-rigW[14]];
+  const dp = [refW[12] - rigW[12], refW[13] - rigW[13], refW[14] - rigW[14]];
   const dist = Math.hypot(...dp);
-  if (dist > 0.001) console.log(name, 'dist', dist.toFixed(4), 'ref', [refW[12],refW[13],refW[14]].map(v=>v.toFixed(3)).join(','), 'rig', [rigW[12],rigW[13],rigW[14]].map(v=>v.toFixed(3)).join(','));
+  if (dist > 0.001) console.log(name, 'dist', dist.toFixed(4), 'ref', [refW[12], refW[13], refW[14]].map(v => v.toFixed(3)).join(','), 'rig', [rigW[12], rigW[13], rigW[14]].map(v => v.toFixed(3)).join(','));
 }

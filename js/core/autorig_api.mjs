@@ -135,6 +135,21 @@ function computeBindWorldMatrices(doc) {
       const ibm = ibmArr.slice(idx * 16, idx * 16 + 16);
       const invIbm = invertRigidMat4(ibm);
       const W_bind = mat4Mul(S, invIbm);
+      
+      // Fallback: if the IBM-derived position is at [0,0,0] (or extremely close)
+      // but the hierarchical world matrix position in the scene is NOT at [0,0,0],
+      // fall back to the world matrix position so we don't collapse helper/unweighted joints.
+      const ibmDistSq = W_bind[12] * W_bind[12] + W_bind[13] * W_bind[13] + W_bind[14] * W_bind[14];
+      if (ibmDistSq < 1e-8) {
+        const W_hier = worldMatrixOf(joint, parentMap, tempCache);
+        const hierDistSq = W_hier[12] * W_hier[12] + W_hier[13] * W_hier[13] + W_hier[14] * W_hier[14];
+        if (hierDistSq > 1e-5) {
+          W_bind[12] = W_hier[12];
+          W_bind[13] = W_hier[13];
+          W_bind[14] = W_hier[14];
+        }
+      }
+      
       cache.set(joint, W_bind);
     });
   }
@@ -3167,7 +3182,8 @@ export async function autoRigGLB(buffer, options = {}) {
   // falling back to the mesh heuristic.
   const toeFwd = ((joints.LeftToeBase[2] - joints.LeftFoot[2]) +
     (joints.RightToeBase[2] - joints.RightFoot[2])) / 2;
-  const fwdSign = toeFwd !== 0 ? Math.sign(toeFwd) : forwardZ;
+  const hasOverride = (options.forwardZ === 1 || options.forwardZ === -1) || options.flipFacing;
+  const fwdSign = hasOverride ? forwardZ : (toeFwd !== 0 ? Math.sign(toeFwd) : forwardZ);
   const leftSide = Math.sign(joints.LeftArm[0] - joints.RightArm[0]) || 1;
   // Topology guesses assign Left/Right from the detected body frame — the
   // toe-direction heuristic is meaningless in arbitrary poses, skip the swap.

@@ -1,4 +1,4 @@
-import { guessJoints } from './js/core/autorig_api.mjs';
+import { guessJoints } from '../js/core/autorig_api.mjs';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -19,7 +19,7 @@ async function main() {
         const spine = guess.joints.Spine?.[1] || 0;
         const hips = guess.joints.Hips?.[1] || 0;
         const clavicle = guess.joints.LeftShoulder?.[1] || 0;
-        
+
         const isSpineInverted = (head < neck) || (neck < spine2) || (spine2 < spine1) || (spine1 < spine) || (spine < hips);
         if (isSpineInverted || hips > (head + hips) / 2) {
           console.log(`\n!!! INCONSISTENCY IN FILE: ${path} !!!`);

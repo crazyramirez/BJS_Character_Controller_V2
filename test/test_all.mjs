@@ -1,4 +1,4 @@
-import { guessJoints } from './js/core/autorig_api.mjs';
+import { guessJoints } from '../js/core/autorig_api.mjs';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 

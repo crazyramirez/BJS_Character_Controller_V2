@@ -1636,12 +1636,36 @@ async function bakeScalePivot() {
     opts.SCALE_X = bakedSX; opts.SCALE_Y = bakedSY; opts.SCALE_Z = bakedSZ;
     formData.append('options', JSON.stringify(opts));
 
-    const res = await fetch('/api/merge', { method: 'POST', body: formData });
+    const promises = [
+      fetch('/api/merge', { method: 'POST', body: formData })
+    ];
+
+    let hasSourcePromise = false;
+    if (autoRigSourceBuffer) {
+      hasSourcePromise = true;
+      const fdSource = new FormData();
+      fdSource.append('character', new Blob([autoRigSourceBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+      const optsSource = { ...opts };
+      fdSource.append('options', JSON.stringify(optsSource));
+      promises.push(fetch('/api/merge', { method: 'POST', body: fdSource }));
+    }
+
+    const responses = await Promise.all(promises);
+    const res = responses[0];
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || 'Server merge failed');
     }
     const merged = await res.arrayBuffer();
+
+    if (hasSourcePromise) {
+      const resSource = responses[1];
+      if (resSource.ok) {
+        autoRigSourceBuffer = await resSource.arrayBuffer();
+      } else {
+        console.warn('[scale-bake] Failed to scale autoRigSourceBuffer:', resSource.statusText);
+      }
+    }
     scaledCharacterBuffer = merged;   // new accumulated baseline (scale in geometry)
     characterGlbBuffer = merged;      // export uses this
     if (hasAnim) animationsCleared = false;

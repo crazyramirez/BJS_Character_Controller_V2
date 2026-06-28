@@ -2,7 +2,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
 import { readFileSync } from 'fs';
-import { guessJoints } from './js/core/autorig_api.mjs';
+import { guessJoints } from '../js/core/autorig_api.mjs';
 
 async function main() {
   const dracoLib = draco3d.createDecoderModule ? draco3d : (draco3d.default || draco3d);
@@ -15,7 +15,7 @@ async function main() {
 
   const buffer = readFileSync('d:/DEV/BJS Character Controller V2/kobold_trap_setter-male.glb');
   const doc = await io.readBinary(new Uint8Array(buffer));
-  
+
   // Clear skins
   for (const skin of doc.getRoot().listSkins()) {
     skin.dispose();
@@ -26,7 +26,7 @@ async function main() {
 
   const skinlessBuffer = await io.writeBinary(doc);
   const guess = await guessJoints(skinlessBuffer);
-  
+
   console.log('--- JOINT GUESSES (SKINLESS) ---');
   for (const [name, pos] of Object.entries(guess.joints)) {
     console.log(`${name}: [${pos.map(n => n.toFixed(3)).join(', ')}]`);
