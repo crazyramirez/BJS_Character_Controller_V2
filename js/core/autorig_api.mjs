@@ -2457,6 +2457,18 @@ const HIERARCHY = {
 };
 const JOINT_ORDER = Object.keys(HIERARCHY);
 
+function getJointOrder(fingerCount = 5) {
+  const allowedFingers = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'].slice(0, Math.max(1, Math.min(5, Math.round(fingerCount))));
+  return JOINT_ORDER.filter(name => {
+    const match = name.match(/Hand([a-zA-Z]+)(\d+)$/);
+    if (match) {
+      const fingerName = match[1];
+      return allowedFingers.includes(fingerName);
+    }
+    return true;
+  });
+}
+
 // Build a map child -> parent and parent -> first child for bone-roll work.
 const CHILD_OF = {};
 for (const [name, parent] of Object.entries(HIERARCHY)) {
@@ -2479,7 +2491,7 @@ for (const [name, parent] of Object.entries(HIERARCHY)) {
  * convention; in that case the whole skeleton (root only) is rotated 180°
  * about Y so retargeted animations line up.
  */
-function computeJointRotations(joints, flipRoot180 = false) {
+function computeJointRotations(joints, flipRoot180 = false, jointOrder = JOINT_ORDER) {
   const worldUp = [0, 1, 0];
   const forward = [0, 0, 1]; // Mixamo convention
   const worldRots = {};
@@ -2491,7 +2503,7 @@ function computeJointRotations(joints, flipRoot180 = false) {
   const isLeft = (name) => name.startsWith('Left');
   const isRight = (name) => name.startsWith('Right');
 
-  for (const name of JOINT_ORDER) {
+  for (const name of jointOrder) {
     // Twist bones share the parent bone's orientation so their local bind
     // rotation is identity and retargeted twist channels apply cleanly.
     if (/Twist$/.test(name)) {
@@ -2537,7 +2549,7 @@ function computeJointRotations(joints, flipRoot180 = false) {
 
   // Convert world rotations to local rotations relative to parent.
   const localRots = {};
-  for (const name of JOINT_ORDER) {
+  for (const name of jointOrder) {
     const parent = CHILD_OF[name];
     if (parent) {
       localRots[name] = qNormalize(qMul(qInvert(worldRots[parent]), worldRots[name]));
@@ -3255,7 +3267,8 @@ export async function autoRigGLB(buffer, options = {}) {
   const flip = fwdSign === -1;
   appendTwistJoints(joints, H);
   appendFingerJoints(joints, H);
-  const { worldRots, localRots } = computeJointRotations(joints, flip);
+  const jointOrder = getJointOrder(options.fingerCount || 5);
+  const { worldRots, localRots } = computeJointRotations(joints, flip, jointOrder);
 
   // For a -Z-facing mesh the skeleton root is rotated 180° about Y so the bind
   // pose matches the character's actual forward. The actual world rotation of
@@ -3264,13 +3277,13 @@ export async function autoRigGLB(buffer, options = {}) {
   // deformed/rotated at rest.
   const r180y = [0, 1, 0, 0];
   const bindWorldRots = {};
-  for (const name of JOINT_ORDER) {
+  for (const name of jointOrder) {
     bindWorldRots[name] = flip ? qNormalize(qMul(r180y, worldRots[name])) : worldRots[name];
   }
 
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
-  for (const name of JOINT_ORDER) {
+  for (const name of jointOrder) {
     const parentName = HIERARCHY[name];
     const world = joints[name];
     let localT;
@@ -3297,8 +3310,8 @@ export async function autoRigGLB(buffer, options = {}) {
   // W_bind = T(p)·R. IBM = inv(W_bind) = R⁻¹·T(-p).
   // Use bindWorldRots so the IBM matches the node's actual world rotation after
   // the optional -Z root flip. This keeps W_bind·IBM = identity at rest.
-  const ibmData = new Float32Array(JOINT_ORDER.length * 16);
-  JOINT_ORDER.forEach((name, i) => {
+  const ibmData = new Float32Array(jointOrder.length * 16);
+  jointOrder.forEach((name, i) => {
     const W = composeMat4(joints[name], bindWorldRots[name], [1, 1, 1]);
     const IBM = invertRigidMat4(W);
     ibmData.set(IBM, i * 16);
@@ -3309,7 +3322,7 @@ export async function autoRigGLB(buffer, options = {}) {
     .setBuffer(glbBuffer);
 
   const skin = doc.createSkin('AutoRigSkin').setInverseBindMatrices(ibmAcc);
-  JOINT_ORDER.forEach(name => skin.addJoint(jointNodes.get(name)));
+  jointOrder.forEach(name => skin.addJoint(jointNodes.get(name)));
   skin.setSkeleton(jointNodes.get('Hips'));
 
   // ── 4. Proximity skin weights ──────────────────────────────────────────────
@@ -3321,8 +3334,8 @@ export async function autoRigGLB(buffer, options = {}) {
   //     the opposite side of the body midline (inner thighs / cross-body bleed),
   //     with a small blend zone around the centerline.
   const segments = boneSegments(joints, H);
-  const segList = JOINT_ORDER.map(name => segments[name]);
-  const boneSide = JOINT_ORDER.map(name =>
+  const segList = jointOrder.map(name => segments[name]);
+  const boneSide = jointOrder.map(name =>
     name.startsWith('Left') ? 1 : name.startsWith('Right') ? -1 : 0);
 
   // Anatomical "left" axis (positive side of the body). Upright +Z facing →
@@ -3362,7 +3375,7 @@ export async function autoRigGLB(buffer, options = {}) {
   };
 
   const nB = segList.length;
-  const boneIndex = Object.fromEntries(JOINT_ORDER.map((n, i) => [n, i]));
+  const boneIndex = Object.fromEntries(jointOrder.map((n, i) => [n, i]));
 
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
@@ -3463,7 +3476,7 @@ export async function autoRigGLB(buffer, options = {}) {
       }
 
       // Carve out mid-limb weight for twist bones so they actually deform skin.
-      for (const twistName of JOINT_ORDER.filter(n => /Twist$/.test(n))) {
+      for (const twistName of jointOrder.filter(n => /Twist$/.test(n))) {
         const parentName = CHILD_OF[twistName];
         redistributeTwistWeights(arr, jointsOut, weightsOut, boneIndex[parentName], boneIndex[twistName], segments[parentName], H);
       }

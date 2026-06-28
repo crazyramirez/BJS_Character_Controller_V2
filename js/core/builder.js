@@ -3850,11 +3850,19 @@ function isFingerJoint(name, fingerCount = 5) {
   return new RegExp(`^((Left|Right)Hand(${fingers})\\d+)$`).test(name);
 }
 
+function isAnyFingerJoint(name) {
+  return /^((Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d+)$/.test(name);
+}
+
 function updateFingerMarkerVisibility() {
   if (!autoRigState?.markers) return;
   const show = document.getElementById('autorig-finger-mode')?.checked;
+  const fingerCount = autoRigState.fingerCount || 5;
   autoRigState.markers.forEach((m, name) => {
-    if (m.metadata?.isFinger) m.setEnabled(show);
+    if (m.metadata?.isFinger) {
+      const active = isFingerJoint(name, fingerCount);
+      m.setEnabled(active && show);
+    }
   });
 }
 
@@ -4240,9 +4248,10 @@ async function startAutoRigAdjust() {
 
   const fingerMode = document.getElementById('autorig-finger-mode')?.checked;
   Object.entries(guess.joints).forEach(([name, pos]) => {
-    const isFinger = isFingerJoint(name, fingerCount);
-    const markerDiameter = isFinger ? diameter * 0.30 : diameter;
-    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter: markerDiameter, segments: isFinger ? 5 : 10 }, scene);
+    const isAnyFinger = isAnyFingerJoint(name);
+    const isActiveFinger = isFingerJoint(name, fingerCount);
+    const markerDiameter = isAnyFinger ? diameter * 0.30 : diameter;
+    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter: markerDiameter, segments: isAnyFinger ? 5 : 10 }, scene);
     m.material = matFor(name);
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
@@ -4251,8 +4260,10 @@ async function startAutoRigAdjust() {
     const local = BABYLON.Vector3.TransformCoordinates(
       new BABYLON.Vector3(pos[0], pos[1], pos[2]), toMarkerLocal);
     m.position.copyFrom(local);
-    m.metadata = { autorigJoint: name, isFinger };
-    if (isFinger) m.setEnabled(fingerMode);
+    m.metadata = { autorigJoint: name, isFinger: isAnyFinger };
+    if (isAnyFinger) {
+      m.setEnabled(isActiveFinger && fingerMode);
+    }
     markers.set(name, m);
   });
 
@@ -4322,7 +4333,7 @@ async function startAutoRigAdjust() {
       const sv = guess.joints[name];
       // Do not include fingers in the coordinate-fitting system, as their procedural guesses
       // can deviate significantly from the actual bones and distort the global affine transform.
-      if (sv && !isFingerJoint(name, fingerCount)) {
+      if (sv && !isAnyFingerJoint(name)) {
         fitPairs.push({ local: m.position.clone(), server: sv });
       }
     });
@@ -4914,8 +4925,7 @@ function bodyLateralAxis() {
 function snapMarkerToMeshDepth(marker) {
   if (!activeCharacter?.rawMeshes?.length || !marker) return false;
   const name = marker.metadata?.autorigJoint;
-  const fingerCount = autoRigState?.fingerCount || 5;
-  if (name && (DEPTH_SNAP_SKIP.has(name) || isFingerJoint(name, fingerCount))) return false;
+  if (name && (DEPTH_SNAP_SKIP.has(name) || isAnyFingerJoint(name))) return false;
 
   marker.computeWorldMatrix(true);
   const origin = marker.getAbsolutePosition();

@@ -263,6 +263,25 @@ describe('autoRigGLB skin weights', () => {
     assert.ok(dDist > dProx, 'expected index fingertip to be farther from hand than knuckle');
   });
 
+  it('respects fingerCount option (e.g. 3 fingers)', async () => {
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true, fingerCount: 3 });
+    const { jointIndex } = await inspectRig(buffer);
+    for (const side of ['Left', 'Right']) {
+      for (const finger of ['Thumb', 'Index', 'Middle']) {
+        for (let i = 1; i <= 3; i++) {
+          const name = `${side}Hand${finger}${i}`;
+          assert.ok(jointIndex[name] != null, `expected active ${name}`);
+        }
+      }
+      for (const finger of ['Ring', 'Pinky']) {
+        for (let i = 1; i <= 3; i++) {
+          const name = `${side}Hand${finger}${i}`;
+          assert.ok(jointIndex[name] == null, `expected inactive ${name} to be absent`);
+        }
+      }
+    }
+  });
+
   it('creates twist bones and assigns them weight in the limb mid-section', async () => {
     const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
     const { prims, jointWorld, jointIndex } = await inspectRig(buffer);
