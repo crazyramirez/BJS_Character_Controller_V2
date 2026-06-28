@@ -450,34 +450,40 @@ export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
   const y = f => groundY + f * H;
   const J = (x, yy, z) => [cx + x, yy, cz + z];
 
-  const shoulderY = y(0.80);
+  // Vertical fractions calibrated to the reference Mixamo humanoid rig (Erika
+  // Archer, 1.78 m T-pose): Hips 0.589, Spine 0.646, Spine1 0.703, Spine2 0.754,
+  // Neck 0.848, Head 0.902, UpLeg 0.551, Leg 0.302, Foot 0.052.
+  const shoulderY = y(0.812);
   const joints = {
-    Hips: J(0, y(0.53), 0),
-    Spine: J(0, y(0.58), 0),
-    Spine1: J(0, y(0.66), 0),
-    Spine2: J(0, y(0.74), 0),
-    Neck: J(0, y(0.85), 0),
-    Head: J(0, y(0.89), 0),
+    Hips: J(0, y(0.589), 0),
+    Spine: J(0, y(0.646), 0),
+    Spine1: J(0, y(0.703), 0),
+    Spine2: J(0, y(0.754), 0),
+    Neck: J(0, y(0.848), 0),
+    Head: J(0, y(0.902), 0),
 
+    // Arm lateral offsets as fractions of the bbox half-width (T-pose: arms span
+    // the box). Ref ratios: Arm 0.18, ForeArm 0.50, Hand 0.83 of the half-span;
+    // Shoulder just outside the neck.
     LeftShoulder: J(0.10 * halfW * forwardZ, shoulderY, 0),
-    LeftArm: J(0.24 * halfW * forwardZ, shoulderY, 0),
-    LeftForeArm: J(0.58 * halfW * forwardZ, shoulderY, 0),
-    LeftHand: J(0.88 * halfW * forwardZ, shoulderY, 0),
+    LeftArm: J(0.18 * halfW * forwardZ, shoulderY, 0),
+    LeftForeArm: J(0.50 * halfW * forwardZ, shoulderY, 0),
+    LeftHand: J(0.83 * halfW * forwardZ, shoulderY, 0),
 
     RightShoulder: J(-0.10 * halfW * forwardZ, shoulderY, 0),
-    RightArm: J(-0.24 * halfW * forwardZ, shoulderY, 0),
-    RightForeArm: J(-0.58 * halfW * forwardZ, shoulderY, 0),
-    RightHand: J(-0.88 * halfW * forwardZ, shoulderY, 0),
+    RightArm: J(-0.18 * halfW * forwardZ, shoulderY, 0),
+    RightForeArm: J(-0.50 * halfW * forwardZ, shoulderY, 0),
+    RightHand: J(-0.83 * halfW * forwardZ, shoulderY, 0),
 
-    LeftUpLeg: J(0.06 * H * forwardZ, y(0.50), 0),
-    LeftLeg: J(0.06 * H * forwardZ, y(0.27), 0),
-    LeftFoot: J(0.06 * H * forwardZ, y(0.06), 0),
-    LeftToeBase: J(0.06 * H * forwardZ, y(0.02), 0.10 * H * forwardZ),
+    LeftUpLeg: J(0.046 * H * forwardZ, y(0.551), 0),
+    LeftLeg: J(0.046 * H * forwardZ, y(0.302), 0),
+    LeftFoot: J(0.046 * H * forwardZ, y(0.052), 0),
+    LeftToeBase: J(0.046 * H * forwardZ, y(0.003), 0.06 * H * forwardZ),
 
-    RightUpLeg: J(-0.06 * H * forwardZ, y(0.50), 0),
-    RightLeg: J(-0.06 * H * forwardZ, y(0.27), 0),
-    RightFoot: J(-0.06 * H * forwardZ, y(0.06), 0),
-    RightToeBase: J(-0.06 * H * forwardZ, y(0.02), 0.10 * H * forwardZ),
+    RightUpLeg: J(-0.046 * H * forwardZ, y(0.551), 0),
+    RightLeg: J(-0.046 * H * forwardZ, y(0.302), 0),
+    RightFoot: J(-0.046 * H * forwardZ, y(0.052), 0),
+    RightToeBase: J(-0.046 * H * forwardZ, y(0.003), 0.06 * H * forwardZ),
   };
   return { joints, height: H, bounds: { min, max } };
 }
@@ -648,20 +654,32 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
       const w = widthAtB(b);
       if (w !== null && w < waistW) { waistW = w; waistB = b; }
     }
-    // UpLeg (hip joint) roots at the crotch — the true femur split. This is the
-    // leg anchor and must NOT be moved (moving it breaks leg detection).
-    const upLegY = crotchY + 0.015 * H;
-
-    // Hips (pelvis root) sits ABOVE the leg roots, at the real pelvis. We push
-    // it up from the crotch toward the waist so it never collapses onto UpLeg
-    // and the lower Spine gets a correct anchor — but we anchor it RELATIVE to
-    // the crotch (not an absolute height band), so characters with short legs /
-    // long torsos keep Hips above their (high) crotch instead of being clamped
-    // below it, which would invert the leg hierarchy.
     const waistY = waistB >= 0 ? groundY + ((waistB + 0.5) / BINS) * H : crotchY + 0.16 * H;
-    let hipsY = crotchY + Math.max(0.08 * H, (waistY - crotchY) * 0.4);
-    // Never below the leg roots, never above the waist.
-    hipsY = Math.max(upLegY + 0.06 * H, Math.min(hipsY, waistY));
+
+    // ── Hip socket (UpLeg) height ─────────────────────────────────────────────
+    // CRITICAL: the femur-head / hip-socket joint is NOT at the visible crotch.
+    // In every standard humanoid rig (Mixamo, UE, CC) the leg roots sit up at the
+    // pelvis, level with the hips (~0.55·H), while the geometric crotch where the
+    // inner thighs meet is markedly lower. Anchoring UpLeg at the crotch drops the
+    // whole leg chain ~0.3·H too low and inverts the leg/hip relationship.
+    //
+    // Place UpLeg at the pelvis: most of the way (≈80%) from the crotch up to the
+    // waist, clamped to a sane anatomical band so short-leg/long-torso meshes stay
+    // correct. This keeps it relative to the measured body (not a fixed fraction)
+    // while matching the reference rig's hip-socket height.
+    let upLegY = crotchY + (waistY - crotchY) * 0.95;
+    // Anatomical clamp: hip sockets fall in ~0.51–0.57·H for upright humanoids
+    // (reference Mixamo rig: 0.545·H). Bias toward that canonical band so a low
+    // waist/crotch measurement can't drag the leg roots down the thigh.
+    upLegY = Math.max(groundY + 0.51 * H, Math.min(upLegY, groundY + 0.57 * H));
+    // But never below the crotch+margin (degenerate measurements).
+    upLegY = Math.max(crotchY + 0.04 * H, upLegY);
+
+    // Hips (pelvis root) sits just ABOVE the leg roots (ref: Hips 0.589·H,
+    // UpLeg 0.551·H — only ~0.04·H apart). Anchor it a small step above UpLeg,
+    // not far up toward the waist (that over-raised the lower spine anchor).
+    let hipsY = upLegY + Math.max(0.03 * H, (waistY - upLegY) * 0.45);
+    hipsY = Math.max(upLegY + 0.03 * H, Math.min(hipsY, waistY + 0.02 * H));
     const ankleY = joints.LeftFoot[1];
     const kneeY = (upLegY + ankleY) / 2;
 
@@ -681,7 +699,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
       joints[side + 'UpLeg'] = [cx + sgnAdjusted * legDX, upLegY, cz];
       joints[side + 'Leg'] = [cx + sgnAdjusted * legDX, kneeY, cz];
       joints[side + 'Foot'] = [cx + sgnAdjusted * legDX, ankleY, cz];
-      joints[side + 'ToeBase'] = [cx + sgnAdjusted * legDX, joints[side + 'ToeBase'][1], cz + 0.10 * H * forwardZ];
+      joints[side + 'ToeBase'] = [cx + sgnAdjusted * legDX, joints[side + 'ToeBase'][1], cz + 0.06 * H * forwardZ];
     }
     joints.Hips = [cx, hipsY, cz];
   }
@@ -708,18 +726,46 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
       shoulderY = Math.min(Math.max(median(rootYs), groundY + 0.70 * H), groundY + 0.88 * H);
     }
 
-    // Hands: centroid of the outermost 8% of each arm span (any arm angle)
+    // Hands: centroid of the outermost 8% of each arm span (any arm angle).
+    // This centroid lands at the FINGERTIPS, not the wrist — the hand JOINT sits
+    // ~one finger length (≈0.08·H) inboard. We pull it back along the arm so the
+    // wrist marker matches the reference rig (ref hand 0.40·H, fingertip 0.48·H).
     const handL = centroidOf(upperVerts.filter(p => (p[0] - cx) > 0.92 * spanL));
     const handR = centroidOf(upperVerts.filter(p => (cx - p[0]) > 0.92 * spanR));
     if (handL && handR) {
       // Symmetrize so the skeleton stays mirrored even on asymmetric meshes
-      const hx = ((handL[0] - cx) + (cx - handR[0])) / 2;
+      const tipX = ((handL[0] - cx) + (cx - handR[0])) / 2; // fingertip half-span
       const hy = (handL[1] + handR[1]) / 2;
       const hz = ((handL[2] + handR[2]) / 2 + cz) / 2;
+      // Wrist = fingertip pulled in by a finger length, floored so it can't pass
+      // the elbow region. Finger length scales with the arm but is capped.
+      const fingerLen = Math.min(0.09 * H, 0.18 * tipX);
+      const hx = Math.max(0.55 * tipX, tipX - fingerLen);
+
+      // ── Arm root (shoulder joint) lateral offset = armpit half-width ─────────
+      // The shoulder joint sits at the armpit, NOT at 0.45·span (which placed it
+      // far down the upper arm). Measure the body half-width at shoulder height
+      // by the inner edge of the arm: scan inward from the fingertip for the first
+      // big horizontal gap (arm↔torso). Fall back to an anatomical fraction.
+      let armRootX = 0.085 * H; // reference Mixamo armpit ≈ 0.085·H
+      const shoulderBand = upperVerts.filter(p => Math.abs(p[1] - shoulderY) < 0.05 * H);
+      if (shoulderBand.length >= 20) {
+        // Torso half-width at the shoulders = median |x| of vertices well inboard
+        // of the arms (within the middle 55% of the span).
+        const inner = shoulderBand
+          .map(p => Math.abs(p[0] - cx))
+          .filter(a => a < 0.55 * tipX);
+        if (inner.length >= 8) {
+          const torsoHalf = median(inner.sort((a, b) => a - b));
+          // Arm root sits just outside the torso edge.
+          armRootX = Math.min(Math.max(torsoHalf, 0.06 * H), 0.13 * H);
+        }
+      }
+
       for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
         const sgnAdjusted = sgn * forwardZ;
-        const shoulder = [cx + sgnAdjusted * 0.4 * tw, shoulderY, cz];
-        const arm = [cx + sgnAdjusted * tw, shoulderY, cz];
+        const shoulder = [cx + sgnAdjusted * 0.45 * armRootX, shoulderY, cz];
+        const arm = [cx + sgnAdjusted * armRootX, shoulderY, cz];
         const hand = [cx + sgnAdjusted * hx, hy, hz];
         const fore = [(arm[0] + hand[0]) / 2, (arm[1] + hand[1]) / 2, (arm[2] + hand[2]) / 2];
         joints[side + 'Shoulder'] = shoulder;
@@ -1744,11 +1790,8 @@ export async function guessJoints(buffer, options = {}) {
   const { humanoid, reason } = isHumanoidGuess(sliced, topo, score, topoError);
 
   // Existing skeleton (re-rig): seed markers from current bind pose where names
-  // match. Skipped when forceRebuild is requested — a flat / on-its-back source
-  // rig (e.g. Character Creator Z-up scaleCompensation bones) would seed the
-  // markers in that broken pose. Without seeding, markers come from the upright
-  // mesh-bounds guess instead.
-  if (doc.getRoot().listSkins().length > 0 && !options.forceRebuild) {
+  // match.
+  if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
     guess.joints = { ...guess.joints, ...seeded };
     // Interpolate missing spine joints if they were not in the skin
@@ -2339,15 +2382,15 @@ const HIERARCHY = {
   Hips: null,
   Spine: 'Hips', Spine1: 'Spine', Spine2: 'Spine1', Neck: 'Spine2', Head: 'Neck',
   LeftShoulder: 'Spine2', LeftArm: 'LeftShoulder', LeftForeArm: 'LeftArm', LeftHand: 'LeftForeArm',
+  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
   LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2',
   LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2',
-  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
   LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2',
   LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2',
   RightShoulder: 'Spine2', RightArm: 'RightShoulder', RightForeArm: 'RightArm', RightHand: 'RightForeArm',
+  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
   RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2',
   RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2',
-  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
   RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2',
   RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
@@ -2416,11 +2459,11 @@ function computeJointRotations(joints, flipRoot180 = false) {
     let up;
     if (isSpineChain(name)) {
       up = worldUp;
-    } else if (isLeft(name) && isArm(name)) {
-      // Left arm: palm forward, thumb up → X local points up
+    } else if (isLeft(name) && (isArm(name) || isFinger(name))) {
+      // Left arm/finger: palm forward, thumb up → X local points up
       up = forward;
-    } else if (isRight(name) && isArm(name)) {
-      // Right arm: mirror of left
+    } else if (isRight(name) && (isArm(name) || isFinger(name))) {
+      // Right arm/finger: mirror of left
       up = [-forward[0], -forward[1], -forward[2]];
     } else if (isLeft(name) && isLeg(name)) {
       // Left leg: knee forward, X local points outward (-X world)
