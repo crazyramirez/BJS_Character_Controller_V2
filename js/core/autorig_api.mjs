@@ -549,11 +549,19 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   const H = max[1] - min[1];
   const groundY = min[1];
   const joints = base.joints;
-
-  // Body centerline from medians — robust against asymmetric props/capes
-  const cx = median(verts.map(p => p[0]));
-  const cz = median(verts.map(p => p[2]));
   const yf = p => (p[1] - groundY) / H; // normalized height of a vertex
+
+  // Body centerline from medians — robust against asymmetric props/capes.
+  // Use the pelvis band for Z so the skeleton root is anchored on the hips,
+  // not pulled forward by the chest/head mass.
+  const cx = median(verts.map(p => p[0]));
+  // Centre Z: use the central sagittal strip of the pelvis band so the hip joint
+  // aligns with the spinal column, not the front of the abdomen.
+  const pelvisZ = verts
+    .filter(p => yf(p) > 0.45 && yf(p) < 0.65 && Math.abs(p[0] - cx) < 0.05 * H)
+    .map(p => p[2]);
+  const cz = pelvisZ.length ? median(pelvisZ) : median(verts.map(p => p[2]));
+
 
   // ── Crotch: highest band where the body splits into two legs ──────────────
   // A bin is "split" when both sides are occupied but the centerline is empty.
@@ -642,7 +650,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     // from crotch up to the waist. This gives the lower Spine a correct anchor
     // to grow from instead of starting it down at the crotch.
     const waistLo = Math.min(BINS - 2, Math.floor(((crotchY - groundY) / H) * BINS) + 1);
-    const waistHi = Math.min(BINS - 1, Math.floor(0.58 * BINS));
+    const waistHi = Math.min(BINS - 1, Math.floor(0.78 * BINS));
     const widthAtB = b => {
       const bin = bins[b];
       if (!bin || bin.n < 8) return null;
@@ -667,7 +675,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     // waist, clamped to a sane anatomical band so short-leg/long-torso meshes stay
     // correct. This keeps it relative to the measured body (not a fixed fraction)
     // while matching the reference rig's hip-socket height.
-    let upLegY = crotchY + (waistY - crotchY) * 0.95;
+    let upLegY = crotchY + (waistY - crotchY) * 0.57;
     // Anatomical clamp: hip sockets fall in ~0.51–0.57·H for upright humanoids
     // (reference Mixamo rig: 0.545·H). Bias toward that canonical band so a low
     // waist/crotch measurement can't drag the leg roots down the thigh.
@@ -678,7 +686,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
     // Hips (pelvis root) sits just ABOVE the leg roots (ref: Hips 0.589·H,
     // UpLeg 0.551·H — only ~0.04·H apart). Anchor it a small step above UpLeg,
     // not far up toward the waist (that over-raised the lower spine anchor).
-    let hipsY = upLegY + Math.max(0.03 * H, (waistY - upLegY) * 0.45);
+    let hipsY = upLegY + (waistY - upLegY) * 0.22;
     hipsY = Math.max(upLegY + 0.03 * H, Math.min(hipsY, waistY + 0.02 * H));
     const ankleY = joints.LeftFoot[1];
     const kneeY = (upLegY + ankleY) / 2;
@@ -696,12 +704,15 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 
     for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
       const sgnAdjusted = sgn * forwardZ;
+      // Hip/knee stay on the pelvis midline; only the ankle/toes drop slightly back.
+      const footZ = cz - 0.025 * H * forwardZ;
       joints[side + 'UpLeg'] = [cx + sgnAdjusted * legDX, upLegY, cz];
       joints[side + 'Leg'] = [cx + sgnAdjusted * legDX, kneeY, cz];
-      joints[side + 'Foot'] = [cx + sgnAdjusted * legDX, ankleY, cz];
-      joints[side + 'ToeBase'] = [cx + sgnAdjusted * legDX, joints[side + 'ToeBase'][1], cz + 0.06 * H * forwardZ];
+      joints[side + 'Foot'] = [cx + sgnAdjusted * legDX, ankleY, footZ];
+      joints[side + 'ToeBase'] = [cx + sgnAdjusted * legDX, joints[side + 'ToeBase'][1], footZ + 0.06 * H * forwardZ];
     }
     joints.Hips = [cx, hipsY, cz];
+    if (process.env.AUTORIG_DEBUG) console.log('[autorig] crotchY', crotchY.toFixed(3), 'waistY', waistY.toFixed(3), 'upLegY', upLegY.toFixed(3), 'hipsY', hipsY.toFixed(3));
   }
 
   // ── Arms: lateral extremes above the waist (T-pose and A-pose) ────────────
@@ -717,6 +728,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   const armsDetected = spanL > 0.20 * H && spanR > 0.20 * H && tw > 0.05 * H;
 
   let shoulderY = joints.LeftArm[1];
+
   if (armsDetected) {
     // Shoulder height: vertices just outside the torso = upper-arm root
     const rootYs = upperVerts
@@ -736,7 +748,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
       // Symmetrize so the skeleton stays mirrored even on asymmetric meshes
       const tipX = ((handL[0] - cx) + (cx - handR[0])) / 2; // fingertip half-span
       const hy = (handL[1] + handR[1]) / 2;
-      const hz = ((handL[2] + handR[2]) / 2 + cz) / 2;
+      const hz = (handL[2] + handR[2]) / 2;
       // Wrist = fingertip pulled in by a finger length, floored so it can't pass
       // the elbow region. Finger length scales with the arm but is capped.
       const fingerLen = Math.min(0.09 * H, 0.18 * tipX);
@@ -764,9 +776,19 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 
       for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
         const sgnAdjusted = sgn * forwardZ;
-        const shoulder = [cx + sgnAdjusted * 0.45 * armRootX, shoulderY, cz];
-        const arm = [cx + sgnAdjusted * armRootX, shoulderY, cz];
+        // Arms hang slightly behind the pelvis centre in a relaxed T/A-pose.
+        const armZ = cz - 0.04 * H * forwardZ;
+        const shoulder = [cx + sgnAdjusted * 0.45 * armRootX, shoulderY, armZ];
         const hand = [cx + sgnAdjusted * hx, hy, hz];
+        // The shoulder joint sits at the armpit, but the arm joint (humerus head)
+        // is well out on the upper arm — place it a fixed fraction along the
+        // shoulder-to-hand line to match Mixamo proportions.
+        const armT = 0.14;
+        const arm = [
+          shoulder[0] + sgnAdjusted * Math.abs(hand[0] - shoulder[0]) * armT,
+          shoulder[1] + (hand[1] - shoulder[1]) * armT,
+          shoulder[2] + (hand[2] - shoulder[2]) * armT,
+        ];
         const fore = [(arm[0] + hand[0]) / 2, (arm[1] + hand[1]) / 2, (arm[2] + hand[2]) / 2];
         joints[side + 'Shoulder'] = shoulder;
         joints[side + 'Arm'] = arm;
@@ -807,13 +829,24 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   }
   // Clamp so the neck can't collapse onto the shoulders or shoot past the top.
   neckY = Math.min(Math.max(neckY, shoulderY + 0.02 * H), groundY + 0.93 * H);
+  // Reference calibration: the narrowest-band neck detector tends to sit slightly
+  // above the anatomical neck base on Mixamo-style proportions.
+  neckY -= 0.015 * H;
+
 
   const hipsY2 = joints.Hips[1];
+  // Keep the spine chain near the body midline in Z. Pure per-band median Z pulls
+  // chest/neck joints onto the back surface of hunched/rounded torsos. Use the
+  // detected body centre cz and add a mild Mixamo-style backward lean (pelvis
+  // forward, upper spine slightly back) proportional to height.
   const spineZ = f => {
-    const b = bins[Math.min(BINS - 1, Math.max(0, Math.floor(((f - groundY) / H) * BINS)))];
-    return b && b.n >= 8 ? b.sumZ / b.n : cz; // follow hunched spines
+    if (f <= hipsY2) return cz;
+    const t = Math.min(1, Math.max(0, (f - hipsY2) / Math.max(1e-6, neckY - hipsY2)));
+    // Mixamo reference: the upper spine leans back slowly; offset is negligible
+    // until the chest, then grows to ~0.013*H at the neck.
+    return cz - H * 0.0135 * Math.pow(t, 3);
   };
-  const targetSpine2Y = Math.max(hipsY2 + 0.1 * H, Math.min(shoulderY - 0.01 * H, neckY - 0.02 * H));
+  const targetSpine2Y = Math.max(hipsY2 + 0.1 * H, Math.min(shoulderY - 0.055 * H, neckY - 0.02 * H));
   const lerpSpineY = t => hipsY2 + (targetSpine2Y - hipsY2) * t;
   joints.Spine = [cx, lerpSpineY(0.33), spineZ(lerpSpineY(0.33))];
   joints.Spine1 = [cx, lerpSpineY(0.66), spineZ(lerpSpineY(0.66))];
@@ -826,10 +859,14 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
   // centre on cartoon proportions instead of pinning it just above the neck.
   const headPts = verts.filter(p => p[1] > neckY + 0.01 * H);
   const headC = centroidOf(headPts);
-  const headY = headC
+  let headY = headC
     ? Math.min(Math.max(headC[1], neckY + 0.03 * H), groundY + 0.98 * H)
     : Math.min(neckY + 0.05 * H, groundY + 0.97 * H);
-  joints.Head = [cx, headY, headC ? (headC[2] + cz) / 2 : cz];
+  // The skull centroid is biased upward by hair/helmet geometry; nudge it down
+  // to the Mixamo head-joint height.
+  headY -= 0.015 * H;
+
+  joints.Head = [cx, headY, spineZ(headY)];
 
   // Shoulders sit just below the neck. If the width-based shoulder estimate
   // landed well under the neck (common on big-headed meshes where the torso
@@ -2646,7 +2683,7 @@ function buildVertexAdjacency(positions, indices, weldEps) {
 // welded vertex graph. Uniform weights, in place, `iters` passes, `lambda`
 // blend. Operates on representatives; non-representative duplicates copy their
 // rep afterwards so seams stay watertight.
-function smoothWeightField(W, nBones, adjacency, iters, lambda) {
+function smoothWeightField(W, nBones, adjacency, iters, lambda, sourceMask = null) {
   const { repOf, adjSet, count } = adjacency;
   // Collapse onto representatives first (average duplicates into their rep row).
   const repCount = new Int32Array(count);
@@ -2669,9 +2706,11 @@ function smoothWeightField(W, nBones, adjacency, iters, lambda) {
       if (n === 0) continue;
       const base = r * nBones;
       for (let b = 0; b < nBones; b++) {
+        const idx = base + b;
+        if (sourceMask && sourceMask[idx]) { tmp[idx] = W[idx]; continue; }
         let acc = 0;
         for (const nb of nbrs) acc += W[nb * nBones + b];
-        tmp[base + b] = W[base + b] * (1 - lambda) + (acc / n) * lambda;
+        tmp[idx] = W[idx] * (1 - lambda) + (acc / n) * lambda;
       }
     }
     W.set(tmp);
@@ -2962,11 +3001,15 @@ function blendRigidZones(field, zone, nBones, zoneBlend) {
 // X spans across the palm (positive = thumb side on the left hand), Z is palm
 // normal. Values are fractions of the detected finger length.
 const FINGER_DEFS = [
-  { name: 'Thumb', offsets: [[0.25, 0.12, 0.02], [0.22, 0.40, 0.05], [0.18, 0.68, 0.06]] },
-  { name: 'Index', offsets: [[0.32, 0.06, 0.00], [0.32, 0.38, 0.00], [0.32, 0.72, 0.00]] },
-  { name: 'Middle', offsets: [[0.10, 0.06, 0.00], [0.10, 0.42, 0.00], [0.10, 0.78, 0.00]] },
-  { name: 'Ring', offsets: [[-0.12, 0.06, 0.00], [-0.12, 0.40, 0.00], [-0.12, 0.74, 0.00]] },
-  { name: 'Pinky', offsets: [[-0.34, 0.05, 0.00], [-0.34, 0.32, 0.00], [-0.34, 0.60, 0.00]] },
+  // Calibrated against Mixamo reference (character_animated_1.glb T-pose) using
+  // the same hand rotation convention as appendFingerJoints. Offsets are in the
+  // hand's local frame: X = lateral splay, Y = length along the forearm,
+  // Z = palm height. They are scaled by fingerLen.
+  { name: 'Thumb', offsets: [[-0.065, 0.10, -0.10], [-0.14, 0.23, -0.17], [-0.21, 0.34, -0.23]] },
+  { name: 'Index', offsets: [[-0.025, 0.37, -0.08], [-0.025, 0.51, -0.08], [-0.025, 0.63, -0.08]] },
+  { name: 'Middle', offsets: [[0.00, 0.38, 0.01], [0.00, 0.53, 0.01], [0.00, 0.65, 0.01]] },
+  { name: 'Ring', offsets: [[0.00, 0.37, 0.09], [0.00, 0.49, 0.09], [0.00, 0.61, 0.09]] },
+  { name: 'Pinky', offsets: [[-0.02, 0.32, 0.16], [-0.02, 0.47, 0.16], [-0.02, 0.55, 0.16]] },
 ];
 
 // Append Mixamo-style finger joints to the `joints` record. Fingers are
@@ -3014,14 +3057,18 @@ function appendFingerJoints(joints, H) {
     const up = side === 'Left' ? forward : [-forward[0], -forward[1], -forward[2]];
     const handRot = lookRotation(dir, Math.abs(vec3Dot(dir, up)) > 0.999 ? [0, 1, 0] : up);
 
-    // Mirror X offsets for the right hand so the thumb stays on the inner side.
+    // Mirror X and Z offsets for the right hand (left hand uses palm forward +Z,
+    // right hand palm forward -Z). The thumb is asymmetric: keep its calibrated
+    // lateral (X) offset but mirror its palm-height (Z) offset.
     const mirror = side === 'Right' ? -1 : 1;
     for (const { name: fingerName, offsets } of FINGER_DEFS) {
+      const mirrorX = fingerName === 'Thumb' ? 1 : mirror;
+      const mirrorZ = mirror;
       for (let i = 0; i < 3; i++) {
         const jointName = `${side}Hand${fingerName}${i + 1}`;
         if (joints[jointName]) continue; // keep existing / user-overridden joints
         const off = offsets[i];
-        const local = [off[0] * mirror * fingerLen, off[1] * fingerLen, off[2] * fingerLen];
+        const local = [off[0] * mirrorX * fingerLen, off[1] * fingerLen, off[2] * mirrorZ * fingerLen];
         const w = rotateVec3(local, handRot);
         joints[jointName] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
       }
@@ -3324,7 +3371,7 @@ export async function autoRigGLB(buffer, options = {}) {
       blendRigidZones(field, zoneField, nB, 0.85);
 
       // Run Laplacian smoothing to make all bone weight boundaries perfectly organic and soft
-      smoothWeightField(field, nB, adjacency, 5, 0.4);
+      smoothWeightField(field, nB, adjacency, 5, 0.4, sourceMask);
 
       // ── Reduce to top-4 influences + normalize ─────────────────────────────
       const jointsOut = new Uint8Array(count * 4);
