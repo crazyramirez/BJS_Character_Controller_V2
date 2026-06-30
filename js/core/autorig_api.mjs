@@ -1858,8 +1858,12 @@ export async function guessJoints(buffer, options = {}) {
   // time but are not meant to be edited manually.
   appendFingerJoints(guess.joints, guessH);
 
-  // Enforce strict anatomical/vertical height relationships to guarantee correct skeletal progression
-  sanitizeJoints(guess.joints, guessH, bounds);
+  // Enforce strict anatomical/vertical height relationships to guarantee correct
+  // skeletal progression. Skip for re-rig: those joints are seeded straight from
+  // the existing skin's real bind pose, which may legitimately be a non-T pose
+  // (raised arms, sitting, action pose) — clamping them into a heuristic "sane"
+  // vertical order would corrupt accurate data with a worse guess.
+  if (!guess.reRig) sanitizeJoints(guess.joints, guessH, bounds);
 
   // Enrich response with validation metadata
   guess.humanoid = humanoid;
