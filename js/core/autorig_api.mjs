@@ -2979,12 +2979,19 @@ function computeRigidZones(positions, joints, boneIndex, H) {
       }
     }
 
-    // Hand zones: close to the hand joint. We skip the forearm comparison so
-    // the palm and nearby floating gloves stay locked to the hand.
+    // Hand zones: close to the hand joint. A flat radius alone is unsafe when
+    // the arm is bent or resting at the character's side (a common re-rig
+    // bind pose) — a hip/torso vertex can land within the radius of a nearby
+    // Hand joint and get rigidly glued to it, freezing the hand in place
+    // relative to the hip instead of the wrist. Require Hand to be strictly
+    // nearer than its own ForeArm (parent) so only genuine palm/wrist/glove
+    // geometry locks — torso vertices are always closer to the limb root.
     const lHand = vec3Dist(p, joints.LeftHand);
     const rHand = vec3Dist(p, joints.RightHand);
-    if (lHand < rHand && lHand < 0.06 * H) { set(v, 'LeftHand', 1); continue; }
-    if (rHand <= lHand && rHand < 0.06 * H) { set(v, 'RightHand', 1); continue; }
+    const lForeArm = joints.LeftForeArm ? vec3Dist(p, joints.LeftForeArm) : Infinity;
+    const rForeArm = joints.RightForeArm ? vec3Dist(p, joints.RightForeArm) : Infinity;
+    if (lHand < rHand && lHand < 0.06 * H && lHand < lForeArm) { set(v, 'LeftHand', 1); continue; }
+    if (rHand <= lHand && rHand < 0.06 * H && rHand < rForeArm) { set(v, 'RightHand', 1); continue; }
 
     // Foot zones: low on the body, close to foot/toe chain.
     if (p[1] <= footY) {
