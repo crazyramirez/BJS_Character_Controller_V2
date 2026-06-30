@@ -2963,9 +2963,20 @@ function computeRigidZones(positions, joints, boneIndex, H) {
 
     // Head zone: above neck, close to head joint. Generous radius catches
     // disconnected hair/helmet geometry that shares no edges with the face.
-    if (p[1] >= headY && vec3Dist(p, joints.Head) < 0.30 * H) {
-      set(v, 'Head', 1);
-      continue;
+    // The 3D radius alone is not enough: a shoulder-top/trapezius vertex sits
+    // above the neck line and can be just as close to Head in straight-line
+    // distance as a cheek vertex (the shoulder is wide, the head is shallow).
+    // Require Head to be the STRICTLY nearest rigid anchor among head/neck/
+    // shoulders — a shoulder-top vertex is always nearer its own Shoulder
+    // joint than Head, so this rejects it without needing a hand-tuned radius.
+    const dHead = vec3Dist(p, joints.Head);
+    if (p[1] >= headY && dHead < 0.30 * H) {
+      const dShL = joints.LeftShoulder ? vec3Dist(p, joints.LeftShoulder) : Infinity;
+      const dShR = joints.RightShoulder ? vec3Dist(p, joints.RightShoulder) : Infinity;
+      if (dHead < dShL && dHead < dShR) {
+        set(v, 'Head', 1);
+        continue;
+      }
     }
 
     // Hand zones: close to the hand joint. We skip the forearm comparison so
