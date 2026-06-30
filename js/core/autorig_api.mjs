@@ -2842,7 +2842,7 @@ function boneSourceRadius(name, H) {
 // bone segment become heat sources (value 1). The side gate keeps left/right
 // limb sources on their own side, so diffusion cannot carry them across the
 // body midline. The output field is 0/1; smoothing happens in diffuseWeightField.
-function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H) {
+function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H, jointOrder = JOINT_ORDER) {
   const count = positions.length / 3;
   const nB = segList.length;
   const field = new Float32Array(count * nB);
@@ -2859,7 +2859,7 @@ function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisVali
     for (let b = 0; b < nB; b++) {
       const seg = segList[b];
       const { d } = distPointSegmentFull(p, seg[0], seg[1]);
-      const radius = boneSourceRadius(JOINT_ORDER[b], H);
+      const radius = boneSourceRadius(jointOrder[b], H);
 
       // Soft side gate for left/right limb bones.
       const side = boneSide[b];
@@ -3393,7 +3393,7 @@ export async function autoRigGLB(buffer, options = {}) {
       const weldEps = 1e-4 * H;
       const adjacency = buildVertexAdjacency(arr, indices, weldEps);
 
-      const { field, sourceMask } = computeBoneSources(arr, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H);
+      const { field, sourceMask } = computeBoneSources(arr, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H, jointOrder);
       diffuseWeightField(field, nB, adjacency, sourceMask, 40, 0.5);
 
       const zoneField = computeRigidZones(arr, joints, boneIndex, H);
