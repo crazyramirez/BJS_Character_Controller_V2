@@ -1498,7 +1498,7 @@ for (const side of ['Left', 'Right']) {
   const sPrefix = side === 'Left' ? 'l' : 'r';
   for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
     const f = finger.toLowerCase();
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 4; i++) {
       const canon = `${side}Hand${finger}${i}`;
       SEED_ALIASES[canon] = [
         `${s}hand${f}${i}`,
@@ -2478,17 +2478,17 @@ const HIERARCHY = {
   Hips: null,
   Spine: 'Hips', Spine1: 'Spine', Spine2: 'Spine1', Neck: 'Spine2', Head: 'Neck',
   LeftShoulder: 'Spine2', LeftArm: 'LeftShoulder', LeftForeArm: 'LeftArm', LeftHand: 'LeftForeArm',
-  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
-  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2',
-  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2',
-  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2',
-  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2',
+  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2', LeftHandMiddle4: 'LeftHandMiddle3',
+  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2', LeftHandThumb4: 'LeftHandThumb3',
+  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2', LeftHandIndex4: 'LeftHandIndex3',
+  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2', LeftHandRing4: 'LeftHandRing3',
+  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2', LeftHandPinky4: 'LeftHandPinky3',
   RightShoulder: 'Spine2', RightArm: 'RightShoulder', RightForeArm: 'RightArm', RightHand: 'RightForeArm',
-  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
-  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2',
-  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2',
-  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2',
-  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
+  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2', RightHandMiddle4: 'RightHandMiddle3',
+  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2', RightHandThumb4: 'RightHandThumb3',
+  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2', RightHandIndex4: 'RightHandIndex3',
+  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2', RightHandRing4: 'RightHandRing3',
+  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2', RightHandPinky4: 'RightHandPinky3',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
   RightUpLeg: 'Hips', RightLeg: 'RightUpLeg', RightFoot: 'RightLeg', RightToeBase: 'RightFoot',
 
@@ -2677,20 +2677,33 @@ function boneSegments(joints, H) {
   segments.RightUpLegTwist = midSeg('RightUpLeg', 'RightLeg');
   segments.RightLegTwist = midSeg('RightLeg', 'RightFoot');
 
-  // Finger segments (5 digits × 3 joints per hand).
+  // Finger segments (5 digits × up to 4 joints per hand — most source rigs,
+  // including the Mixamo reference, use 3 phalanges + a 4th fingertip/end
+  // bone; some export or reduced-finger-count modes only have 3).
   for (const side of ['Left', 'Right']) {
     for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
       const b1 = `${side}Hand${finger}1`;
       const b2 = `${side}Hand${finger}2`;
       const b3 = `${side}Hand${finger}3`;
+      const b4 = `${side}Hand${finger}4`;
       segments[b1] = seg(b1, b2);
       segments[b2] = seg(b2, b3);
-      // Terminal phalanx extends a little past the last joint.
-      segments[b3] = ext(b3, [
-        (joints[b3][0] - joints[b2][0]) * 0.6,
-        (joints[b3][1] - joints[b2][1]) * 0.6,
-        (joints[b3][2] - joints[b2][2]) * 0.6,
-      ]);
+      if (joints[b4]) {
+        segments[b3] = seg(b3, b4);
+        // Terminal phalanx (fingertip) extends a little past the last joint.
+        segments[b4] = ext(b4, [
+          (joints[b4][0] - joints[b3][0]) * 0.6,
+          (joints[b4][1] - joints[b3][1]) * 0.6,
+          (joints[b4][2] - joints[b3][2]) * 0.6,
+        ]);
+      } else {
+        // No 4th joint (3-joint fallback): joint 3 itself is terminal.
+        segments[b3] = ext(b3, [
+          (joints[b3][0] - joints[b2][0]) * 0.6,
+          (joints[b3][1] - joints[b2][1]) * 0.6,
+          (joints[b3][2] - joints[b2][2]) * 0.6,
+        ]);
+      }
     }
   }
 
@@ -3175,13 +3188,29 @@ function appendFingerJoints(joints, H) {
     for (const { name: fingerName, offsets } of FINGER_DEFS) {
       const mirrorX = fingerName === 'Thumb' ? 1 : mirror;
       const mirrorZ = mirror;
+      const placed = [];
       for (let i = 0; i < 3; i++) {
         const jointName = `${side}Hand${fingerName}${i + 1}`;
-        if (joints[jointName]) continue; // keep existing / user-overridden joints
+        if (joints[jointName]) { placed.push(joints[jointName]); continue; } // keep existing / user-overridden joints
         const off = offsets[i];
         const local = [off[0] * mirrorX * fingerLen, off[1] * fingerLen, off[2] * mirrorZ * fingerLen];
         const w = rotateVec3(local, handRot);
         joints[jointName] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
+        placed.push(joints[jointName]);
+      }
+      // 4th joint (fingertip/end bone): most source rigs, including the Mixamo
+      // reference, have one. Extrapolate it along the joint2→joint3 direction
+      // by the same proportional segment length rather than hand-tuning a new
+      // offset — this matches the real rig's tip placement closely without a
+      // fourth calibration pass.
+      const tipName = `${side}Hand${fingerName}4`;
+      if (!joints[tipName] && placed.length === 3) {
+        const [p2, p3] = [placed[1], placed[2]];
+        joints[tipName] = [
+          p3[0] + (p3[0] - p2[0]),
+          p3[1] + (p3[1] - p2[1]),
+          p3[2] + (p3[2] - p2[2]),
+        ];
       }
     }
   }

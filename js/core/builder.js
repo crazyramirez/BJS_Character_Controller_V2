@@ -2801,7 +2801,9 @@ function getAutoRigFingerJoints(fingerCount = 5) {
   const names = [];
   for (const side of ['Left', 'Right']) {
     for (const finger of fingers) {
-      for (let i = 1; i <= 3; i++) names.push(`${side}Hand${finger}${i}`);
+      // 4 joints per finger: 3 phalanges + a terminal fingertip/end bone,
+      // matching the Mixamo reference rig and most source skeletons.
+      for (let i = 1; i <= 4; i++) names.push(`${side}Hand${finger}${i}`);
     }
   }
   return names;
@@ -2863,7 +2865,7 @@ for (const name of getAutoRigFingerJoints(5)) {
   const rest = name.slice(side.length); // e.g. "HandIndex1"
   const finger = rest.replace('Hand', '').replace(/\d+$/, '');
   const num = rest.match(/\d+$/)?.[0] || '';
-  const suffix = num === '1' ? 'Base' : num === '2' ? 'Mid' : num === '3' ? 'Tip' : '';
+  const suffix = num === '1' ? 'Base' : num === '2' ? 'Mid' : num === '3' ? 'Distal' : num === '4' ? 'Tip' : '';
   AUTORIG_JOINT_LABELS[name] = `${side} ${finger} ${suffix}`.trim();
 }
 
@@ -2900,6 +2902,7 @@ function getAutoRigSkeletonPreviewHierarchy(fingerCount = 5) {
       hierarchy.push([hand, `${side}Hand${finger}1`]);
       hierarchy.push([`${side}Hand${finger}1`, `${side}Hand${finger}2`]);
       hierarchy.push([`${side}Hand${finger}2`, `${side}Hand${finger}3`]);
+      hierarchy.push([`${side}Hand${finger}3`, `${side}Hand${finger}4`]);
     }
   }
   return hierarchy;
