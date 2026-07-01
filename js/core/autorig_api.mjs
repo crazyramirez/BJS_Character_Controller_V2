@@ -2832,7 +2832,12 @@ function redistributeTwistWeights(positions, jointsOut, weightsOut, parentIdx, t
 function boneSourceRadius(name, H) {
   if (name === 'Head' || name === 'Neck') return 0.18 * H;
   if (name === 'Hips' || name === 'Spine' || name === 'Spine1' || name === 'Spine2') return 0.08 * H;
-  if (name === 'LeftShoulder' || name === 'RightShoulder') return 0.05 * H;
+  // Shoulder/clavicle needs a radius closer to Head/Neck's (0.18*H): even with
+  // distance-graded source strength, a far larger competing radius means the
+  // collar sits much nearer the EDGE of Shoulder's zone than of Head/Neck's,
+  // so Shoulder's strength value loses there despite being the anatomically
+  // correct owner of that region.
+  if (name === 'LeftShoulder' || name === 'RightShoulder') return 0.14 * H;
   if (name === 'LeftHand' || name === 'RightHand' ||
     name === 'LeftFoot' || name === 'RightFoot' ||
     name === 'LeftToeBase' || name === 'RightToeBase') return 0.06 * H;
@@ -2874,9 +2879,17 @@ function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisVali
         gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g);
       }
 
+      // A flat 1.0 for any vertex within radius meant that at anatomical pinch
+      // points where several capture radii legitimately overlap (e.g. the collar,
+      // where Spine2/Neck/Head/Shoulder all reach) a vertex became a pinned
+      // Dirichlet source for ALL of them at once, with no way to tell which is
+      // actually closest — diffusion can never resolve a tie between sources
+      // that are each individually "ground truth". Taper the source strength
+      // from 1.0 at the joint to 0.0 at the radius edge so the nearer bone wins.
       if (gate > 0.3 && d < radius) {
         const idx = v * nB + b;
-        field[idx] = 1;
+        const strength = 1 - d / radius;
+        field[idx] = strength;
         sourceMask[idx] = 1;
       }
     }
@@ -2907,6 +2920,15 @@ function diffuseWeightField(W, nBones, adjacency, sourceMask, iters, lambda) {
     for (let b = 0; b < nBones; b++) W[r * nBones + b] *= inv;
   }
 
+  // Snapshot each source's own strength (distance-graded, not flat 1) so the
+  // Dirichlet clamp below re-pins to the real value instead of erasing it.
+  // Without this, any vertex sitting in an overlap of several capture radii
+  // (e.g. the collar, reached by Spine2/Neck/Head/Shoulder at once) got
+  // hard-clamped to 1.0 for ALL of them every iteration — a permanent 4-way
+  // tie that diffusion could never resolve, regardless of which bone was
+  // actually closest.
+  const sourceStrength = Float32Array.from(W);
+
   const tmp = new Float32Array(W.length);
   for (let it = 0; it < iters; it++) {
     for (const [r, nbrs] of adjSet) {
@@ -2915,7 +2937,7 @@ function diffuseWeightField(W, nBones, adjacency, sourceMask, iters, lambda) {
       const base = r * nBones;
       for (let b = 0; b < nBones; b++) {
         const idx = base + b;
-        if (sourceMask[idx]) { tmp[idx] = 1; continue; }
+        if (sourceMask[idx]) { tmp[idx] = sourceStrength[idx]; continue; }
         let acc = 0;
         for (const nb of nbrs) acc += W[nb * nBones + b];
         tmp[idx] = W[idx] * (1 - lambda) + (acc / n) * lambda;
@@ -2925,7 +2947,7 @@ function diffuseWeightField(W, nBones, adjacency, sourceMask, iters, lambda) {
       const base = r * nBones;
       for (let b = 0; b < nBones; b++) {
         const idx = base + b;
-        W[idx] = sourceMask[idx] ? 1 : tmp[idx];
+        W[idx] = sourceMask[idx] ? sourceStrength[idx] : tmp[idx];
       }
     }
   }
