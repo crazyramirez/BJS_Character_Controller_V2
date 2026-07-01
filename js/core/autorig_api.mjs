@@ -291,12 +291,52 @@ function selectBodyMeshes(doc, skinXforms = new Map()) {
   for (const e of entries) {
     if (e.count * e.height > main.count * main.height) main = e;
   }
+
+  // Professional character exports frequently split the body itself into many
+  // co-equal meshes (head, torso, arms, legs, each clothing layer) rather than
+  // one mesh + a few props. The single "densest tall mesh" can then be just a
+  // FRAGMENT (e.g. torso-only, y 0.09–1.10 on a 1.86-tall character) — using
+  // its bbox as the sole reference wrongly rejects the head/hair/shirt meshes
+  // stacked above/around it as "detached props", stripping them of a skin
+  // entirely (they stay rigidly static while the rigged body moves — the
+  // mesh visibly tears apart). Grow `main`'s reference box first by unioning
+  // in any mesh that is vertically CONTIGUOUS with the current envelope
+  // (touches or nearly touches its top/bottom, allowing for a seam gap) —
+  // this reconstructs the true full-body envelope before classifying props.
+  {
+    const seamGap = 0.06 * Math.max(main.height, 0.01);
+    let refMin = main.min.slice(), refMax = main.max.slice();
+    let grown = true;
+    while (grown) {
+      grown = false;
+      for (const e of entries) {
+        if (e === main) continue;
+        const cx = (e.min[0] + e.max[0]) / 2, cz = (e.min[2] + e.max[2]) / 2;
+        const xzInside = cx > refMin[0] - 0.5 * (refMax[0] - refMin[0] + 0.01) &&
+          cx < refMax[0] + 0.5 * (refMax[0] - refMin[0] + 0.01) &&
+          cz > refMin[2] - 0.5 * (refMax[2] - refMin[2] + 0.01) &&
+          cz < refMax[2] + 0.5 * (refMax[2] - refMin[2] + 0.01);
+        if (!xzInside) continue;
+        // Contiguous if this mesh's Y-span touches/overlaps the current
+        // envelope, or sits within a small seam gap of its top or bottom.
+        const contiguous = e.min[1] <= refMax[1] + seamGap && e.max[1] >= refMin[1] - seamGap;
+        if (!contiguous) continue;
+        if (e.min[1] < refMin[1]) { refMin[1] = e.min[1]; grown = true; }
+        if (e.max[1] > refMax[1]) { refMax[1] = e.max[1]; grown = true; }
+        if (e.min[0] < refMin[0]) refMin[0] = e.min[0];
+        if (e.max[0] > refMax[0]) refMax[0] = e.max[0];
+        if (e.min[2] < refMin[2]) refMin[2] = e.min[2];
+        if (e.max[2] > refMax[2]) refMax[2] = e.max[2];
+      }
+    }
+    main = { ...main, min: refMin, max: refMax, height: refMax[1] - refMin[1] };
+  }
+
   const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
   // Fraction of [a,b] overlapping [c,d].
   const overlap1D = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
   const keep = new Set();
   for (const e of entries) {
-    if (e === main) { keep.add(e.mesh); continue; }
     const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
     const inside =
       cx > main.min[0] - m && cx < main.max[0] + m &&
