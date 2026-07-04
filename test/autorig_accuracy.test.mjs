@@ -283,6 +283,98 @@ describe('regenerate preserves artist weights on already-valid rigs', () => {
   }
 });
 
+// Skinned rest-pose bbox of a horizontal Y-band of the body. Draco re-encode
+// permutes vertex order, so per-index comparisons are meaningless — band bboxes
+// are permutation-proof and still catch region-level skew.
+function bandRestBBox(root, y0, y1) {
+  const pmap = pmapOf(root); const wc = new Map();
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (const node of root.listNodes()) {
+    const mesh = node.getMesh(), skin = node.getSkin();
+    if (!mesh || !skin) continue;
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices().getArray();
+    const SM = joints.map((j, i) => mat4Mul(worldOf(j, pmap, wc), ibm.slice(i * 16, i * 16 + 16)));
+    for (const prim of mesh.listPrimitives()) {
+      const P = prim.getAttribute('POSITION'), J = prim.getAttribute('JOINTS_0'), W = prim.getAttribute('WEIGHTS_0');
+      if (!P || !J || !W) continue;
+      const pos = [0, 0, 0], ji = [0, 0, 0, 0], wi = [0, 0, 0, 0];
+      for (let v = 0; v < P.getCount(); v++) {
+        P.getElement(v, pos); J.getElement(v, ji); W.getElement(v, wi);
+        const o = [0, 0, 0];
+        for (let k = 0; k < 4; k++) {
+          if (wi[k] <= 0) continue; const M = SM[ji[k]];
+          o[0] += wi[k] * (M[0] * pos[0] + M[4] * pos[1] + M[8] * pos[2] + M[12]);
+          o[1] += wi[k] * (M[1] * pos[0] + M[5] * pos[1] + M[9] * pos[2] + M[13]);
+          o[2] += wi[k] * (M[2] * pos[0] + M[6] * pos[1] + M[10] * pos[2] + M[14]);
+        }
+        if (o[1] < y0 || o[1] > y1) continue;
+        for (let a = 0; a < 3; a++) { mn[a] = Math.min(mn[a], o[a]); mx[a] = Math.max(mx[a], o[a]); }
+      }
+    }
+  }
+  return { mn, mx };
+}
+function bandDrift(rootA, rootB, y0, y1) {
+  const A = bandRestBBox(rootA, y0, y1), B = bandRestBBox(rootB, y0, y1);
+  let d = 0;
+  for (let i = 0; i < 3; i++) d = Math.max(d, Math.abs(A.mn[i] - B.mn[i]), Math.abs(A.mx[i] - B.mx[i]));
+  return d;
+}
+
+// A marker edit during re-rig must only perturb the subtree it touches.
+// Regression: composing bind-parent rotations with rest-pose local rotations
+// accumulated rest-vs-bind mismatch down long chains — ANY marker edit skewed
+// the hands/head by ~0.5% of body height on character_animated_1.
+describe('re-rig marker edits stay local to the edited limb', () => {
+  for (const [label, GLB, H2] of [['character_animated_1', REF_GLB, 1.78], ['3d_character_young_boy', BOY_GLB, 1.865]]) {
+    it(`${label}: raising LeftHand 3cm leaves legs and head untouched`, async () => {
+      const io = await makeIO();
+      const buf = readFileSync(GLB);
+      const guess = await guessJoints(buf, { fingerCount: 5 });
+      const joints = JSON.parse(JSON.stringify(guess.joints));
+      joints.LeftHand = [joints.LeftHand[0], joints.LeftHand[1] + 0.03, joints.LeftHand[2]];
+      const rigged = await autoRigGLB(buf, { joints, fingerCount: 5, preserveWeights: true });
+      const before = (await io.readBinary(new Uint8Array(buf))).getRoot();
+      const after = (await io.readBinary(rigged)).getRoot();
+      // Legs/feet band (below the knee) and head band must not move.
+      const legs = bandDrift(before, after, -Infinity, 0.45);
+      const head = bandDrift(before, after, 0.88 * H2, Infinity);
+      assert.ok(legs < 0.002, `legs skewed ${(legs * 1000).toFixed(2)}mm by a hand marker edit`);
+      assert.ok(head < 0.002, `head skewed ${(head * 1000).toFixed(2)}mm by a hand marker edit`);
+    });
+  }
+});
+
+// forceRebuild WITHOUT client markers must still inherit joint positions and
+// facing from a sane stripped rig. Regression: the post-strip mesh guess ran
+// blind — on 3d_character_young_boy it flipped the facing and mirrored
+// Left/Right (mean joint error 35% of body height, mirrored animations).
+describe('forceRebuild inherits seeds from a sane stripped rig', () => {
+  it('3d_character_young_boy: rebuild without markers keeps sides and positions', async () => {
+    const io = await makeIO();
+    const buf = readFileSync(BOY_GLB);
+    const seeds = (await guessJoints(buf, { fingerCount: 5 })).joints; // seeded truth
+    const rigged = await autoRigGLB(buf, { fingerCount: 5, forceRebuild: true }); // NO joints passed
+    const root = (await io.readBinary(rigged)).getRoot();
+    const pmap = pmapOf(root); const wc = new Map();
+    const H2 = 1.865;
+    for (const skin of root.listSkins()) {
+      for (const j of skin.listJoints()) {
+        const s = seeds[j.getName()];
+        if (!s) continue;
+        const w = worldOf(j, pmap, wc);
+        const e = Math.hypot(w[12] - s[0], w[13] - s[1], w[14] - s[2]) / H2 * 100;
+        assert.ok(e <= 1.0, `${j.getName()} rebuilt ${e.toFixed(1)}% of height away from the sane rig it replaced`);
+        // Explicit anti-mirror guard on lateral joints.
+        if (Math.abs(s[0]) > 0.05) {
+          assert.equal(Math.sign(w[12]), Math.sign(s[0]), `${j.getName()} mirrored across the midline`);
+        }
+      }
+    }
+  });
+});
+
 describe('auto-rig accuracy vs reference Mixamo skeleton', () => {
   it('guesses every joint within tolerance of the reference rig', async () => {
     const io = await makeIO();

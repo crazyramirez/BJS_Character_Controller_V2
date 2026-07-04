@@ -125,11 +125,35 @@ function computeBindWorldMatrices(doc) {
     const meshes = skinMeshes.get(skin) || [];
     const meshNode = meshes[0];
 
-    // S is the mesh node's world transform.
-    // If no mesh node, fallback to identity.
-    const S = meshNode 
-      ? worldMatrixOf(meshNode, parentMap, tempCache) 
-      : new Float32Array(MAT4_IDENTITY);
+    // S maps skin space → render world. NOT the mesh node's world transform:
+    // spec-conformant exporters author IBMs relative to glTF WORLD (a skinned
+    // mesh node's own transform is ignored at render time), yet Sketchfab-style
+    // FBX conversions ALSO park the ±90°X up-axis chain above the mesh node —
+    // taking the node world there applies the rotation twice and lays the whole
+    // bind skeleton flat on the floor (male_character_3: Hips at y≈0, z≈-1).
+    // The IBM invariant is exporter-proof: at bind, jointWorld·IBM is the same
+    // S for every joint that really skins the mesh. Any SINGLE joint's product
+    // is a noisy estimate though — real files carry per-joint rest-vs-bind
+    // mismatch (measured ~1cm on character_animated_1's shoe skin, enough to
+    // shift every leg seed of that skin) and synthetic roots (_rootJoint) can
+    // disagree outright. The mismatch is per-joint noise around one true shared
+    // S, so take the component-wise median over all of the skin's joints.
+    let S = new Float32Array(MAT4_IDENTITY);
+    if (meshNode?.getMesh()) {
+      const cands = [];
+      for (let i = 0; i < joints.length && i * 16 + 16 <= ibmArr.length; i++) {
+        if (!joints[i]) continue;
+        const Wi = worldMatrixOf(joints[i], parentMap, tempCache);
+        cands.push(mat4Mul(Wi, ibmArr.slice(i * 16, i * 16 + 16)));
+      }
+      if (cands.length) {
+        S = new Float32Array(16);
+        for (let k = 0; k < 16; k++) {
+          const vals = cands.map(c => c[k]).sort((a, b) => a - b);
+          S[k] = vals[(vals.length - 1) >> 1];
+        }
+      }
+    }
 
     joints.forEach((joint, idx) => {
       const ibm = ibmArr.slice(idx * 16, idx * 16 + 16);
@@ -138,15 +162,17 @@ function computeBindWorldMatrices(doc) {
       
       // Fallback: if the IBM-derived position is at [0,0,0] (or extremely close)
       // but the hierarchical world matrix position in the scene is NOT at [0,0,0],
-      // fall back to the world matrix position so we don't collapse helper/unweighted joints.
+      // the IBM is a placeholder on an unweighted helper joint (Sketchfab writes
+      // diag(100) IBMs on _end/fingertip leaves). Use the FULL hierarchy matrix —
+      // splicing only the translation kept the placeholder's garbage rotation and
+      // 0.01 scale, which then poisoned origWorldRot/Scale in adjustExistingRig.
       const ibmDistSq = W_bind[12] * W_bind[12] + W_bind[13] * W_bind[13] + W_bind[14] * W_bind[14];
       if (ibmDistSq < 1e-8) {
         const W_hier = worldMatrixOf(joint, parentMap, tempCache);
         const hierDistSq = W_hier[12] * W_hier[12] + W_hier[13] * W_hier[13] + W_hier[14] * W_hier[14];
         if (hierDistSq > 1e-5) {
-          W_bind[12] = W_hier[12];
-          W_bind[13] = W_hier[13];
-          W_bind[14] = W_hier[14];
+          cache.set(joint, Float32Array.from(W_hier));
+          return;
         }
       }
       
@@ -1502,17 +1528,21 @@ for (const side of ['Left', 'Right']) {
   const sPrefix = side === 'Left' ? 'l' : 'r';
   for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
     const f = finger.toLowerCase();
+    // CC/AccuRig abbreviates the middle finger: CC_Base_L_Mid1 → lmid1. Without
+    // this alias the middle finger never seeds/maps on CC rigs, so its markers
+    // are pure mesh guesses and user edits to them are silently dropped.
+    const forms = finger === 'Middle' ? [f, 'mid'] : [f];
     for (let i = 1; i <= 4; i++) {
       const canon = `${side}Hand${finger}${i}`;
-      SEED_ALIASES[canon] = [
-        `${s}hand${f}${i}`,
-        `${sPrefix}hand${f}${i}`,
-        `${s}${f}${i}`,
-        `${sPrefix}${f}${i}`,
-        `${sPrefix}${f}0${i}`,
-        `${f}0${i}${sPrefix}`,
-        `${f}${i}${sPrefix}`,
-      ];
+      SEED_ALIASES[canon] = forms.flatMap(ff => [
+        `${s}hand${ff}${i}`,
+        `${sPrefix}hand${ff}${i}`,
+        `${s}${ff}${i}`,
+        `${sPrefix}${ff}${i}`,
+        `${sPrefix}${ff}0${i}`,
+        `${ff}0${i}${sPrefix}`,
+        `${ff}${i}${sPrefix}`,
+      ]);
     }
   }
 }
@@ -1605,6 +1635,51 @@ export async function analyzeRig(buffer) {
     sane: a.sane,
     preservable: a.preservable,
   };
+}
+
+// ── Rest-pose normalization ──────────────────────────────────────────────────
+// CC/AccuRig/Sketchfab exports often store the node hierarchy in an FBX editor
+// pose that DIFFERS from the skinned bind (the IBMs). The mesh renders fine —
+// skinning follows the IBMs — but anything that reads the hierarchy sees a
+// collapsed/rotated skeleton: the client SkeletonViewer (the "skeleton lying on
+// the floor" symptom), rest sampling, returnToRest. Detect the mismatch (any
+// joint whose W_hier·IBM deviates from its skin's median product) and snap the
+// hierarchy onto the bind via a no-marker adjustExistingRig. Weights, meshes
+// and animations (absolute-keyed) are untouched.
+// Returns { changed:false } when the file is already consistent.
+export async function normalizeRestPose(buffer) {
+  const io = await getIO();
+  const doc = await io.readBinary(new Uint8Array(buffer));
+  const root = doc.getRoot();
+  if (root.listSkins().length === 0) return { changed: false };
+
+  const pmap = buildParentMap(doc);
+  const wc = new Map();
+  let mismatch = false;
+  for (const skin of root.listSkins()) {
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices()?.getArray();
+    if (!ibm || !joints.length) continue;
+    const prods = joints.map((j, i) => mat4Mul(worldMatrixOf(j, pmap, wc), ibm.slice(i * 16, i * 16 + 16)));
+    const Sref = new Array(16);
+    for (let k = 0; k < 16; k++) {
+      const vals = prods.map(p => p[k]).sort((a, b) => a - b);
+      Sref[k] = vals[(vals.length - 1) >> 1];
+    }
+    for (const p of prods) {
+      let dev = 0;
+      for (let k = 0; k < 16; k++) dev = Math.max(dev, Math.abs(p[k] - Sref[k]));
+      if (dev > 0.05) { mismatch = true; break; }
+    }
+    if (mismatch) break;
+  }
+  if (!mismatch) return { changed: false };
+
+  console.log('[autorig] Rest pose ≠ bind pose — normalizing hierarchy onto the bind.');
+  const refBounds = computeWorldBounds(doc, skinWorldXforms(doc), selectBodyMeshes(doc, skinWorldXforms(doc)));
+  adjustExistingRig(doc, {}, { keepAnimations: true });
+  validateRiggedDoc(doc, refBounds);
+  return { changed: true, buffer: await io.writeBinary(doc) };
 }
 
 function seedJointsFromSkins(doc) {
@@ -1852,8 +1927,15 @@ function validateRiggedDoc(doc, refBounds = null) {
   const skins = root.listSkins();
   if (skins.length === 0) throw new Error('Rig validation failed: result has no skin.');
 
-  // 1. Bind must be finite and W_bind·IBM ≈ identity for every joint.
-  let maxBindErr = 0;
+  // 1. Bind must be finite and CONSISTENT: at bind, W(joint)·IBM must equal the
+  // same skin-space transform S for every joint of a skin. Rigs we build from
+  // scratch have S = identity, but the adjust/preserve path keeps the source
+  // file's own convention — AccuRig/CC-style exports legitimately carry a ±90°X
+  // S (vertices authored Z-up, fix on an ancestor). Demanding identity here
+  // rejected every such file (werewolf.glb: constant error 1.000). What actually
+  // deforms a mesh at rest is joints DISAGREEING about S, so compare each
+  // joint's product against the skin's component-wise median product.
+  let maxBindErr = 0, maxBindJoint = '';
   for (const skin of skins) {
     const joints = skin.listJoints();
     const ibm = skin.getInverseBindMatrices()?.getArray();
@@ -1861,18 +1943,23 @@ function validateRiggedDoc(doc, refBounds = null) {
     for (let i = 0; i < ibm.length; i++) {
       if (!Number.isFinite(ibm[i])) throw new Error(`Rig validation failed: non-finite IBM value (index ${i}).`);
     }
-    joints.forEach((j, i) => {
-      const prod = mat4Mul(worldOf(j), ibm.slice(i * 16, i * 16 + 16));
+    const prods = joints.map((j, i) => mat4Mul(worldOf(j), ibm.slice(i * 16, i * 16 + 16)));
+    const Sref = new Array(16);
+    for (let k = 0; k < 16; k++) {
+      const vals = prods.map(p => p[k]).sort((a, b) => a - b);
+      Sref[k] = vals[(vals.length - 1) >> 1];
+    }
+    prods.forEach((prod, i) => {
       for (let k = 0; k < 16; k++) {
-        const want = (k % 5 === 0) ? 1 : 0; // diagonal → 1
-        maxBindErr = Math.max(maxBindErr, Math.abs(prod[k] - want));
+        const err = Math.abs(prod[k] - Sref[k]);
+        if (err > maxBindErr) { maxBindErr = err; maxBindJoint = joints[i].getName() || `joint#${i}`; }
       }
     });
   }
   // 0.05 tolerance: absorbs float round-trip on deep finger chains while still
   // catching a genuinely wrong bind (which is off by whole units / radians).
   if (maxBindErr > 0.05) {
-    throw new Error(`Rig validation failed: bind pose not identity (max error ${maxBindErr.toFixed(3)}). The rig would deform the mesh at rest.`);
+    throw new Error(`Rig validation failed: inconsistent bind pose (max deviation ${maxBindErr.toFixed(3)} at ${maxBindJoint}). The rig would deform the mesh at rest.`);
   }
 
   // 2. Weights normalized, ≤4 influences, finite.
@@ -2315,11 +2402,16 @@ function lookRotation(dir, up) {
 // keeping hierarchy, bind orientations, extra bones (fingers, twist) and the
 // original skin weights. Unmatched descendants follow their nearest moved
 // ancestor rigidly. With unmoved markers this is an identity operation.
-function adjustExistingRig(doc, targetJoints = {}) {
+function adjustExistingRig(doc, targetJoints = {}, adjustOpts = {}) {
   const root = doc.getRoot();
 
-  // Old animation tracks reference the old bind — caller re-merges afterwards
-  for (const anim of root.listAnimations()) anim.dispose();
+  // Old animation tracks reference the old bind — caller re-merges afterwards.
+  // keepAnimations (rest-pose normalization): existing tracks stay valid because
+  // they key ABSOLUTE local TRS on the same nodes — snapping the rest pose never
+  // changes what an animated frame evaluates to.
+  if (!adjustOpts.keepAnimations) {
+    for (const anim of root.listAnimations()) anim.dispose();
+  }
 
   const parentMap = buildParentMap(doc);
 
@@ -2337,13 +2429,23 @@ function adjustExistingRig(doc, targetJoints = {}) {
   if (skinData.length === 0) throw new Error('Skin has no inverse bind matrices.');
 
   const bindWorldMatrices = computeBindWorldMatrices(doc);
+  // Pristine node-hierarchy world matrices, captured BEFORE any local TRS is
+  // rewritten below. Used to detect placeholder IBMs (W_hier·IBM far from the
+  // skin's S) that must be rebuilt instead of incrementally updated.
+  const hierWorldOrig = new Map();
+  {
+    const hwCache = new Map();
+    for (const node of root.listNodes()) {
+      hierWorldOrig.set(node, Float32Array.from(worldMatrixOf(node, parentMap, hwCache)));
+    }
+  }
   // S maps a skin's local skin-space → render world, anchored on the mesh's most-
   // weighted (dominant) joint so any wrapper coordinate fix baked into the IBMs is
   // preserved. Each skin can have its OWN anchor and IBM set, so S must be computed
   // PER SKIN — reusing skin[0]'s S to rebuild skin[1..n]'s IBMs drifts their bind
   // (visible as broken fingers on multi-skin Mixamo rigs, where 4 skins share the
   // joint nodes). Returns invS for a given skinData entry.
-  const invSForSkin = (sd) => {
+  const sForSkin = (sd) => {
     let sRefJoint = sd.joints[0];
     let sRefIdx = 0;
     let refMesh = null;
@@ -2356,7 +2458,7 @@ function adjustExistingRig(doc, targetJoints = {}) {
       bindWorldMatrices.get(sRefJoint) || MAT4_IDENTITY,
       sd.arr.slice(sRefIdx * 16, sRefIdx * 16 + 16)
     );
-    return invertRigidMat4(S);
+    return { S, invS: invertRigidMat4(S) };
   };
 
   // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in GLTF world space
@@ -2406,20 +2508,15 @@ function adjustExistingRig(doc, targetJoints = {}) {
     }
   }
 
-  // Get original local transforms for all nodes to compute correct descendants world spaces later
-  const origLocalT = new Map();
-  const origLocalR = new Map();
-  const origLocalS = new Map();
-  for (const node of doc.getRoot().listNodes()) {
-    origLocalT.set(node, node.getTranslation() || [0, 0, 0]);
-    origLocalR.set(node, node.getRotation() || [0, 0, 0, 1]);
-    origLocalS.set(node, node.getScale() || [1, 1, 1]);
-  }
-
-  // New world positions, rotations, and scales: computed in downward hierarchical pass
+  // New world positions and rotations, expressed as DELTAS from the bind pose.
+  // Every node starts at exactly its original bind world transform (identity
+  // delta) — composing bind-parent rotations with REST-pose local rotations
+  // instead would accumulate the tiny rest-vs-bind mismatch that real files
+  // carry down long chains (measured: ~0.5% of body height of hand/finger
+  // skew on a Mixamo character whenever ANY marker moved). Marker moves and
+  // aim corrections then perturb only the subtrees they actually touch.
   const newWorldPos = new Map();
   const newWorldRot = new Map();
-  const newWorldScale = new Map();
   let resolved = new Set();
 
   function resolveNode(node) {
@@ -2431,30 +2528,21 @@ function adjustExistingRig(doc, targetJoints = {}) {
       resolveNode(parent);
     }
 
-    // 1. Scale
-    newWorldScale.set(node, origWorldScale.get(node));
+    // Rotation: identity delta from bind (aim corrections are applied later)
+    newWorldRot.set(node, origWorldRot.get(node));
 
-    // 2. Rotation (inherits from parent)
-    if (parent) {
-      const pRot = newWorldRot.get(parent);
-      const localR = origLocalR.get(node);
-      newWorldRot.set(node, qNormalize(qMul(pRot, localR)));
-    } else {
-      newWorldRot.set(node, origWorldRot.get(node));
-    }
-
-    // 3. Position
+    // Position
     if (markerByNode.has(node)) {
       // If node is a joint mapped to a marker, its position is absolute (controlled by marker)
       newWorldPos.set(node, markerByNode.get(node));
     } else if (parent) {
-      // If node has no marker, it keeps its original local translation relative to parent's new world transform
+      // Keep the bind-pose world offset from the parent, rotated by the
+      // parent's rotation delta. The offset already contains any parent
+      // scale/shear, so no explicit scale handling is needed.
       const pPos = newWorldPos.get(parent);
-      const pRot = newWorldRot.get(parent);
-      const pScale = origWorldScale.get(parent) || [1, 1, 1];
-      const localT = origLocalT.get(node);
-      const scaledLocalT = [localT[0] * pScale[0], localT[1] * pScale[1], localT[2] * pScale[2]];
-      const rotated = rotateVec3(scaledLocalT, pRot);
+      const qDelta = qMul(newWorldRot.get(parent), qInvert(origWorldRot.get(parent)));
+      const off = vec3Subtract(origWorldPos.get(node), origWorldPos.get(parent));
+      const rotated = rotateVec3(off, qDelta);
       newWorldPos.set(node, [pPos[0] + rotated[0], pPos[1] + rotated[1], pPos[2] + rotated[2]]);
     } else {
       // Scene root with no marker
@@ -2506,6 +2594,20 @@ function adjustExistingRig(doc, targetJoints = {}) {
     ['RightLeg', 'RightFoot'],
     ['RightFoot', 'RightToeBase'],
   ];
+  // Finger chains: without these, dragging a phalanx marker translates the
+  // joint but leaves the bone's bind orientation aimed at the OLD child
+  // position — retargeted curls then rotate about stale axes and the fingers
+  // visibly skew. Each pair is a single-child chain so the minimal-twist aim
+  // is well-defined (Hand→Finger1 is deliberately absent: the hand has five
+  // finger children and aiming it at one of them would twist the whole palm).
+  // The near-identity gate below makes unmoved fingers an exact no-op.
+  for (const side of ['Left', 'Right']) {
+    for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+      for (let i = 1; i <= 3; i++) {
+        alignPairs.push([`${side}Hand${finger}${i}`, `${side}Hand${finger}${i + 1}`]);
+      }
+    }
+  }
 
   for (const [parentName, childName] of alignPairs) {
     const P = canonToNode.get(parentName);
@@ -2560,11 +2662,9 @@ function adjustExistingRig(doc, targetJoints = {}) {
       newWorldPos.set(node, markerByNode.get(node));
     } else if (parent) {
       const pPos = newWorldPos.get(parent);
-      const pRot = newWorldRot.get(parent);
-      const pScale = origWorldScale.get(parent) || [1, 1, 1];
-      const localT = origLocalT.get(node);
-      const scaledLocalT = [localT[0] * pScale[0], localT[1] * pScale[1], localT[2] * pScale[2]];
-      const rotated = rotateVec3(scaledLocalT, pRot);
+      const qDelta = qMul(newWorldRot.get(parent), qInvert(origWorldRot.get(parent)));
+      const off = vec3Subtract(origWorldPos.get(node), origWorldPos.get(parent));
+      const rotated = rotateVec3(off, qDelta);
       newWorldPos.set(node, [pPos[0] + rotated[0], pPos[1] + rotated[1], pPos[2] + rotated[2]]);
     }
   }
@@ -2573,10 +2673,62 @@ function adjustExistingRig(doc, targetJoints = {}) {
     resolveNodePositionFinal(node);
   }
 
-  // Update node local translations and rotations
+  // Per-node rigid world delta from bind: Δ = M(newPos,newRot)·M(origPos,origRot)⁻¹.
+  // Identity for every node no marker/aim correction touched.
+  const posEps = 1e-7;
+  const rotEps = 1e-9; // on 1-|q·q0|
+  const nodeMoved = (node) => {
+    const p0 = origWorldPos.get(node), p1 = newWorldPos.get(node);
+    if (Math.abs(p0[0] - p1[0]) + Math.abs(p0[1] - p1[1]) + Math.abs(p0[2] - p1[2]) > posEps) return true;
+    const q0 = origWorldRot.get(node), q1 = newWorldRot.get(node);
+    const dot = q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3];
+    return 1 - Math.abs(dot) > rotEps;
+  };
+  const movedSet = new Set();
+  for (const node of doc.getRoot().listNodes()) {
+    if (nodeMoved(node)) movedSet.add(node);
+  }
+
+  // Hierarchy≠bind detection: flag every joint whose ORIGINAL W_hier·IBM
+  // deviates from the skin's S. Two real-world causes, same repair:
+  //  • Placeholder IBMs on unweighted helper joints — Sketchfab writes diag(100)
+  //    or bare identity on _end/fingertip leaves and synthetic _rootJoints. They
+  //    render fine (zero weights) but fail post-rig validation and poison any
+  //    math that inverts them.
+  //  • Rest pose ≠ bind pose — CC/AccuRig-family exports keep the node hierarchy
+  //    in an FBX editor pose while the IBMs carry the real bind (werewolf.glb:
+  //    thighs/arms/jaw off by up to 0.8). The client SkeletonViewer draws the
+  //    hierarchy, which is the "skeleton lying on the floor / wrong pose"
+  //    symptom on an otherwise fine mesh.
+  // Flagged joints go into movedSet so the local-write pass re-derives their
+  // node transforms from the (bind-derived) newWorld maps — snapping hierarchy
+  // onto bind — and the IBM pass rebuilds their IBM from the full bind world so
+  // hierarchy and bind finally agree.
+  const badBind = new Set();
+  for (const sd of skinData) {
+    const { S } = sForSkin(sd);
+    sd.S = S;
+    sd.joints.forEach((j, i) => {
+      const D = mat4Mul(hierWorldOrig.get(j) || MAT4_IDENTITY, sd.arr.slice(i * 16, i * 16 + 16));
+      let dev = 0;
+      for (let k = 0; k < 16; k++) dev = Math.max(dev, Math.abs(D[k] - S[k]));
+      if (dev > 0.05) {
+        badBind.add(j);
+        movedSet.add(j);
+      }
+    });
+  }
+
+
+  // Update node local translations and rotations. Nodes whose world transform
+  // (and parent's) is untouched keep their ORIGINAL local TRS verbatim —
+  // re-deriving it from decomposed world matrices would only inject float noise
+  // and lose any scale/shear the decomposition can't represent.
   for (const j of jointSet) {
-    const np = newWorldPos.get(j);
     const directParent = parentMap.get(j) || null;
+    if (!movedSet.has(j) && (!directParent || !movedSet.has(directParent))) continue;
+
+    const np = newWorldPos.get(j);
     let localT;
     if (directParent) {
       const pNewPos = newWorldPos.get(directParent);
@@ -2593,10 +2745,9 @@ function adjustExistingRig(doc, targetJoints = {}) {
     j.setTranslation(localT);
 
     // Set local rotation
-    const parent = parentMap.get(j);
     let localR;
-    if (parent) {
-      const pNewRot = newWorldRot.get(parent);
+    if (directParent) {
+      const pNewRot = newWorldRot.get(directParent);
       localR = qNormalize(qMul(qInvert(pNewRot), newWorldRot.get(j)));
     } else {
       localR = qNormalize(newWorldRot.get(j));
@@ -2604,16 +2755,38 @@ function adjustExistingRig(doc, targetJoints = {}) {
     j.setRotation(localR);
   }
 
-  // Update Inverse Bind Matrices (IBMs)
+  // Update Inverse Bind Matrices (IBMs) incrementally: IBM_new = IBM_old·S⁻¹·Δ⁻¹·S.
+  // Applying the rigid world delta to the ORIGINAL IBM keeps whatever scale/shear
+  // the source file baked into its bind matrices; joints with an identity delta
+  // keep their IBM bit-for-bit (rebuilding IBMs from decomposed TRS instead skewed
+  // untouched chains — the old "right hand drifts a few mm" artifact).
   for (const sd of skinData) {
     const { joints, acc, arr } = sd;
-    const invS = invSForSkin(sd);
+    const { S, invS } = sForSkin(sd);
     const out = Float32Array.from(arr);
     joints.forEach((j, i) => {
-      const W_gltf = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
-      // Transform joint world bind matrix from GLTF world space back to skin space (S)
-      const W_skin = mat4Mul(invS, W_gltf);
-      const IBM_new = invertRigidMat4(W_skin);
+      const M_new = composeMat4(newWorldPos.get(j), newWorldRot.get(j), [1, 1, 1]);
+      // Bind repair (flagged above): rebuild as (Δ·W_bind)⁻¹·S = W_bind⁻¹·Δ⁻¹·S
+      // from the FULL bind world matrix — scale included; a scale-1 compose here
+      // dropped werewolf's uniform 0.01 bind scale and skewed every repaired
+      // joint by ~100×. The formula covers both flagged cases: a garbage
+      // placeholder IBM (W_bind fell back to the hierarchy matrix → a fresh
+      // consistent IBM) and a VALID IBM under a rest≠bind hierarchy (W_bind =
+      // S·IBM⁻¹, so this reduces to IBM_old·Δ-update and the locals snapped to
+      // bind make hierarchy and IBM agree).
+      if (badBind.has(j)) {
+        const M_old = composeMat4(origWorldPos.get(j), origWorldRot.get(j), [1, 1, 1]);
+        const invDelta = mat4Mul(M_old, invertRigidMat4(M_new));
+        const W_bind = bindWorldMatrices.get(j) || MAT4_IDENTITY;
+        const IBM_new = mat4Mul(mat4Mul(invertRigidMat4(Array.from(W_bind)), invDelta), S);
+        for (let k = 0; k < 16; k++) out[i * 16 + k] = IBM_new[k];
+        return;
+      }
+      if (!movedSet.has(j)) return; // identity delta → original IBM untouched
+      const M_old = composeMat4(origWorldPos.get(j), origWorldRot.get(j), [1, 1, 1]);
+      const invDelta = mat4Mul(M_old, invertRigidMat4(M_new));
+      // IBM_old · (S⁻¹ · Δ⁻¹ · S), evaluated left-to-right
+      const IBM_new = mat4Mul(mat4Mul(mat4Mul(arr.slice(i * 16, i * 16 + 16), invS), invDelta), S);
       for (let k = 0; k < 16; k++) {
         out[i * 16 + k] = IBM_new[k];
       }
@@ -3689,6 +3862,8 @@ export async function autoRigGLB(buffer, options = {}) {
   // canonical joint — adjusting them moves a handful of bones and scatters the
   // rest, producing a broken pose. For those, strip the useless rig and build a
   // fresh Mixamo skeleton from the markers (same as the skinless path).
+  let strippedRigSeeds = null; // canonical joints of a sane rig we stripped
+  let strippedRigFwd = 0;      // its toe→foot facing (0 = unknown)
   if (root.listSkins().length > 0) {
     const rig = assessExistingRig(doc);
     // Preserve a good rig's artist weights unless the caller EXPLICITLY forces a
@@ -3700,10 +3875,9 @@ export async function autoRigGLB(buffer, options = {}) {
     if (preserve) {
       // No-op fast path: if the requested markers all match the current bind
       // (user didn't drag anything — the common "regenerate an already-good rig"
-      // case), return the ORIGINAL file byte-for-byte. Re-running the adjust math
-      // on a no-edit rig would only chase source-data IBM/node mismatches and skew
-      // the mesh a few mm (measured on char_1's right hand). An untouched return is
-      // exact by definition.
+      // case), return the ORIGINAL file byte-for-byte. The delta-based adjust is
+      // also exact for unmoved joints, but this path additionally keeps the
+      // original animations and skips a lossy Draco re-encode.
       const markers = options.joints || {};
       let moved = false;
       const H = computeWorldBounds(doc, skinWorldXforms(doc), selectBodyMeshes(doc, skinWorldXforms(doc)));
@@ -3732,6 +3906,22 @@ export async function autoRigGLB(buffer, options = {}) {
     } else if (rig.hasSkin && !rig.sane) {
       console.log(`[autorig] Existing skeleton unusable (${rig.mappableCount} canonical joints mappable, anatomically sane=${rig.sane}) — stripping and rebuilding a fresh skeleton.`);
     }
+    // A sane existing skeleton is ground truth the mesh heuristics can't beat:
+    // keep its joint positions as defaults (caller markers still win) and its
+    // toe→foot direction as the facing. Without this, a forceRebuild that
+    // arrives without markers re-guesses everything from the mesh silhouette —
+    // measured on 3d_character_young_boy.glb: facing flipped, Left/Right
+    // mirrored, mean joint error 35% of body height.
+    if (rig.sane) {
+      strippedRigSeeds = rig.seeded;
+      let f = 0;
+      for (const s of ['Left', 'Right']) {
+        if (rig.seeded[s + 'ToeBase'] && rig.seeded[s + 'Foot']) {
+          f += rig.seeded[s + 'ToeBase'][2] - rig.seeded[s + 'Foot'][2];
+        }
+      }
+      if (Math.abs(f) > 1e-4) strippedRigFwd = Math.sign(f);
+    }
     stripExistingRig(doc);
   }
   const previouslySkinned = new Map(); // mesh → skin-space xform (none: file is unskinned here)
@@ -3744,7 +3934,9 @@ export async function autoRigGLB(buffer, options = {}) {
   // The client can force the facing two ways:
   //   options.forwardZ (+1/-1) → absolute override
   //   options.flipFacing (bool) → invert whatever was auto-detected
-  const detectedForwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
+  // Facing baseline: the stripped rig's toe direction beats the mesh-silhouette
+  // heuristic when we had a sane skeleton (same rule guessJoints applies).
+  const detectedForwardZ = strippedRigFwd || detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
   let forwardZ = detectedForwardZ;
   if (options.forwardZ === 1 || options.forwardZ === -1) forwardZ = options.forwardZ;
   else if (options.flipFacing) forwardZ = -detectedForwardZ;
@@ -3752,7 +3944,8 @@ export async function autoRigGLB(buffer, options = {}) {
     console.log(`[autorig] forwardZ overridden by client: ${detectedForwardZ} → ${forwardZ}`);
   }
   const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes);
-  const joints = { ...guess.joints, ...(options.joints || {}) };
+  // Priority: mesh guess < stripped-rig seeds < caller markers.
+  const joints = { ...guess.joints, ...(strippedRigSeeds || {}), ...(options.joints || {}) };
   const H = guess.height;
 
   // ── Left/Right label correction ────────────────────────────────────────────

@@ -1706,7 +1706,25 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         // hierarchy stays intact, then dispose the synthetic root itself.
         const parentMap = buildParentMap(charDoc);
         const rootParent = parentMap.get(rootJointNode) || null;
+
+        // Bake the parent's local transform into each child to preserve its world transform.
+        const parentT = rootJointNode.getTranslation() || [0, 0, 0];
+        const parentR = rootJointNode.getRotation() || [0, 0, 0, 1];
+        const parentS = rootJointNode.getScale() || [1, 1, 1];
+        const M_P = composeMat4(parentT, parentR, parentS);
+
         for (const child of [...rootJointNode.listChildren()]) {
+          const childT = child.getTranslation() || [0, 0, 0];
+          const childR = child.getRotation() || [0, 0, 0, 1];
+          const childS = child.getScale() || [1, 1, 1];
+          const M_C = composeMat4(childT, childR, childS);
+          const M_C_new = mat4Mul(M_P, M_C);
+          const { translation, rotation, scale } = decomposeMat4(M_C_new);
+
+          child.setTranslation(translation);
+          child.setRotation(rotation);
+          child.setScale(scale);
+
           if (rootParent) rootParent.addChild(child);
           else for (const scene of charDoc.getRoot().listScenes()) scene.addChild(child);
         }
@@ -1870,6 +1888,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     };
     collectDesc(hipsNode);
+    let currAncestor = hipsNode.getParent();
+    while (currAncestor && currAncestor !== rootNode && typeof currAncestor.getTranslation === 'function') {
+      skeletonNodes.add(currAncestor);
+      currAncestor = currAncestor.getParent();
+    }
     if (syntheticRootNode) {
       skeletonNodes.add(syntheticRootNode);
     }
@@ -2727,6 +2750,55 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   const buf = await io.writeBinary(charDoc);
   return Buffer.from(buf);
+}
+
+// ── Matrix and Quaternion Math Helpers ────────────────────────────────────────
+function composeMat4([tx, ty, tz], [qx, qy, qz, qw], [sx, sy, sz]) {
+  const out = new Float32Array(16);
+  const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+  const xx = qx * x2, xy = qx * y2, xz = qx * z2;
+  const yy = qy * y2, yz = qy * z2, zz = qz * z2;
+  const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+
+  out[0] = (1 - (yy + zz)) * sx;
+  out[1] = (xy + wz) * sx;
+  out[2] = (xz - wy) * sx;
+  out[3] = 0;
+
+  out[4] = (xy - wz) * sy;
+  out[5] = (1 - (xx + zz)) * sy;
+  out[6] = (yz + wx) * sy;
+  out[7] = 0;
+
+  out[8] = (xz + wy) * sz;
+  out[9] = (yz - wx) * sz;
+  out[10] = (1 - (xx + yy)) * sz;
+  out[11] = 0;
+
+  out[12] = tx;
+  out[13] = ty;
+  out[14] = tz;
+  out[15] = 1;
+
+  return out;
+}
+
+function decomposeMat4(m) {
+  const tx = m[12];
+  const ty = m[13];
+  const tz = m[14];
+
+  const sx = Math.hypot(m[0], m[1], m[2]) || 1;
+  const sy = Math.hypot(m[4], m[5], m[6]) || 1;
+  const sz = Math.hypot(m[8], m[9], m[10]) || 1;
+
+  const rot = mat4RotToQuat(m);
+
+  return {
+    translation: [tx, ty, tz],
+    rotation: rot,
+    scale: [sx, sy, sz]
+  };
 }
 
 // Exposed for unit tests that verify name-normalization coverage.

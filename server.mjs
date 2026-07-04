@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 const multer = require('multer');
 
 import { mergeGLBs, analyzeGLB } from './js/core/merge_api.mjs';
-import { autoRigGLB, guessJoints } from './js/core/autorig_api.mjs';
+import { autoRigGLB, guessJoints, normalizeRestPose } from './js/core/autorig_api.mjs';
 import { convertFBXToGLB } from './js/core/fbx_api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -163,6 +163,29 @@ app.post('/api/autorig', upload.single('file'), async (req, res) => {
     console.log(`[autorig] Done. Output: ${(rigged.length / 1024).toFixed(0)} KB`);
   } catch (err) {
     console.error('[autorig] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Normalize rest pose (hierarchy → bind) ───────────────────────────────────
+// POST /api/normalize-rest
+// Body: multipart with field "file" (GLB with an existing skin)
+// Response: 204 if the file is already consistent, otherwise the normalized GLB.
+// Used on character import so the skeleton draws in its bind pose instead of a
+// stale FBX editor pose (CC/AccuRig/Sketchfab exports).
+app.post('/api/normalize-rest', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
+    const result = await normalizeRestPose(req.file.buffer);
+    if (!result.changed) return res.status(204).end();
+    const buf = Buffer.from(result.buffer);
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Disposition', 'attachment; filename="normalized.glb"');
+    res.setHeader('Content-Length', buf.length);
+    res.end(buf);
+    console.log(`[normalize-rest] ${req.file.originalname}: hierarchy snapped to bind (${(buf.length / 1024).toFixed(0)} KB)`);
+  } catch (err) {
+    console.error('[normalize-rest] Error:', err);
     res.status(500).json({ error: err.message });
   }
 });

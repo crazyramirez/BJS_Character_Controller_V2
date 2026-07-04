@@ -1457,7 +1457,24 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, opts = {}) {
   }
   showLoading(`Importing ${file.name}…`);
 
-  const arrayBuffer = preloadedBuffer || await file.arrayBuffer();
+  let arrayBuffer = preloadedBuffer || await file.arrayBuffer();
+  // Rest-pose normalization pre-flight: CC/AccuRig/Sketchfab exports store the
+  // node hierarchy in an FBX editor pose that differs from the skinned bind, so
+  // the SkeletonViewer draws a collapsed/rotated skeleton over a fine mesh.
+  // The server snaps the hierarchy onto the bind (weights/animations intact);
+  // 204 means the file was already consistent. Fail-open: on any error just
+  // load the original bytes. Rig results are already normalized by the bake.
+  if (isServerAvailable && !isRigResult) {
+    try {
+      const fd = new FormData();
+      fd.append('file', new Blob([arrayBuffer], { type: 'model/gltf-binary' }), file.name);
+      const res = await fetchWithTimeout('/api/normalize-rest', { method: 'POST', body: fd });
+      if (res.ok && res.status !== 204) {
+        arrayBuffer = await res.arrayBuffer();
+        console.log(`[normalize-rest] ${file.name}: skeleton rest pose snapped to bind.`);
+      }
+    } catch (e) { /* offline / failed → original bytes */ }
+  }
   characterGlbBuffer = arrayBuffer;
   originalCharacterGlbBuffer = arrayBuffer;
   // Preserve the pristine pre-rig geometry across rig reloads. Only a genuine
@@ -5083,6 +5100,8 @@ function cancelAutoRigAdjust() {
       else anim?.play('Idle_Loop', true, 0.2);
     }
     autoRigState = null;
+    // Restore the live SkeletonViewer hidden for the rig session (per checkbox).
+    updateSkeletonViewer();
   }
   const startBtn = document.getElementById('btn-autorig-start');
   const adjustPanel = document.getElementById('autorig-adjust');
@@ -5418,6 +5437,16 @@ async function regenerateSkeletonOneShotInner() {
   // A full strip+re-skin happens only when the user explicitly ticks "Rebuild
   // from scratch", or when the existing rig is unusable (server decides).
   const forceRebuild = document.getElementById('autorig-force-rebuild')?.checked || false;
+  // Rebuild-from-scratch throws away the character's existing skeleton AND its
+  // artist skin weights — confirm before doing that to a character that has one.
+  const hasExistingSkeleton = (activeCharacter?.rawSkeletons?.length || 0) > 0 || skeletonInfo?.hasSkin;
+  if (forceRebuild && hasExistingSkeleton) {
+    const ok = await confirmAsync(
+      'Rebuild Skeleton From Scratch?',
+      'This character already has a skeleton. Rebuilding replaces it AND re-computes all skin weights — hand-authored weights are lost and deformation quality may drop. Uncheck "Rebuild skeleton from scratch" to keep the original weights and only re-align the joints. You can undo with "Revert to original skeleton".'
+    );
+    if (!ok) return;
+  }
   const rigOptions = {
     fingerCount: parseInt(document.getElementById('autorig-finger-count')?.value || '5', 10),
     flipFacing: document.getElementById('autorig-flip-facing')?.checked || false,
@@ -6306,8 +6335,9 @@ function renderCustomAnimationsTab() {
  * @param {string} title
  * @param {string} message
  * @param {Function} onConfirm
+ * @param {Function} [onCancel]
  */
-function showConfirm(title, message, onConfirm) {
+function showConfirm(title, message, onConfirm, onCancel) {
   const overlay = document.getElementById('custom-confirm-modal');
   if (!overlay) return;
 
@@ -6333,12 +6363,24 @@ function showConfirm(title, message, onConfirm) {
   const newCancel = overlay.querySelector('#custom-confirm-btn-cancel');
   const newOk = overlay.querySelector('#custom-confirm-btn-ok');
 
-  newCancel.addEventListener('click', cleanup);
+  newCancel.addEventListener('click', () => {
+    cleanup();
+    if (typeof onCancel === 'function') {
+      onCancel();
+    }
+  });
   newOk.addEventListener('click', () => {
     cleanup();
     if (typeof onConfirm === 'function') {
       onConfirm();
     }
+  });
+}
+
+// Promise form of showConfirm — resolves true (OK) / false (Cancel).
+function confirmAsync(title, message) {
+  return new Promise((resolve) => {
+    showConfirm(title, message, () => resolve(true), () => resolve(false));
   });
 }
 
