@@ -2845,9 +2845,9 @@ function getAutoRigFingerJoints(fingerCount = 5) {
   const names = [];
   for (const side of ['Left', 'Right']) {
     for (const finger of fingers) {
-      // 4 joints per finger: 3 phalanges + a terminal fingertip/end bone,
-      // matching the Mixamo reference rig and most source skeletons.
-      for (let i = 1; i <= 4; i++) names.push(`${side}Hand${finger}${i}`);
+      // 3 joints (phalanges) per finger. The Mixamo 4th fingertip/end bone is
+      // omitted from auto-generated rigs to keep them lean and easier to pose.
+      for (let i = 1; i <= 3; i++) names.push(`${side}Hand${finger}${i}`);
     }
   }
   return names;
@@ -2940,13 +2940,13 @@ function getAutoRigSkeletonPreviewHierarchy(fingerCount = 5) {
     ['RightFoot', 'RightToeBase'],
   ];
   // Add finger chains to the preview: hand → proximal → intermediate → distal.
+  // 3 phalanges per finger (no 4th fingertip/end bone).
   for (const side of ['Left', 'Right']) {
     const hand = side + 'Hand';
     for (const finger of fingers) {
       hierarchy.push([hand, `${side}Hand${finger}1`]);
       hierarchy.push([`${side}Hand${finger}1`, `${side}Hand${finger}2`]);
       hierarchy.push([`${side}Hand${finger}2`, `${side}Hand${finger}3`]);
-      hierarchy.push([`${side}Hand${finger}3`, `${side}Hand${finger}4`]);
     }
   }
   return hierarchy;
@@ -3816,9 +3816,19 @@ function mirrorJointName(name) {
   return null;
 }
 
-// Swap Left ↔ Right markers and their stored joint data. The physical markers do
-// not move; only their names (and therefore which server joint they represent)
-// trade places. This fixes heuristics that place left/right on the wrong sides.
+// SWAP Left ↔ Right joint ROLES. Fixes an auto-rig that labeled the sides
+// backwards (e.g. "Right Elbow" sitting on the character's left arm): the
+// physical markers stay where they are — already on the body — but every Left
+// name trades places with its Right twin, so the marker on the right arm is now
+// the one called RightElbow (and Apply rigs it as such).
+//
+// CRITICAL: every per-name state map (markers, canonical, restLayout,
+// boneBindings) must be mutated IN PLACE. The drag handlers, follow observer and
+// legend captured these exact Map objects in closures at setup — the old
+// implementation replaced st.markers with a NEW Map, so the closures kept
+// reading stale name↔mesh pairs; the symmetry-drag then "mirrored" a marker
+// against the wrong twin and collapsed both onto one spot (the reported bug).
+// Undoable with Ctrl+Z (canonical snapshot).
 function mirrorAutoRigLeftRight() {
   const st = autoRigState;
   if (!st || !st.markers) return;
@@ -3832,71 +3842,51 @@ function mirrorAutoRigLeftRight() {
   }
   if (!pairs.length) return;
 
-  // Swap marker meshes and their metadata/name labels.
-  const newMarkers = new Map();
-  for (const [leftName, rightName] of pairs) {
-    const leftMesh = st.markers.get(leftName);
-    const rightMesh = st.markers.get(rightName);
-    if (leftMesh) {
-      leftMesh.name = `autorig_${rightName}`;
-      if (leftMesh.metadata) leftMesh.metadata.autorigJoint = rightName;
+  pushRigUndoState();
+
+  // Swap every per-name entry IN PLACE (same Map objects the closures captured).
+  const swapEntries = (map) => {
+    if (!map) return;
+    for (const [l, r] of pairs) {
+      const lv = map.get(l), rv = map.get(r);
+      map.set(l, rv);
+      map.set(r, lv);
     }
-    if (rightMesh) {
-      rightMesh.name = `autorig_${leftName}`;
-      if (rightMesh.metadata) rightMesh.metadata.autorigJoint = leftName;
-    }
-    newMarkers.set(leftName, rightMesh);
-    newMarkers.set(rightName, leftMesh);
-  }
+  };
+  swapEntries(st.markers);
+  swapEntries(st.canonical);
+  swapEntries(st.restLayout);
+  swapEntries(st.boneBindings);
+
+  // Point each mesh's own name/metadata at its new role so picking, tooltips,
+  // legend highlighting and updateCanonicalFromMarker resolve the new joint.
   for (const [name, mesh] of st.markers) {
-    if (!mirrorJointName(name)) newMarkers.set(name, mesh);
-  }
-  st.markers = newMarkers;
-
-  // Swap canonical/rest positions under the new names.
-  for (const maps of [st.canonical, st.restLayout]) {
-    if (!maps) continue;
-    const snapshot = new Map(maps);
-    for (const [leftName, rightName] of pairs) {
-      maps.set(leftName, snapshot.get(rightName));
-      maps.set(rightName, snapshot.get(leftName));
+    if (!mesh) continue;
+    if (mesh.metadata?.autorigJoint !== name) {
+      mesh.name = `autorig_${name}`;
+      if (mesh.metadata) mesh.metadata.autorigJoint = name;
     }
   }
 
-  // Swap the server-side original guess so un-dragged markers send mirrored coords.
+  // Swap the server-side original guess so un-dragged markers send coordinates
+  // for their new role on Apply.
   if (st.serverGuess) {
     const snapshot = { ...st.serverGuess };
-    for (const [leftName, rightName] of pairs) {
-      st.serverGuess[leftName] = snapshot[rightName];
-      st.serverGuess[rightName] = snapshot[leftName];
+    for (const [l, r] of pairs) {
+      st.serverGuess[l] = snapshot[r];
+      st.serverGuess[r] = snapshot[l];
     }
   }
 
-  // Swap bone bindings so pose previews remain consistent on skinned re-rigs.
-  if (st.boneBindings) {
-    const snapshot = new Map(st.boneBindings);
-    for (const [leftName, rightName] of pairs) {
-      st.boneBindings.set(leftName, snapshot.get(rightName));
-      st.boneBindings.set(rightName, snapshot.get(leftName));
-    }
-  }
-
-  // Re-attach the gizmo to the marker that now carries the previously selected name.
-  const attached = st.gizmoManager?.attachedMesh;
-  if (attached?.metadata?.autorigJoint) {
-    const newName = mirrorJointName(attached.metadata.autorigJoint);
-    if (newName) {
-      const newMesh = st.markers.get(newName);
-      if (newMesh) st.gizmoManager.attachToMesh(newMesh);
-    }
-  }
+  // The gizmo stays attached to the same physical mesh — only its joint name
+  // changed, which is exactly the point; no re-attach needed.
 
   // Update visual dependents.
   updateAutoRigSkeletonPreview(st);
   renderAutoRigLegend(st.markers, st.gizmoManager);
   setupAutoRigMockupDots(st.markers, st.gizmoManager);
   st.mirrored = !st.mirrored;
-  showToast(st.mirrored ? 'Left/Right mirrored.' : 'Left/Right restored.');
+  showToast('Left/Right joint roles swapped (markers stay on the body).');
 }
 
 // ── Marker edit undo (Ctrl+Z) ────────────────────────────────────────────────

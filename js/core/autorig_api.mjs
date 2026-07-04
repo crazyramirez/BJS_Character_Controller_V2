@@ -2724,18 +2724,22 @@ function stripExistingRig(doc) {
 const HIERARCHY = {
   Hips: null,
   Spine: 'Hips', Spine1: 'Spine', Spine2: 'Spine1', Neck: 'Spine2', Head: 'Neck',
+  // Fingers: 3 phalanges each (Mixamo's 4th bone is a non-deforming fingertip/end
+  // marker — omitted here to keep auto-generated rigs lean and easier to pose. An
+  // EXISTING rig's 4th bones are untouched: the preserve/adjust path keeps the
+  // source skeleton verbatim; only freshly-built skeletons use this hierarchy.)
   LeftShoulder: 'Spine2', LeftArm: 'LeftShoulder', LeftForeArm: 'LeftArm', LeftHand: 'LeftForeArm',
-  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2', LeftHandMiddle4: 'LeftHandMiddle3',
-  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2', LeftHandThumb4: 'LeftHandThumb3',
-  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2', LeftHandIndex4: 'LeftHandIndex3',
-  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2', LeftHandRing4: 'LeftHandRing3',
-  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2', LeftHandPinky4: 'LeftHandPinky3',
+  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
+  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2',
+  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2',
+  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2',
+  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2',
   RightShoulder: 'Spine2', RightArm: 'RightShoulder', RightForeArm: 'RightArm', RightHand: 'RightForeArm',
-  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2', RightHandMiddle4: 'RightHandMiddle3',
-  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2', RightHandThumb4: 'RightHandThumb3',
-  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2', RightHandIndex4: 'RightHandIndex3',
-  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2', RightHandRing4: 'RightHandRing3',
-  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2', RightHandPinky4: 'RightHandPinky3',
+  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
+  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2',
+  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2',
+  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2',
+  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
   RightUpLeg: 'Hips', RightLeg: 'RightUpLeg', RightFoot: 'RightLeg', RightToeBase: 'RightFoot',
 
@@ -2924,9 +2928,9 @@ function boneSegments(joints, H) {
   segments.RightUpLegTwist = midSeg('RightUpLeg', 'RightLeg');
   segments.RightLegTwist = midSeg('RightLeg', 'RightFoot');
 
-  // Finger segments (5 digits × up to 4 joints per hand — most source rigs,
-  // including the Mixamo reference, use 3 phalanges + a 4th fingertip/end
-  // bone; some export or reduced-finger-count modes only have 3).
+  // Finger segments. Auto-generated rigs use 3 phalanges per digit; an EXISTING
+  // source rig (preserved) may carry a 4th fingertip/end bone. Handle both: if a
+  // 4th joint is present it terminates the chain, otherwise joint 3 is terminal.
   for (const side of ['Left', 'Right']) {
     for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
       const b1 = `${side}Hand${finger}1`;
@@ -3640,20 +3644,8 @@ function appendFingerJoints(joints, H, forwardZ = 1) {
         joints[jointName] = [handPos[0] + w[0], handPos[1] + w[1], handPos[2] + w[2]];
         placed.push(joints[jointName]);
       }
-      // 4th joint (fingertip/end bone): most source rigs, including the Mixamo
-      // reference, have one. Extrapolate it along the joint2→joint3 direction
-      // by the same proportional segment length rather than hand-tuning a new
-      // offset — this matches the real rig's tip placement closely without a
-      // fourth calibration pass.
-      const tipName = `${side}Hand${fingerName}4`;
-      if (!joints[tipName] && placed.length === 3) {
-        const [p2, p3] = [placed[1], placed[2]];
-        joints[tipName] = [
-          p3[0] + (p3[0] - p2[0]),
-          p3[1] + (p3[1] - p2[1]),
-          p3[2] + (p3[2] - p2[2]),
-        ];
-      }
+      // Fingers use 3 phalanges only — no 4th fingertip/end bone (dropped to keep
+      // auto-generated rigs lean). `placed` holds the 3 joints; nothing more to do.
     }
   }
 }
