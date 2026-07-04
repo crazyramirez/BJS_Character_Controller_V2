@@ -823,7 +823,7 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
           .map(p => Math.abs(p[0] - cx))
           .filter(a => a < 0.55 * tipX);
         if (inner.length >= 8) {
-          const torsoHalf = median(inner.sort((a, b) => a - b));
+          const torsoHalf = median(inner);
           // Arm root sits just outside the torso edge.
           armRootX = Math.min(Math.max(torsoHalf, 0.06 * H), 0.13 * H);
         }
@@ -1067,7 +1067,10 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
     }
     grid[i] = 1; solid++;
   }
-  return { grid, nx, ny, nz, origin, cell, solid, idxOf };
+  if (budget <= 0) {
+    console.warn('[autorig] Voxelization triangle budget exhausted — the voxel shell may be incomplete (very dense mesh); topology confidence reduced.');
+  }
+  return { grid, nx, ny, nz, origin, cell, solid, idxOf, budgetExhausted: budget <= 0 };
 }
 
 // Multi-source BFS over solid voxels (26-conn); returns Int32 distances (-1
@@ -1358,6 +1361,7 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
   // geodesic separation of the REFINED crotch/chest from the head, and the
   // leg merge sitting below the arm merge along the body axis.
   let confidence = 0.5;
+  if (vox.budgetExhausted) confidence -= 0.15; // partial voxel shell → degraded graph
   if (bestScore > -100) confidence += 0.2; // both pairs were real limb pairs
   const crotchGeo = fromHead[legs[0].path[legEnd.get(legs[0])]];
   const chestGeo = fromHead[arms[0].path[armEnd.get(arms[0])]];
@@ -1543,6 +1547,66 @@ function seedNormVariants(name) {
  * World bind position per existing skin joint (from inverted IBMs), matched to
  * canonical Mixamo joint names. Used to pre-place markers when re-rigging.
  */
+// ── Existing-rig quality assessment ──────────────────────────────────────────
+// A single source of truth for "does this file already carry a usable, correctly
+// named humanoid skeleton?" Used by both autoRigGLB (to decide adjust-vs-rebuild)
+// and the analyzeRig() export (so the client Regenerate button can preserve a
+// good rig's artist skin weights instead of destroying them by re-skinning).
+//
+// A rig is PRESERVABLE when it has a skin, ≥8 canonical joints map from its bone
+// names, and the seeded bind pose passes anatomical sanity. In that case the
+// safe operation is adjustExistingRig (move joints to markers, keep weights);
+// stripping + heat-diffusion re-skin measurably degrades thigh/hip-crease and
+// finger deformation on characters that already ship correct weights.
+function assessExistingRig(doc) {
+  const skins = doc.getRoot().listSkins();
+  if (skins.length === 0) {
+    return { hasSkin: false, mappableCount: 0, sane: false, preservable: false, seeded: {} };
+  }
+  const allNorms = new Set();
+  for (const skin of skins) {
+    for (const j of skin.listJoints()) {
+      for (const n of seedNormVariants(j.getName())) if (n) allNorms.add(n);
+    }
+  }
+  let mappableCount = 0;
+  for (const aliases of Object.values(SEED_ALIASES)) {
+    if (aliases.some(a => allNorms.has(a))) mappableCount++;
+  }
+  const seeded = mappableCount > 0 ? seedJointsFromSkins(doc) : {};
+  const sane = mappableCount >= 8 && isSkeletonAnatomicallySane(seeded);
+  return {
+    hasSkin: true,
+    mappableCount,
+    sane,
+    // Need a usable core (≈20 canon joints; ≥8 = a real named humanoid) AND a
+    // bind pose that isn't inverted/collapsed.
+    preservable: sane,
+    seeded,
+  };
+}
+
+/**
+ * Inspect a GLB and report whether it already carries a preservable humanoid
+ * rig. Lets the UI keep artist skin weights on Regenerate instead of forcing a
+ * destructive re-skin. Returns { hasSkin, jointCount, mappableCount, sane,
+ * preservable }.
+ */
+export async function analyzeRig(buffer) {
+  const io = await getIO();
+  const doc = await io.readBinary(new Uint8Array(buffer));
+  const a = assessExistingRig(doc);
+  let jointCount = 0;
+  for (const skin of doc.getRoot().listSkins()) jointCount += skin.listJoints().length;
+  return {
+    hasSkin: a.hasSkin,
+    jointCount,
+    mappableCount: a.mappableCount,
+    sane: a.sane,
+    preservable: a.preservable,
+  };
+}
+
 function seedJointsFromSkins(doc) {
   const worldByNorm = new Map();
   const bindWorldMatrices = computeBindWorldMatrices(doc);
@@ -1761,6 +1825,119 @@ function isSkeletonAnatomicallySane(joints) {
   return true;
 }
 
+// ── Post-rig safety gate ─────────────────────────────────────────────────────
+// Run on the FINISHED document just before writing it out. Catches the failure
+// modes that would silently ship a broken GLB: non-finite / non-identity bind
+// (mesh explodes or collapses at load), unnormalized or >4 influences (renderer
+// artifacts), and a skinned bounding box that is degenerate or wildly different
+// from the pre-rig mesh (a sign the bake went wrong). Throws with a specific
+// message so the caller can surface it instead of returning a corrupt rig.
+//
+// `refBounds` (optional): the pre-rig world bounds { min, max }. When supplied,
+// the rest-pose skinned bounds must stay within a sane ratio of it.
+function validateRiggedDoc(doc, refBounds = null) {
+  const root = doc.getRoot();
+  const pmap = new Map();
+  for (const n of root.listNodes()) for (const c of n.listChildren()) pmap.set(c, n);
+  const wcache = new Map();
+  const worldOf = (n) => {
+    if (wcache.has(n)) return wcache.get(n);
+    const l = n.getMatrix();
+    const p = pmap.get(n);
+    const w = p ? mat4Mul(worldOf(p), l) : l;
+    wcache.set(n, w);
+    return w;
+  };
+
+  const skins = root.listSkins();
+  if (skins.length === 0) throw new Error('Rig validation failed: result has no skin.');
+
+  // 1. Bind must be finite and W_bind·IBM ≈ identity for every joint.
+  let maxBindErr = 0;
+  for (const skin of skins) {
+    const joints = skin.listJoints();
+    const ibm = skin.getInverseBindMatrices()?.getArray();
+    if (!ibm) throw new Error('Rig validation failed: skin has no inverse bind matrices.');
+    for (let i = 0; i < ibm.length; i++) {
+      if (!Number.isFinite(ibm[i])) throw new Error(`Rig validation failed: non-finite IBM value (index ${i}).`);
+    }
+    joints.forEach((j, i) => {
+      const prod = mat4Mul(worldOf(j), ibm.slice(i * 16, i * 16 + 16));
+      for (let k = 0; k < 16; k++) {
+        const want = (k % 5 === 0) ? 1 : 0; // diagonal → 1
+        maxBindErr = Math.max(maxBindErr, Math.abs(prod[k] - want));
+      }
+    });
+  }
+  // 0.05 tolerance: absorbs float round-trip on deep finger chains while still
+  // catching a genuinely wrong bind (which is off by whole units / radians).
+  if (maxBindErr > 0.05) {
+    throw new Error(`Rig validation failed: bind pose not identity (max error ${maxBindErr.toFixed(3)}). The rig would deform the mesh at rest.`);
+  }
+
+  // 2. Weights normalized, ≤4 influences, finite.
+  for (const mesh of root.listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      const W = prim.getAttribute('WEIGHTS_0'); if (!W) continue;
+      const wi = [0, 0, 0, 0];
+      for (let v = 0; v < W.getCount(); v++) {
+        W.getElement(v, wi);
+        let sum = 0, inf = 0;
+        for (let k = 0; k < 4; k++) {
+          if (!Number.isFinite(wi[k])) throw new Error('Rig validation failed: non-finite skin weight.');
+          sum += wi[k];
+          if (wi[k] > 1e-4) inf++;
+        }
+        if (inf > 4) throw new Error(`Rig validation failed: vertex with ${inf} influences (>4).`);
+        // Unweighted vertices (sum 0) are legal for non-body prims sharing the graph.
+        if (sum > 1e-4 && Math.abs(sum - 1) > 0.05) {
+          throw new Error(`Rig validation failed: weight sum ${sum.toFixed(3)} ≠ 1 (vertex ${v}). The mesh would collapse toward the origin.`);
+        }
+      }
+    }
+  }
+
+  // 3. Skinned rest-pose bounds must be non-degenerate and, if a reference is
+  // given, comparable to the pre-rig mesh (guards against a bad world bake that
+  // shrinks/explodes the character).
+  if (refBounds) {
+    const bb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    for (const node of root.listNodes()) {
+      const mesh = node.getMesh(); const skin = node.getSkin();
+      if (!mesh || !skin) continue;
+      const joints = skin.listJoints();
+      const ibm = skin.getInverseBindMatrices().getArray();
+      const skinMats = joints.map((j, i) => mat4Mul(worldOf(j), ibm.slice(i * 16, i * 16 + 16)));
+      for (const prim of mesh.listPrimitives()) {
+        const P = prim.getAttribute('POSITION'), J = prim.getAttribute('JOINTS_0'), Wt = prim.getAttribute('WEIGHTS_0');
+        if (!P || !J || !Wt) continue;
+        const p = [0, 0, 0], ji = [0, 0, 0, 0], wi = [0, 0, 0, 0];
+        const step = Math.max(1, Math.floor(P.getCount() / 4000)); // sample for speed
+        for (let v = 0; v < P.getCount(); v += step) {
+          P.getElement(v, p); J.getElement(v, ji); Wt.getElement(v, wi);
+          const o = [0, 0, 0];
+          for (let k = 0; k < 4; k++) {
+            if (wi[k] <= 0) continue;
+            const M = skinMats[ji[k]];
+            o[0] += wi[k] * (M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12]);
+            o[1] += wi[k] * (M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13]);
+            o[2] += wi[k] * (M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14]);
+          }
+          for (let a = 0; a < 3; a++) { bb.min[a] = Math.min(bb.min[a], o[a]); bb.max[a] = Math.max(bb.max[a], o[a]); }
+        }
+      }
+    }
+    const rigH = bb.max[1] - bb.min[1];
+    const refH = refBounds.max[1] - refBounds.min[1];
+    if (!(rigH > 0) || !Number.isFinite(rigH)) {
+      throw new Error('Rig validation failed: skinned mesh has degenerate/zero height at rest.');
+    }
+    if (refH > 0 && (rigH < 0.5 * refH || rigH > 2.0 * refH)) {
+      throw new Error(`Rig validation failed: skinned height ${rigH.toFixed(2)} strayed from pre-rig height ${refH.toFixed(2)} (bad bake).`);
+    }
+  }
+}
+
 // ── Humanoid validation & confidence scoring ─────────────────────────────────
 // Decide whether the mesh is plausibly a humanoid character, and score the
 // overall quality of the detection so the UI can warn or reject.
@@ -1815,10 +1992,8 @@ function computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds) {
   if (aspect > 2.0) score += 10;
   else if (aspect > 1.3) score += 5;
 
-  // Symmetry check on slicing arm span
+  // Symmetry check on slicing arm span (approximated via joint positions)
   if (sliced.flags?.arms) {
-    const verts = [];
-    // We don't have the vertex list here; approximate via joint positions.
     const leftReach = Math.abs(sliced.joints.LeftHand?.[0] - sliced.joints.Hips?.[0]) || 0;
     const rightReach = Math.abs(sliced.joints.RightHand?.[0] - sliced.joints.Hips?.[0]) || 0;
     const avgReach = (leftReach + rightReach) / 2;
@@ -1835,25 +2010,78 @@ function computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds) {
 function detectScaleUnit(bounds) {
   const H = bounds.max[1] - bounds.min[1];
   if (H >= 1.0 && H <= 3.5) return { unit: 'm', scale: 1.0, height: H };
+  // cm takes precedence over inches in the 100–138 overlap: a 100–138 inch
+  // (2.5–3.5 m) humanoid is far rarer than a 1.0–1.38 m one exported in cm.
   if (H >= 100 && H <= 350) return { unit: 'cm', scale: 0.01, height: H * 0.01 };
-  if (H >= 39 && H <= 138) return { unit: 'in', scale: 0.0254, height: H * 0.0254 };
+  if (H >= 39 && H < 100) return { unit: 'in', scale: 0.0254, height: H * 0.0254 };
   return { unit: 'unknown', scale: 1.0, height: H };
 }
 
+// ── Client-input validation ──────────────────────────────────────────────────
+// Options arrive as client-controlled JSON. A single NaN/null/string coordinate
+// would flow through composeMat4 into the IBMs and produce a silently corrupt
+// GLB (HTTP 200, crashes later at load) — reject bad input loudly instead.
+function sanitizeRigOptions(options = {}) {
+  const out = { ...options };
+  if (out.fingerCount !== undefined) {
+    const n = Number(out.fingerCount);
+    out.fingerCount = Number.isFinite(n) ? Math.max(1, Math.min(5, Math.round(n))) : 5;
+  }
+  if (out.forwardZ !== 1 && out.forwardZ !== -1) delete out.forwardZ;
+  out.flipFacing = !!out.flipFacing;
+  out.forceRebuild = !!out.forceRebuild;
+  // When set, a preservable existing rig is re-aligned to the markers with its
+  // artist skin weights kept (adjustExistingRig), even if the joints came from a
+  // "regenerate" flow. forceRebuild always wins: an explicit rebuild request
+  // strips regardless. Defaults true so re-rigging a good character is
+  // non-destructive by default.
+  out.preserveWeights = out.preserveWeights === undefined ? true : !!out.preserveWeights;
+  if (out.joints !== undefined && out.joints !== null) {
+    if (typeof out.joints !== 'object' || Array.isArray(out.joints)) {
+      throw new Error('options.joints must be an object of { JointName: [x, y, z] }.');
+    }
+    const clean = {};
+    for (const [name, pos] of Object.entries(out.joints)) {
+      if (!(name in HIERARCHY)) continue; // unknown joint names are ignored
+      if (!Array.isArray(pos) || pos.length < 3 ||
+        [pos[0], pos[1], pos[2]].some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error(`options.joints.${name} must be an array of 3 finite numbers.`);
+      }
+      clean[name] = [pos[0], pos[1], pos[2]];
+    }
+    out.joints = clean;
+  }
+  return out;
+}
+
 export async function guessJoints(buffer, options = {}) {
+  options = sanitizeRigOptions(options);
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const skinXf = skinWorldXforms(doc);
   const bodyMeshes = selectBodyMeshes(doc, skinXf);
   const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
   const fwdResult = detectForwardZWithConfidence(doc, bounds, skinXf, bodyMeshes);
-  // Allow the client to override the detected facing. Keeps the marker proposal
+  // Existing skeleton: its toe→foot bind direction IS the character's facing —
+  // strictly more reliable than the mesh-silhouette heuristic. Using the
+  // heuristic on a rigged character risks a facing that CONTRADICTS the seeded
+  // joints (toes placed behind seeded heels, fingers growing backward).
+  const seeded = doc.getRoot().listSkins().length > 0 ? seedJointsFromSkins(doc) : {};
+  let baseFwd = fwdResult.sign;
+  let fwdCertainty = fwdResult.certainty;
+  {
+    let seedFwd = 0;
+    for (const s of ['Left', 'Right']) {
+      if (seeded[s + 'ToeBase'] && seeded[s + 'Foot']) seedFwd += seeded[s + 'ToeBase'][2] - seeded[s + 'Foot'][2];
+    }
+    if (Math.abs(seedFwd) > 1e-4) { baseFwd = Math.sign(seedFwd); fwdCertainty = 1; }
+  }
+  // Allow the client to override the facing. Keeps the marker proposal
   // consistent with the same override applied at rig-bake time:
-  //   options.forwardZ (+1/-1) → absolute, options.flipFacing → invert detected.
-  let fwd = fwdResult.sign;
+  //   options.forwardZ (+1/-1) → absolute, options.flipFacing → invert baseline.
+  let fwd = baseFwd;
   if (options.forwardZ === 1 || options.forwardZ === -1) fwd = options.forwardZ;
-  else if (options.flipFacing) fwd = -fwdResult.sign;
-  const fwdCertainty = fwdResult.certainty;
+  else if (options.flipFacing) fwd = -baseFwd;
 
   const verts = collectWorldVertices(doc, skinXf, bodyMeshes);
   const sliced = guessJointsFromMesh(verts, bounds, fwd);
@@ -1881,10 +2109,18 @@ export async function guessJoints(buffer, options = {}) {
   const score = computeAutoRigConfidence(sliced, topo, fwdCertainty, bounds);
   const { humanoid, reason } = isHumanoidGuess(sliced, topo, score, topoError);
 
+  // Rotated-character heuristic: the whole pipeline assumes the character faces
+  // ±Z (lateral = X). A mesh whose Z extent clearly dominates its X extent is
+  // very likely rotated 90° (facing ±X) — the slicing/facing analysis then runs
+  // on the wrong axes. Surface a warning so the UI can tell the user.
+  const bndW = bounds.max[0] - bounds.min[0];
+  const bndD = bounds.max[2] - bounds.min[2];
+  const bndH = bounds.max[1] - bounds.min[1];
+  const axisWarning = bndD > 1.5 * bndW && bndD > 0.4 * bndH;
+
   // Existing skeleton (re-rig): seed markers from current bind pose where names
   // match.
-  if (doc.getRoot().listSkins().length > 0) {
-    const seeded = seedJointsFromSkins(doc);
+  if (Object.keys(seeded).length > 0) {
     guess.joints = { ...guess.joints, ...seeded };
     // Interpolate missing spine joints if they were not in the skin
     fillMissingSpineJoints(guess.joints, guessH);
@@ -1896,7 +2132,7 @@ export async function guessJoints(buffer, options = {}) {
   // so they are correctly positioned relative to the final hand markers.
   // Twist bones are intentionally omitted from the UI — they are created at rig
   // time but are not meant to be edited manually.
-  appendFingerJoints(guess.joints, guessH);
+  appendFingerJoints(guess.joints, guessH, fwd);
 
   // Enforce strict anatomical/vertical height relationships to guarantee correct
   // skeletal progression. Skip for re-rig: those joints are seeded straight from
@@ -1910,6 +2146,7 @@ export async function guessJoints(buffer, options = {}) {
   guess.score = score;
   guess.reason = reason;
   guess.fwdCertainty = fwdCertainty;
+  guess.axisWarning = axisWarning;
   guess.scaleInfo = scaleInfo;
   guess.topoConfidence = topo ? topo.confidence : 0;
   guess.slicingFlags = sliced.flags;
@@ -2099,28 +2336,28 @@ function adjustExistingRig(doc, targetJoints = {}) {
   }
   if (skinData.length === 0) throw new Error('Skin has no inverse bind matrices.');
 
-  // S maps skin space → render world. It must be anchored on a joint that REALLY
-  // skins the mesh: joints[0] is frequently a synthetic root (_rootJoint) whose
-  // jointWorld·IBM does NOT carry the same coordinate fix (e.g. the -90°X on
-  // Sketchfab wrappers) as the body joints — using it lays the rig flat on its
-  // back. Pick the most-weighted joint of the skin's mesh instead (same logic as
-  // skinWorldXforms), so the markers↔skin-space round-trip stays upright.
   const bindWorldMatrices = computeBindWorldMatrices(doc);
-  let sRefJoint = skinData[0].joints[0];
-  let sRefIdx = 0;
-  {
+  // S maps a skin's local skin-space → render world, anchored on the mesh's most-
+  // weighted (dominant) joint so any wrapper coordinate fix baked into the IBMs is
+  // preserved. Each skin can have its OWN anchor and IBM set, so S must be computed
+  // PER SKIN — reusing skin[0]'s S to rebuild skin[1..n]'s IBMs drifts their bind
+  // (visible as broken fingers on multi-skin Mixamo rigs, where 4 skins share the
+  // joint nodes). Returns invS for a given skinData entry.
+  const invSForSkin = (sd) => {
+    let sRefJoint = sd.joints[0];
+    let sRefIdx = 0;
     let refMesh = null;
     for (const node of root.listNodes()) {
-      if (node.getSkin() === skinData[0].skin && node.getMesh()) { refMesh = node.getMesh(); break; }
+      if (node.getSkin() === sd.skin && node.getMesh()) { refMesh = node.getMesh(); break; }
     }
     const dom = refMesh ? dominantJointIndex(refMesh) : -1;
-    if (dom >= 0 && dom < skinData[0].joints.length) { sRefIdx = dom; sRefJoint = skinData[0].joints[dom]; }
-  }
-  const S = mat4Mul(
-    bindWorldMatrices.get(sRefJoint) || MAT4_IDENTITY,
-    skinData[0].arr.slice(sRefIdx * 16, sRefIdx * 16 + 16)
-  );
-  const invS = invertRigidMat4(S);
+    if (dom >= 0 && dom < sd.joints.length) { sRefIdx = dom; sRefJoint = sd.joints[dom]; }
+    const S = mat4Mul(
+      bindWorldMatrices.get(sRefJoint) || MAT4_IDENTITY,
+      sd.arr.slice(sRefIdx * 16, sRefIdx * 16 + 16)
+    );
+    return invertRigidMat4(S);
+  };
 
   // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in GLTF world space
   const origWorldPos = new Map();
@@ -2291,7 +2528,15 @@ function adjustExistingRig(doc, targetJoints = {}) {
       // a limb, so treat that as a measurement error and skip the correction
       // rather than twist the mesh.
       const aim = vCurrNorm[0] * vTargetNorm[0] + vCurrNorm[1] * vTargetNorm[1] + vCurrNorm[2] * vTargetNorm[2];
-      if (aim > -0.98) {
+      // Near-identity aim (< ~0.8°): the marker didn't meaningfully move this
+      // bone. quatFromTwoVectors on two near-parallel vectors returns a tiny
+      // rotation with a numerically ill-conditioned axis; applying it injects
+      // sub-degree roll into the bone AND its whole subtree (measured: the entire
+      // hand/finger chain drifted 1.4e-2 off bind even when nothing moved). Skip
+      // it — no correction is more accurate than a noisy one.
+      if (aim > 0.99996) {
+        // no-op: alignment already satisfied
+      } else if (aim > -0.98) {
         const qCorr = quatFromTwoVectors(vCurrNorm, vTargetNorm);
         applyRotationCorrection(P, qCorr);
       } else {
@@ -2360,7 +2605,9 @@ function adjustExistingRig(doc, targetJoints = {}) {
   }
 
   // Update Inverse Bind Matrices (IBMs)
-  for (const { joints, acc, arr } of skinData) {
+  for (const sd of skinData) {
+    const { joints, acc, arr } = sd;
+    const invS = invSForSkin(sd);
     const out = Float32Array.from(arr);
     joints.forEach((j, i) => {
       const W_gltf = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
@@ -2911,6 +3158,37 @@ function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisVali
   const sourceMask = new Uint8Array(count * nB);
   const sideMargin = 0.02 * H;
 
+  // Rival containment for bones whose capture radius must stay large for one
+  // anatomical reason but bleeds into a neighbouring limb segment:
+  //  • Shoulder needs 0.14·H to win the collar against Head/Neck, but that
+  //    radius reaches halfway down the biceps — pinning Dirichlet sources on a
+  //    near-static bone there makes the upper arm lag/squash when the arm
+  //    swings (reference rig: mid-biceps is 100% Arm).
+  //  • Hand's radius reaches the distal forearm from the outside.
+  // A vertex that is NEARER the rival bone's segment than this bone's own
+  // segment anatomically belongs to the rival — never seed a source there.
+  // Hand's rival is only the PROXIMAL 70% of the forearm: the full segment
+  // ends at the wrist itself and would disqualify legitimate wrist/palm
+  // vertices sitting right next to the Hand joint.
+  const trunc = (seg, t1) => [seg[0], [
+    seg[0][0] + (seg[1][0] - seg[0][0]) * t1,
+    seg[0][1] + (seg[1][1] - seg[0][1]) * t1,
+    seg[0][2] + (seg[1][2] - seg[0][2]) * t1,
+  ]];
+  const rivalSegOf = new Array(nB).fill(null);
+  jointOrder.forEach((name, b) => {
+    const side = name.startsWith('Left') ? 'Left' : name.startsWith('Right') ? 'Right' : null;
+    if (!side) return;
+    if (name === side + 'Shoulder') {
+      const armIdx = jointOrder.indexOf(side + 'Arm');
+      if (armIdx >= 0) rivalSegOf[b] = segList[armIdx];
+    }
+    if (name === side + 'Hand') {
+      const foreIdx = jointOrder.indexOf(side + 'ForeArm');
+      if (foreIdx >= 0) rivalSegOf[b] = trunc(segList[foreIdx], 0.7);
+    }
+  });
+
   for (let v = 0; v < count; v++) {
     const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
     const ctr = centerAtY(p[1]);
@@ -2940,6 +3218,11 @@ function computeBoneSources(positions, segList, boneSide, leftAxis, leftAxisVali
       // that are each individually "ground truth". Taper the source strength
       // from 1.0 at the joint to 0.0 at the radius edge so the nearer bone wins.
       if (gate > 0.3 && d < radius) {
+        const rSeg = rivalSegOf[b];
+        if (rSeg) {
+          const dRival = distPointSegmentFull(p, rSeg[0], rSeg[1]).d;
+          if (dRival < d) continue; // vertex belongs to the rival limb segment
+        }
         const idx = v * nB + b;
         const strength = 1 - d / radius;
         field[idx] = strength;
@@ -2982,24 +3265,48 @@ function diffuseWeightField(W, nBones, adjacency, sourceMask, iters, lambda) {
   // actually closest.
   const sourceStrength = Float32Array.from(W);
 
+  // Per-bone active region: `iters` smoothing passes can only propagate heat
+  // `iters` graph hops away from a source — every vertex farther out stays
+  // exactly 0, so sweeping the full (vertex × bone) grid each iteration is
+  // almost entirely wasted work (most bones influence a small body region).
+  // Hop-limited BFS from each bone's source representatives gives the exact
+  // reachable set; iterating only those keeps the result bit-identical while
+  // cutting the hot loop by roughly the body-coverage factor of each bone.
+  const activeOf = [];
+  for (let b = 0; b < nBones; b++) {
+    const seen = new Set();
+    let frontier = [];
+    for (const [r] of adjSet) {
+      if (sourceMask[r * nBones + b]) { seen.add(r); frontier.push(r); }
+    }
+    for (let hop = 0; hop < iters && frontier.length; hop++) {
+      const next = [];
+      for (const r of frontier) {
+        const nbrs = adjSet.get(r);
+        if (!nbrs) continue;
+        for (const nb of nbrs) if (!seen.has(nb)) { seen.add(nb); next.push(nb); }
+      }
+      frontier = next;
+    }
+    activeOf.push(seen);
+  }
+
   const tmp = new Float32Array(W.length);
   for (let it = 0; it < iters; it++) {
-    for (const [r, nbrs] of adjSet) {
-      const n = nbrs.size;
-      if (n === 0) continue;
-      const base = r * nBones;
-      for (let b = 0; b < nBones; b++) {
-        const idx = base + b;
+    for (let b = 0; b < nBones; b++) {
+      for (const r of activeOf[b]) {
+        const idx = r * nBones + b;
         if (sourceMask[idx]) { tmp[idx] = sourceStrength[idx]; continue; }
+        const nbrs = adjSet.get(r);
+        if (!nbrs || nbrs.size === 0) continue;
         let acc = 0;
         for (const nb of nbrs) acc += W[nb * nBones + b];
-        tmp[idx] = W[idx] * (1 - lambda) + (acc / n) * lambda;
+        tmp[idx] = W[idx] * (1 - lambda) + (acc / nbrs.size) * lambda;
       }
     }
-    for (const [r] of adjSet) {
-      const base = r * nBones;
-      for (let b = 0; b < nBones; b++) {
-        const idx = base + b;
+    for (let b = 0; b < nBones; b++) {
+      for (const r of activeOf[b]) {
+        const idx = r * nBones + b;
         W[idx] = sourceMask[idx] ? sourceStrength[idx] : tmp[idx];
       }
     }
@@ -3054,19 +3361,83 @@ function computeRigidZones(positions, joints, boneIndex, H) {
       }
     }
 
-    // Hand zones: close to the hand joint. A flat radius alone is unsafe when
-    // the arm is bent or resting at the character's side (a common re-rig
-    // bind pose) — a hip/torso vertex can land within the radius of a nearby
-    // Hand joint and get rigidly glued to it, freezing the hand in place
-    // relative to the hip instead of the wrist. Require Hand to be strictly
-    // nearer than its own ForeArm (parent) so only genuine palm/wrist/glove
-    // geometry locks — torso vertices are always closer to the limb root.
+    // Hand zones: close to the hand joint AND clearly beyond the forearm.
+    // Comparing only against the ForeArm JOINT (the elbow) was far too weak:
+    // a mid/distal-forearm vertex is a long way from the elbow yet inside the
+    // hand's radius, so it rigid-locked to Hand — half the forearm moved as
+    // one stick with the wrist (reference rig: forearm mid is ~99% ForeArm,
+    // Hand only takes over past the wrist). Compare against the proximal 70%
+    // of the forearm SEGMENT instead: genuine palm/glove geometry is nearer
+    // the hand than any point of that segment, forearm skin never is. This
+    // also keeps the original guard's intent — a hip/torso vertex near a
+    // resting hand stays nearer the forearm segment and is rejected.
     const lHand = vec3Dist(p, joints.LeftHand);
     const rHand = vec3Dist(p, joints.RightHand);
-    const lForeArm = joints.LeftForeArm ? vec3Dist(p, joints.LeftForeArm) : Infinity;
-    const rForeArm = joints.RightForeArm ? vec3Dist(p, joints.RightForeArm) : Infinity;
-    if (lHand < rHand && lHand < 0.06 * H && lHand < lForeArm) { set(v, 'LeftHand', 1); continue; }
-    if (rHand <= lHand && rHand < 0.06 * H && rHand < rForeArm) { set(v, 'RightHand', 1); continue; }
+    const lForeSeg = joints.LeftForeArm
+      ? distPointSegmentFull(p, joints.LeftForeArm, [
+        joints.LeftForeArm[0] + (joints.LeftHand[0] - joints.LeftForeArm[0]) * 0.7,
+        joints.LeftForeArm[1] + (joints.LeftHand[1] - joints.LeftForeArm[1]) * 0.7,
+        joints.LeftForeArm[2] + (joints.LeftHand[2] - joints.LeftForeArm[2]) * 0.7,
+      ]).d : Infinity;
+    const rForeSeg = joints.RightForeArm
+      ? distPointSegmentFull(p, joints.RightForeArm, [
+        joints.RightForeArm[0] + (joints.RightHand[0] - joints.RightForeArm[0]) * 0.7,
+        joints.RightForeArm[1] + (joints.RightHand[1] - joints.RightForeArm[1]) * 0.7,
+        joints.RightForeArm[2] + (joints.RightHand[2] - joints.RightForeArm[2]) * 0.7,
+      ]).d : Infinity;
+    // Hand rigid zone must NOT swallow the fingers: a flat 0.06·H sphere around
+    // the wrist reaches well past the knuckles, pinning the whole palm+digits
+    // to Hand at ~1.0 and starving every finger bone (measured: fingers got
+    // ~9% each, so a fist-closing idle could barely curl them). Only lock a
+    // vertex to Hand when Hand is also strictly nearer than the nearest finger
+    // ROOT joint — palm/wrist geometry is nearer the wrist, phalanx geometry is
+    // nearer its own finger, so the fingers keep their weights and still curl.
+    const nearestFingerRoot = (side) => {
+      let best = Infinity;
+      for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+        const j = joints[side + 'Hand' + f + '1'];
+        if (j) { const d = vec3Dist(p, j); if (d < best) best = d; }
+      }
+      return best;
+    };
+    if (lHand < rHand && lHand < 0.055 * H && lHand < lForeSeg && lHand < nearestFingerRoot('Left')) { set(v, 'LeftHand', 1); continue; }
+    if (rHand <= lHand && rHand < 0.055 * H && rHand < rForeSeg && rHand < nearestFingerRoot('Right')) { set(v, 'RightHand', 1); continue; }
+
+    // Finger zones: a phalanx vertex sits close to ONE finger-bone segment and
+    // far from every other. Diffusion alone lets the big Hand source bleed all
+    // the way to the fingertips over the continuous mesh (measured: fingertips
+    // stayed ~27% Hand, so a fist-closing idle barely curled the digits). Pin
+    // each vertex within a tight tube of its nearest phalanx segment to that
+    // bone; the strict nearest-segment test keeps the palm (nearest to Hand)
+    // and adjacent fingers cleanly separated. Assigned per-segment so a curling
+    // idle bends each phalanx independently.
+    {
+      let fName = null, fD = Infinity;
+      for (const side of ['Left', 'Right']) {
+        const hj = joints[side + 'Hand'];
+        // Skip the far hand entirely (cheap reject by wrist distance).
+        if (hj && vec3Dist(p, hj) > 0.22 * H) continue;
+        for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+          for (let seg = 1; seg <= 4; seg++) {
+            const a = joints[`${side}Hand${f}${seg}`];
+            if (!a) continue;
+            const next = joints[`${side}Hand${f}${seg + 1}`];
+            const prev = joints[`${side}Hand${f}${seg - 1}`] || hj;
+            // Segment end: the next phalanx, or (terminal bone) extend along the
+            // bone's own direction so the fingertip geometry past the last joint
+            // still gets captured.
+            const b = next || (prev
+              ? [a[0] + (a[0] - prev[0]), a[1] + (a[1] - prev[1]), a[2] + (a[2] - prev[2])]
+              : a);
+            const { d } = distPointSegmentFull(p, a, b);
+            if (d < fD) { fD = d; fName = `${side}Hand${f}${seg}`; }
+          }
+        }
+      }
+      // Tube radius scaled to finger thickness (~0.02·H); tight enough that palm
+      // and neighbouring fingers (nearer their own bone) are excluded.
+      if (fName && fD < 0.022 * H) { set(v, fName, 1); continue; }
+    }
 
     // Foot zones: low on the body, close to foot/toe chain.
     if (p[1] <= footY) {
@@ -3080,6 +3451,74 @@ function computeRigidZones(positions, joints, boneIndex, H) {
         if (best === lToe) { set(v, 'LeftToeBase', 1); continue; }
         if (best === rFoot) { set(v, 'RightFoot', 1); continue; }
         if (best === rToe) { set(v, 'RightToeBase', 1); continue; }
+      }
+    }
+
+    // Mid-limb cores: interior of the upper-arm / forearm / thigh / shin tubes.
+    // Diffusion alone lets the neighbouring segment's heat creep across the
+    // elbow/knee over a continuous mesh (reference rig: mid-biceps is 100% Arm,
+    // mid-forearm ~100% ForeArm; ours drifted 11–14% to the neighbour). Pin the
+    // mid-section (t 0.3–0.85, past the joint blend bands) to its own bone —
+    // the twist carve then takes its share from this clean base. Nearest-of-all
+    // assignment keeps armpit/chest and inner-thigh vertices out: they are
+    // always nearer another candidate or outside the tight radius.
+    {
+      let limbName = null, limbD = Infinity, limbOk = true;
+      // [name, jointA, jointB, distalGuardJoint, t0]. t0 = fraction of the bone
+      // where the pinned segment starts. UpLeg starts at t0=0 (the hip socket)
+      // so the buttock/upper-thigh mass is claimed by the leg, not left to the
+      // Spine's downward diffusion (measured: upper thigh was 32% Spine, artist
+      // rig ~0% — the thigh visibly stretched from the pelvis). A proximity
+      // guard below keeps the crotch/pelvis itself with Hips.
+      for (const side of ['Left', 'Right']) {
+        for (const [name, a, b, distal, t0] of [
+          [side + 'Arm', joints[side + 'Arm'], joints[side + 'ForeArm'], null, 0.3],
+          [side + 'ForeArm', joints[side + 'ForeArm'], joints[side + 'Hand'], joints[side + 'Hand'], 0.3],
+          [side + 'UpLeg', joints[side + 'UpLeg'], joints[side + 'Leg'], joints.Hips, 0.0],
+          [side + 'Leg', joints[side + 'Leg'], joints[side + 'Foot'], joints[side + 'Foot'], 0.3],
+        ]) {
+          if (!a || !b) continue;
+          const s0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0];
+          const s1 = [a[0] + (b[0] - a[0]) * 0.85, a[1] + (b[1] - a[1]) * 0.85, a[2] + (b[2] - a[2]) * 0.85];
+          const { d } = distPointSegmentFull(p, s0, s1);
+          if (d < limbD) {
+            limbD = d;
+            limbName = name;
+            // Distal guard: for arm/leg tips the wrist/ankle band belongs to the
+            // Hand/Foot blend, not a hard mid-limb pin. For UpLeg the guard is
+            // Hips — a vertex nearer the pelvis than this thigh segment
+            // (crotch/groin) stays with the torso, so the leg zone can't eat the
+            // pelvis. Compare against THIS segment's distance `d`, not limbD.
+            limbOk = !distal || (name.endsWith('UpLeg') ? vec3Dist(p, distal) > d : vec3Dist(p, distal) > 0.06 * H);
+          }
+        }
+      }
+      if (limbName && limbOk && limbD < 0.05 * H) { set(v, limbName, 1); continue; }
+    }
+
+    // Pelvis band: the mass around and just below the Hips joint, between the
+    // two hip sockets, above the mid-thigh. Diffusion left the upper buttock at
+    // ~32% Spine (the lower-spine source bled downward across the continuous
+    // pelvis mesh) while the artist rig keeps it ~95% Hips — the thigh visibly
+    // detached from the pelvis. Pin this band to Hips unless a leg zone already
+    // claimed the vertex (leg zones run first via `continue`). Bounded below by
+    // the hip sockets so it can't reach down the thigh.
+    {
+      const ulL = joints.LeftUpLeg, ulR = joints.RightUpLeg;
+      if (ulL && ulR) {
+        const socketY = Math.min(ulL[1], ulR[1]);
+        const pelvisTop = joints.Spine ? (joints.Hips[1] + joints.Spine[1]) / 2 : joints.Hips[1] + 0.06 * H;
+        // Above the hip sockets (buttock / iliac crest): this is pelvis mass in
+        // every standard rig even where it sits laterally near the UpLeg joint,
+        // so claim it for Hips outright (bounded by radius). Below the sockets
+        // it is thigh — only claim it if genuinely nearer the pelvis than the
+        // thigh bone.
+        if (p[1] >= socketY - 0.02 * H && p[1] <= pelvisTop) {
+          const dHips = vec3Dist(p, joints.Hips);
+          const dThigh = Math.min(vec3Dist(p, ulL), vec3Dist(p, ulR));
+          const aboveSockets = p[1] >= socketY;
+          if (dHips < 0.18 * H && (aboveSockets || dHips <= dThigh)) { set(v, 'Hips', 1); continue; }
+        }
       }
     }
 
@@ -3161,7 +3600,7 @@ function appendTwistJoints(joints, H) {
   }
 }
 
-function appendFingerJoints(joints, H) {
+function appendFingerJoints(joints, H, forwardZ = 1) {
   const handLen = Math.hypot(
     joints.LeftHand[0] - joints.LeftForeArm[0],
     joints.LeftHand[1] - joints.LeftForeArm[1],
@@ -3177,7 +3616,10 @@ function appendFingerJoints(joints, H) {
     const forePos = joints[foreName];
     if (!handPos || !forePos) continue;
     const dir = vec3Normalize(vec3Subtract(handPos, forePos));
-    const forward = [0, 0, 1];
+    // The palm convention must follow the character's facing: the calibrated
+    // offsets assume +Z-forward, so a -Z-facing character gets the whole layout
+    // rotated 180° about Y (otherwise its procedural fingers grow backward).
+    const forward = [0, 0, forwardZ >= 0 ? 1 : -1];
     const up = side === 'Left' ? forward : [-forward[0], -forward[1], -forward[2]];
     const handRot = lookRotation(dir, Math.abs(vec3Dot(dir, up)) > 0.999 ? [0, 1, 0] : up);
 
@@ -3224,6 +3666,7 @@ function appendFingerJoints(joints, H) {
  * @returns {Promise<Uint8Array>} rigged GLB
  */
 export async function autoRigGLB(buffer, options = {}) {
+  options = sanitizeRigOptions(options);
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const root = doc.getRoot();
@@ -3254,28 +3697,49 @@ export async function autoRigGLB(buffer, options = {}) {
   // canonical joint — adjusting them moves a handful of bones and scatters the
   // rest, producing a broken pose. For those, strip the useless rig and build a
   // fresh Mixamo skeleton from the markers (same as the skinless path).
-  if (root.listSkins().length > 0 && options.forceRebuild) {
-    console.log('[autorig] forceRebuild requested — stripping existing rig and rebuilding from markers.');
-    stripExistingRig(doc);
-  } else if (root.listSkins().length > 0) {
-    let mappable = 0;
-    const allNorms = new Set();
-    for (const skin of root.listSkins()) {
-      for (const j of skin.listJoints()) {
-        for (const n of seedNormVariants(j.getName())) if (n) allNorms.add(n);
+  if (root.listSkins().length > 0) {
+    const rig = assessExistingRig(doc);
+    // Preserve a good rig's artist weights unless the caller EXPLICITLY forces a
+    // full rebuild. This is the fix for the "Regenerate wrecks legs/thighs/
+    // fingers" report: those characters already carry correct hand-authored
+    // weights, and adjustExistingRig only moves joints to the markers — it never
+    // re-skins, so it cannot introduce heat-diffusion deformation.
+    const preserve = rig.preservable && options.preserveWeights && !options.forceRebuild;
+    if (preserve) {
+      // No-op fast path: if the requested markers all match the current bind
+      // (user didn't drag anything — the common "regenerate an already-good rig"
+      // case), return the ORIGINAL file byte-for-byte. Re-running the adjust math
+      // on a no-edit rig would only chase source-data IBM/node mismatches and skew
+      // the mesh a few mm (measured on char_1's right hand). An untouched return is
+      // exact by definition.
+      const markers = options.joints || {};
+      let moved = false;
+      const H = computeWorldBounds(doc, skinWorldXforms(doc), selectBodyMeshes(doc, skinWorldXforms(doc)));
+      const scale = Math.max(H.max[1] - H.min[1], 1e-3);
+      for (const [name, pos] of Object.entries(markers)) {
+        const s = rig.seeded[name];
+        if (!s) { moved = true; break; } // a marker with no seed = a genuine change
+        const e = Math.hypot(pos[0] - s[0], pos[1] - s[1], pos[2] - s[2]) / scale;
+        if (e > 0.005) { moved = true; break; } // >0.5% of body height = a real edit
       }
-    }
-    for (const aliases of Object.values(SEED_ALIASES)) {
-      if (aliases.some(a => allNorms.has(a))) mappable++;
-    }
-    // Need a usable core (hips/spine/limbs ≈ 20 canon joints). < 8 → not a real
-    // named humanoid rig; rebuild fresh instead of adjusting.
-    if (mappable >= 8) {
+      if (!moved) {
+        console.log('[autorig] Re-rig with no marker edits — returning the original rig untouched (exact).');
+        return io.writeBinary(doc);
+      }
+      console.log(`[autorig] Preserving existing rig weights (${rig.mappableCount} canonical joints, anatomically sane) — adjusting joints to markers only.`);
+      // Capture pre-adjust skinned bounds so the safety gate can confirm the
+      // adjusted rig still rests at the same size/place (no bad bake).
+      const refBounds = computeWorldBounds(doc, skinWorldXforms(doc), selectBodyMeshes(doc, skinWorldXforms(doc)));
       adjustExistingRig(doc, options.joints || {});
       await doc.transform(prune({ keepLeaves: true }));
+      validateRiggedDoc(doc, refBounds);
       return io.writeBinary(doc);
     }
-    console.log(`[autorig] Existing skeleton has non-anatomical bone names (only ${mappable} canonical joints mappable) — stripping and rebuilding a fresh skeleton.`);
+    if (options.forceRebuild) {
+      console.log('[autorig] forceRebuild requested — stripping existing rig and rebuilding from markers.');
+    } else if (rig.hasSkin && !rig.sane) {
+      console.log(`[autorig] Existing skeleton unusable (${rig.mappableCount} canonical joints mappable, anatomically sane=${rig.sane}) — stripping and rebuilding a fresh skeleton.`);
+    }
     stripExistingRig(doc);
   }
   const previouslySkinned = new Map(); // mesh → skin-space xform (none: file is unskinned here)
@@ -3307,8 +3771,14 @@ export async function autoRigGLB(buffer, options = {}) {
   // falling back to the mesh heuristic.
   const toeFwd = ((joints.LeftToeBase[2] - joints.LeftFoot[2]) +
     (joints.RightToeBase[2] - joints.RightFoot[2])) / 2;
-  const hasOverride = (options.forwardZ === 1 || options.forwardZ === -1) || options.flipFacing;
-  const fwdSign = hasOverride ? forwardZ : (toeFwd !== 0 ? Math.sign(toeFwd) : forwardZ);
+  // The markers themselves are the facing ground truth: re-rig seeds them from
+  // the real skeleton, and the guess/preview flow re-generates them whenever the
+  // facing toggle changes — so any flipFacing/forwardZ override is already baked
+  // into the toe positions by the time they reach here. Letting the override win
+  // AGAIN mirrored perfectly-seeded skeletons (stale "faces backward" checkbox →
+  // Left/Right labels swapped on a correct rig → crossed arms, mirrored fingers).
+  // The override is only the tiebreak when the toes are degenerate (toeFwd = 0).
+  const fwdSign = toeFwd !== 0 ? Math.sign(toeFwd) : forwardZ;
   const leftSide = Math.sign(joints.LeftArm[0] - joints.RightArm[0]) || 1;
   // Topology guesses assign Left/Right from the detected body frame — the
   // toe-direction heuristic is meaningless in arbitrary poses, skip the swap.
@@ -3379,7 +3849,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // whole skeleton binds with a 180° Y rotation (on the root; children inherit).
   const flip = fwdSign === -1;
   appendTwistJoints(joints, H);
-  appendFingerJoints(joints, H);
+  appendFingerJoints(joints, H, fwdSign);
   const jointOrder = getJointOrder(options.fingerCount || 5);
   const { worldRots, localRots } = computeJointRotations(joints, flip, jointOrder);
 
@@ -3490,119 +3960,146 @@ export async function autoRigGLB(buffer, options = {}) {
   const nB = segList.length;
   const boneIndex = Object.fromEntries(jointOrder.map((n, i) => [n, i]));
 
-  for (const mesh of bakedMeshes) {
-    for (const prim of mesh.listPrimitives()) {
-      const pos = prim.getAttribute('POSITION');
-      if (!pos) continue;
-      const arr = pos.getArray();
-      const count = arr.length / 3;
-      const indices = prim.getIndices()?.getArray() || null;
-
-      // ── Heat-diffusion skin weights ────────────────────────────────────────
-      // Bone sources are pinned to 1.0 and diffused over the welded mesh graph.
-      // This produces geometry-aware blending that follows the surface instead
-      // of crossing through empty space. Rigid anatomical zones are blended in
-      // afterwards to keep the head, hands, feet and torso core from warping.
-      const weldEps = 1e-4 * H;
-      const adjacency = buildVertexAdjacency(arr, indices, weldEps);
-
-      const { field, sourceMask } = computeBoneSources(arr, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H, jointOrder);
-      diffuseWeightField(field, nB, adjacency, sourceMask, 40, 0.5);
-
-      const zoneField = computeRigidZones(arr, joints, boneIndex, H);
-      blendRigidZones(field, zoneField, nB, 0.85);
-
-      // Run Laplacian smoothing to make all bone weight boundaries perfectly organic and soft
-      smoothWeightField(field, nB, adjacency, 5, 0.4, sourceMask);
-
-      // ── Reduce to top-4 influences + normalize ─────────────────────────────
-      const jointsOut = new Uint8Array(count * 4);
-      const weightsOut = new Float32Array(count * 4);
-      // Precompute nearest bone per vertex for the zero-weight fallback.
-      const nearestBone = new Uint8Array(count);
-      for (let v = 0; v < count; v++) {
-        const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
-        let nb = 0, nd = Infinity;
-        for (let b = 0; b < nB; b++) {
-          const d = distPointSegment(p, segList[b][0], segList[b][1]);
-          if (d < nd) { nd = d; nb = b; }
-        }
-        nearestBone[v] = nb;
+  // ── Unified weight graph across ALL body primitives ────────────────────────
+  // Diffusing each primitive in isolation leaves weight discontinuities at
+  // material seams and mesh borders (characters routinely split one surface
+  // into several primitives per material, and head/body/clothing into separate
+  // meshes): boundary vertices share a position but not neighbours, so their
+  // fields diverge and the skin visibly creases there when limbs bend.
+  // Concatenate every body primitive into ONE welded graph, diffuse once, then
+  // scatter the results back per primitive.
+  const primEntries = [];
+  {
+    let vertBase = 0;
+    for (const mesh of bakedMeshes) {
+      for (const prim of mesh.listPrimitives()) {
+        const pos = prim.getAttribute('POSITION');
+        if (!pos) continue;
+        primEntries.push({ prim, arr: pos.getArray(), base: vertBase, count: pos.getCount() });
+        vertBase += pos.getCount();
       }
+    }
+  }
+  if (primEntries.length) {
+    const totalCount = primEntries.reduce((s, e) => s + e.count, 0);
+    const allPos = new Float32Array(totalCount * 3);
+    for (const e of primEntries) allPos.set(e.arr, e.base * 3);
+    // Concatenated index list, offset per primitive (non-indexed primitives
+    // expand to sequential triples so triangle adjacency stays intact).
+    let idxTotal = 0;
+    const primIdx = primEntries.map(e => {
+      const ind = e.prim.getIndices()?.getArray() || null;
+      idxTotal += ind ? ind.length : e.count;
+      return ind;
+    });
+    const allIdx = new Uint32Array(idxTotal);
+    {
+      let off = 0;
+      primEntries.forEach((e, i) => {
+        const ind = primIdx[i];
+        if (ind) { for (let k = 0; k < ind.length; k++) allIdx[off + k] = ind[k] + e.base; off += ind.length; }
+        else { for (let k = 0; k < e.count; k++) allIdx[off + k] = e.base + k; off += e.count; }
+      });
+    }
 
-      for (let v = 0; v < count; v++) {
-        const base = v * nB;
-        const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
-        for (let b = 0; b < nB; b++) {
-          const w = field[base + b];
-          if (w <= 0) continue;
-          for (let k = 0; k < 4; k++) {
-            if (w > best[k][1]) { best.splice(k, 0, [b, w]); best.pop(); break; }
-          }
-        }
-        let total = 0;
-        for (const [bi, w] of best) if (bi >= 0) total += w;
-        // Safety fallback for vertices that escaped every source and zone:
-        // Use smooth distance-based inverse square falloff for top 4 closest bones.
-        if (total <= 0) {
-          const dists = [];
-          const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
-          const ctr = centerAtY(p[1]);
-          const sd = leftAxisValid
-            ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
-            : p[0] - ctr[0];
-          const sideMargin = 0.02 * H;
+    // ── Heat-diffusion skin weights ──────────────────────────────────────────
+    // Bone sources are pinned and diffused over the welded mesh graph. This
+    // produces geometry-aware blending that follows the surface instead of
+    // crossing through empty space. Rigid anatomical zones are blended in
+    // afterwards to keep the head, hands, feet and torso core from warping.
+    const weldEps = 1e-4 * H;
+    const adjacency = buildVertexAdjacency(allPos, allIdx, weldEps);
 
-          for (let b = 0; b < nB; b++) {
-            const side = boneSide[b];
-            let gate = 1;
-            if (side !== 0) {
-              const signed = side * sd;
-              const g = (signed + sideMargin) / (2 * sideMargin);
-              gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g);
-            }
-            let d = distPointSegment(p, segList[b][0], segList[b][1]);
-            if (gate <= 0) {
-              d = Infinity;
-            } else {
-              d /= Math.max(1e-4, gate);
-            }
-            dists.push({ index: b, dist: d });
-          }
-          dists.sort((x, y) => x.dist - y.dist);
-          let dTotal = 0;
-          const limit = Math.min(4, dists.length);
-          for (let k = 0; k < limit; k++) {
-            const dVal = Math.max(1e-4, dists[k].dist);
-            // Ignore infinite distances
-            const w = dVal === Infinity ? 0 : 1.0 / (dVal * dVal);
-            best[k] = [dists[k].index, w];
-            dTotal += w;
-          }
-          total = dTotal;
-        }
+    const { field, sourceMask } = computeBoneSources(allPos, segList, boneSide, leftAxis, leftAxisValid, centerAtY, H, jointOrder);
+    diffuseWeightField(field, nB, adjacency, sourceMask, 40, 0.5);
+
+    const zoneField = computeRigidZones(allPos, joints, boneIndex, H);
+    blendRigidZones(field, zoneField, nB, 0.85);
+
+    // Run Laplacian smoothing to make all bone weight boundaries perfectly organic and soft
+    smoothWeightField(field, nB, adjacency, 5, 0.4, sourceMask);
+
+    // ── Reduce to top-4 influences + normalize ───────────────────────────────
+    const jointsOut = new Uint8Array(totalCount * 4);
+    const weightsOut = new Float32Array(totalCount * 4);
+    for (let v = 0; v < totalCount; v++) {
+      const base = v * nB;
+      const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
+      for (let b = 0; b < nB; b++) {
+        const w = field[base + b];
+        if (w <= 0) continue;
         for (let k = 0; k < 4; k++) {
-          const [b, w] = best[k];
-          jointsOut[v * 4 + k] = b >= 0 ? b : 0;
-          weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : 0;
+          if (w > best[k][1]) { best.splice(k, 0, [b, w]); best.pop(); break; }
         }
       }
+      let total = 0;
+      for (const [bi, w] of best) if (bi >= 0) total += w;
+      // Safety fallback for vertices that escaped every source and zone:
+      // Use smooth distance-based inverse square falloff for top 4 closest bones.
+      if (total <= 0) {
+        const dists = [];
+        const p = [allPos[v * 3], allPos[v * 3 + 1], allPos[v * 3 + 2]];
+        const ctr = centerAtY(p[1]);
+        const sd = leftAxisValid
+          ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
+          : p[0] - ctr[0];
+        const sideMargin = 0.02 * H;
 
-      // Carve out mid-limb weight for twist bones so they actually deform skin.
-      for (const twistName of jointOrder.filter(n => /Twist$/.test(n))) {
-        const parentName = CHILD_OF[twistName];
-        redistributeTwistWeights(arr, jointsOut, weightsOut, boneIndex[parentName], boneIndex[twistName], segments[parentName], H);
+        for (let b = 0; b < nB; b++) {
+          const side = boneSide[b];
+          let gate = 1;
+          if (side !== 0) {
+            const signed = side * sd;
+            const g = (signed + sideMargin) / (2 * sideMargin);
+            gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g);
+          }
+          let d = distPointSegment(p, segList[b][0], segList[b][1]);
+          if (gate <= 0) {
+            d = Infinity;
+          } else {
+            d /= Math.max(1e-4, gate);
+          }
+          dists.push({ index: b, dist: d });
+        }
+        dists.sort((x, y) => x.dist - y.dist);
+        let dTotal = 0;
+        const limit = Math.min(4, dists.length);
+        for (let k = 0; k < limit; k++) {
+          const dVal = Math.max(1e-4, dists[k].dist);
+          // Ignore infinite distances
+          const w = dVal === Infinity ? 0 : 1.0 / (dVal * dVal);
+          best[k] = [dists[k].index, w];
+          dTotal += w;
+        }
+        total = dTotal;
       }
+      for (let k = 0; k < 4; k++) {
+        const [b, w] = best[k];
+        jointsOut[v * 4 + k] = b >= 0 ? b : 0;
+        weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : 0;
+      }
+    }
 
-      prim.setAttribute('JOINTS_0', doc.createAccessor()
-        .setType('VEC4').setArray(jointsOut).setBuffer(glbBuffer));
-      prim.setAttribute('WEIGHTS_0', doc.createAccessor()
-        .setType('VEC4').setArray(weightsOut).setBuffer(glbBuffer));
+    // Carve out mid-limb weight for twist bones so they actually deform skin.
+    for (const twistName of jointOrder.filter(n => /Twist$/.test(n))) {
+      const parentName = CHILD_OF[twistName];
+      redistributeTwistWeights(allPos, jointsOut, weightsOut, boneIndex[parentName], boneIndex[twistName], segments[parentName], H);
+    }
+
+    // Scatter the unified result back to each primitive.
+    for (const e of primEntries) {
+      e.prim.setAttribute('JOINTS_0', doc.createAccessor()
+        .setType('VEC4').setArray(jointsOut.slice(e.base * 4, (e.base + e.count) * 4)).setBuffer(glbBuffer));
+      e.prim.setAttribute('WEIGHTS_0', doc.createAccessor()
+        .setType('VEC4').setArray(weightsOut.slice(e.base * 4, (e.base + e.count) * 4)).setBuffer(glbBuffer));
     }
   }
 
   for (const node of meshNodes) node.setSkin(skin);
 
   await doc.transform(prune({ keepLeaves: true }));
+  // Safety gate: never ship a rig whose bind explodes the mesh, has bad weights,
+  // or baked to a degenerate size. `bounds` is the pre-rig world bounds.
+  validateRiggedDoc(doc, bounds);
   return io.writeBinary(doc);
 }

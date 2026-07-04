@@ -190,14 +190,26 @@ describe('autoRigGLB skin weights', () => {
     assert.ok(checked > 0, 'expected upper skull vertices to check');
   });
 
-  it('assigns dominant Hand weight to hand vertices', async () => {
+  it('assigns dominant Hand-chain weight to hand vertices', async () => {
+    // Radius 0.02·H, not 0.03·H: at 0.03·H the band reaches ~15% up the distal
+    // forearm, where even the reference artist rig gives ForeArm dominance
+    // (fore t=0.90 is ForeArm 65% / Hand 34% on the Mixamo reference). The old
+    // 0.03·H expectation only passed because the hand rigid zone incorrectly
+    // swallowed half the forearm — the exact "forearm moves as a rigid stick"
+    // defect this suite now guards against. Weight is counted for the whole
+    // hand CHAIN (Hand + finger bones): palm vertices legitimately split
+    // between Hand and finger roots.
     const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
     const { prims, jointWorld, jointIndex, height } = await inspectRig(buffer);
     const lHand = jointWorld.LeftHand;
     const rHand = jointWorld.RightHand;
     const H = height;
-    const leftHandBone = jointIndex.LeftHand;
-    const rightHandBone = jointIndex.RightHand;
+    const handChain = { Left: new Set(), Right: new Set() };
+    for (const [name, idx] of Object.entries(jointIndex)) {
+      for (const side of ['Left', 'Right']) {
+        if (name === side + 'Hand' || name.startsWith(side + 'Hand')) handChain[side].add(idx);
+      }
+    }
     let checked = 0;
     for (const prim of prims) {
       for (let v = 0; v < prim.count; v++) {
@@ -206,17 +218,152 @@ describe('autoRigGLB skin weights', () => {
         const z = prim.positions[v * 3 + 2];
         const dL = Math.hypot(x - lHand[0], y - lHand[1], z - lHand[2]);
         const dR = Math.hypot(x - rHand[0], y - rHand[1], z - rHand[2]);
-        if (Math.min(dL, dR) > 0.03 * H) continue;
-        const targetBone = dL < dR ? leftHandBone : rightHandBone;
+        if (Math.min(dL, dR) > 0.02 * H) continue;
+        const chain = handChain[dL < dR ? 'Left' : 'Right'];
         let handW = 0;
         for (let k = 0; k < 4; k++) {
-          if (prim.joints[v * 4 + k] === targetBone) handW += prim.weights[v * 4 + k];
+          if (chain.has(prim.joints[v * 4 + k])) handW += prim.weights[v * 4 + k];
         }
-        assert.ok(handW >= 0.50, `hand vertex has hand bone weight ${handW}`);
+        assert.ok(handW >= 0.50, `hand vertex has hand-chain weight ${handW}`);
         checked++;
       }
     }
     assert.ok(checked > 0, 'expected hand vertices to check');
+  });
+
+  it('keeps biceps and forearm owned by their own bone family (no shoulder/hand bleed)', async () => {
+    // Regression: mid-biceps vertices were 21–26% LeftShoulder (clavicle's big
+    // collar radius pinned sources down the arm) and mid-forearm vertices were
+    // 49–83% LeftHand (hand rigid zone compared against the elbow joint only).
+    // Both anchored the limb to near-static/wrong bones → arms visibly
+    // squashed at the biceps and the forearm moved as a rigid stick with the
+    // wrist. Reference artist rig: mid-biceps 100% Arm, mid-forearm ~100%
+    // ForeArm (twist bones count toward their parent's family).
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
+    const { prims, jointWorld, jointIndex, height } = await inspectRig(buffer);
+    const H = height;
+    const family = (side, names) => new Set(names.map(n => jointIndex[side + n]).filter(i => i != null));
+    const stationCheck = (P0, P1, t, own, foreign, minOwn, maxForeign, label) => {
+      const C = [P0[0] + (P1[0] - P0[0]) * t, P0[1] + (P1[1] - P0[1]) * t, P0[2] + (P1[2] - P0[2]) * t];
+      const L = Math.hypot(P1[0] - P0[0], P1[1] - P0[1], P1[2] - P0[2]);
+      let ownW = 0, foreignW = 0, n = 0;
+      for (const prim of prims) {
+        for (let v = 0; v < prim.count; v++) {
+          const dx = prim.positions[v * 3] - C[0];
+          const dy = prim.positions[v * 3 + 1] - C[1];
+          const dz = prim.positions[v * 3 + 2] - C[2];
+          if (dx * dx + dy * dy + dz * dz > (0.18 * L) * (0.18 * L)) continue;
+          n++;
+          for (let k = 0; k < 4; k++) {
+            const b = prim.joints[v * 4 + k], w = prim.weights[v * 4 + k];
+            if (own.has(b)) ownW += w;
+            else if (foreign.has(b)) foreignW += w;
+          }
+        }
+      }
+      assert.ok(n > 0, `${label}: no vertices sampled`);
+      ownW /= n; foreignW /= n;
+      assert.ok(ownW >= minOwn, `${label}: own-family weight ${ownW.toFixed(2)} < ${minOwn}`);
+      assert.ok(foreignW <= maxForeign, `${label}: foreign weight ${foreignW.toFixed(2)} > ${maxForeign}`);
+    };
+    for (const side of ['Left', 'Right']) {
+      const arm = jointWorld[side + 'Arm'], fore = jointWorld[side + 'ForeArm'], hand = jointWorld[side + 'Hand'];
+      const armFam = family(side, ['Arm', 'ArmTwist']);
+      const foreFam = family(side, ['ForeArm', 'ForeArmTwist']);
+      const shoulder = family(side, ['Shoulder']);
+      const handSet = family(side, ['Hand']);
+      // Mid-biceps: own ≥ 0.85, Shoulder ≤ 0.05
+      stationCheck(arm, fore, 0.55, armFam, shoulder, 0.85, 0.05, `${side} mid-biceps`);
+      // Mid-forearm: own ≥ 0.85, Hand ≤ 0.10
+      stationCheck(fore, hand, 0.45, foreFam, handSet, 0.85, 0.10, `${side} mid-forearm`);
+    }
+  });
+
+  it('keeps the upper thigh / buttock owned by the leg, not the spine', async () => {
+    // Regression: the buttock / upper-thigh mass just above the hip socket was
+    // ~32% Spine (the lower-spine heat source bled down across the continuous
+    // pelvis mesh) while the artist rig keeps it ~95% Hips/UpLeg — the thigh
+    // visibly stretched away from the pelvis on any hip motion. The pelvis band
+    // must belong to Hips+leg, with negligible Spine influence.
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
+    const { prims, jointWorld, jointIndex, height } = await inspectRig(buffer);
+    const H = height;
+    for (const side of ['Left', 'Right']) {
+      const up = jointWorld[side + 'UpLeg'], leg = jointWorld[side + 'Leg'];
+      const legFam = new Set([jointIndex[side + 'UpLeg'], jointIndex[side + 'UpLegTwist']].filter(i => i != null));
+      const hipsIdx = jointIndex.Hips;
+      const spineFam = new Set(['Spine', 'Spine1', 'Spine2'].map(n => jointIndex[n]).filter(i => i != null));
+      // Station just ABOVE the hip socket (t=-0.15 along UpLeg→Leg): the buttock.
+      const t = -0.15;
+      const C = [up[0] + (leg[0] - up[0]) * t, up[1] + (leg[1] - up[1]) * t, up[2] + (leg[2] - up[2]) * t];
+      let pelvisW = 0, spineW = 0, n = 0;
+      for (const prim of prims) {
+        for (let v = 0; v < prim.count; v++) {
+          const dx = prim.positions[v * 3] - C[0], dy = prim.positions[v * 3 + 1] - C[1], dz = prim.positions[v * 3 + 2] - C[2];
+          if (dx * dx + dy * dy + dz * dz > (0.05 * H) * (0.05 * H)) continue;
+          n++;
+          for (let k = 0; k < 4; k++) {
+            const b = prim.joints[v * 4 + k], w = prim.weights[v * 4 + k];
+            if (b === hipsIdx || legFam.has(b)) pelvisW += w;
+            else if (spineFam.has(b)) spineW += w;
+          }
+        }
+      }
+      if (n === 0) continue; // some meshes have no verts sampled there
+      spineW /= n; pelvisW /= n;
+      // Pre-fix this band was ~32% Spine / ~63% pelvis; guard the corrected
+      // regime with margin (Spine ≤ 0.20, pelvis ≥ 0.65).
+      assert.ok(spineW <= 0.20, `${side} buttock: Spine weight ${spineW.toFixed(2)} > 0.20`);
+      assert.ok(pelvisW >= 0.65, `${side} buttock: Hips+leg weight ${pelvisW.toFixed(2)} < 0.65`);
+    }
+  });
+
+  it('gives finger geometry real weight on its own phalanges (hand can curl)', async () => {
+    // Regression: the Hand rigid zone was a flat 0.06·H sphere around the wrist,
+    // swallowing the whole palm+digits into Hand at ~1.0 and starving every
+    // finger bone (~9% each). A fist-closing idle then barely curled the
+    // fingers. Each finger's own geometry must carry dominant finger-chain
+    // weight so animated curls read on the mesh.
+    const buffer = await autoRigGLB(load('character_animated_1.glb'), { forceRebuild: true });
+    const { prims, jointWorld, jointIndex, height } = await inspectRig(buffer);
+    const H = height;
+    // All finger-chain bone indices (any finger), and the two Hand indices.
+    const allFingerBones = new Set();
+    for (const [name, idx] of Object.entries(jointIndex)) {
+      if (/Hand(Thumb|Index|Middle|Ring|Pinky)\d+$/.test(name)) allFingerBones.add(idx);
+    }
+    let fingersChecked = 0;
+    for (const side of ['Left', 'Right']) {
+      const handIdx = jointIndex[side + 'Hand'];
+      for (const finger of ['Index', 'Middle', 'Ring', 'Pinky']) {
+        // Sample around the middle phalanx (joint 2) — clearly finger, not palm.
+        const j2 = jointWorld[`${side}Hand${finger}2`];
+        if (!j2) continue;
+        // What must be true for a readable curl: the FINGER bones (any finger,
+        // since a mid phalanx shares with its immediate neighbours) dominate
+        // this geometry, and the near-static Hand/wrist does NOT. Pre-fix Hand
+        // was ~55% here and the finger chain ~9%.
+        let fingerW = 0, handW = 0, n = 0;
+        for (const prim of prims) {
+          for (let v = 0; v < prim.count; v++) {
+            const dx = prim.positions[v * 3] - j2[0], dy = prim.positions[v * 3 + 1] - j2[1], dz = prim.positions[v * 3 + 2] - j2[2];
+            if (dx * dx + dy * dy + dz * dz > (0.02 * H) * (0.02 * H)) continue;
+            n++;
+            for (let k = 0; k < 4; k++) {
+              const b = prim.joints[v * 4 + k], w = prim.weights[v * 4 + k];
+              if (allFingerBones.has(b)) fingerW += w;
+              else if (b === handIdx) handW += w;
+            }
+          }
+        }
+        if (n < 3) continue; // low-poly finger: skip
+        fingerW /= n; handW /= n;
+        assert.ok(fingerW >= 0.55, `${side}${finger} mid-phalanx: finger-chain weight ${fingerW.toFixed(2)} < 0.55`);
+        assert.ok(handW <= 0.30, `${side}${finger} mid-phalanx: Hand weight ${handW.toFixed(2)} > 0.30`);
+        fingersChecked++;
+      }
+    }
+    assert.ok(fingersChecked > 0, 'expected to check at least one finger');
   });
 
   it('keeps LeftArm influence low on the right side of the body', async () => {
