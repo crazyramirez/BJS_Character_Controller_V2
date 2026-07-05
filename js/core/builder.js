@@ -263,6 +263,115 @@ function boneRole(name) {
   return null;
 }
 
+// ── Canonical joint matching for auto-rig markers ────────────────────────────
+// Client mirror of autorig_api.mjs SEED_ALIASES/seedNorm (keep in sync). The
+// marker↔bone snap must resolve the SAME bone the server seeds each canonical
+// joint from — boneRoleNorm alone only matches Mixamo-style names, so CC/AccuRig
+// (CC_Base_L_Thigh), UE (thigh_l), Unity and Blender rigs never snapped and
+// their markers stayed in server space (rotated/mirrored on Sketchfab exports).
+const AUTORIG_SEED_ALIASES = {
+  Hips: ['hips', 'pelvis', 'hip'],
+  Spine: ['spine', 'spine01', 'lowerback', 'waist'],
+  Spine1: ['spine01', 'spine1', 'spine02', 'chest'],
+  Spine2: ['spine02', 'spine2', 'spine03', 'upperchest'],
+  Neck: ['neck', 'neck01', 'necktwist01', 'necktwist'],
+  Head: ['head'],
+  LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar', 'lshoulder', 'collarl'],
+  LeftArm: ['leftarm', 'leftupperarm', 'upperarml', 'larm', 'lupperarm', 'arml'],
+  LeftForeArm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'lforearm'],
+  LeftHand: ['lefthand', 'handl', 'lhand'],
+  LeftUpLeg: ['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl'],
+  LeftLeg: ['leftleg', 'leftlowerleg', 'calfl', 'shinl', 'lcalf', 'lowerlegl'],
+  LeftFoot: ['leftfoot', 'footl', 'lfoot'],
+  LeftToeBase: ['lefttoebase', 'toel', 'toebasel', 'lefttoe', 'ltoebase', 'balll', 'lball', 'ltoe0', 'ltoe'],
+  RightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rclavicle', 'rightcollar', 'rshoulder', 'collarr'],
+  RightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'rarm', 'rupperarm', 'armr'],
+  RightForeArm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rforearm'],
+  RightHand: ['righthand', 'handr', 'rhand'],
+  RightUpLeg: ['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr'],
+  RightLeg: ['rightleg', 'rightlowerleg', 'calfr', 'shinr', 'rcalf', 'lowerlegr'],
+  RightFoot: ['rightfoot', 'footr', 'rfoot'],
+  RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe', 'rtoebase', 'ballr', 'rball', 'rtoe0', 'rtoe'],
+};
+// Finger joint aliases (CC/AccuRig abbreviates Middle → Mid)
+for (const side of ['Left', 'Right']) {
+  const s = side.toLowerCase();
+  const sPrefix = side === 'Left' ? 'l' : 'r';
+  for (const finger of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) {
+    const f = finger.toLowerCase();
+    const forms = finger === 'Middle' ? [f, 'mid'] : [f];
+    for (let i = 1; i <= 4; i++) {
+      AUTORIG_SEED_ALIASES[`${side}Hand${finger}${i}`] = forms.flatMap(ff => [
+        `${s}hand${ff}${i}`,
+        `${sPrefix}hand${ff}${i}`,
+        `${s}${ff}${i}`,
+        `${sPrefix}${ff}${i}`,
+        `${sPrefix}${ff}0${i}`,
+        `${ff}0${i}${sPrefix}`,
+        `${ff}${i}${sPrefix}`,
+      ]);
+    }
+  }
+}
+
+function autorigSeedNorm(name) {
+  if (!name) return '';
+  let n = name.toLowerCase();
+  if (n.includes(':')) n = n.split(':').pop();
+  n = n.replace(/^j_?bip_?c_?/, '');
+  n = n.replace(/^j_?bip_?([lr])_?/, '$1_');
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/, '');
+  n = n.replace(/^mixamorig\d*/, '');
+  n = n.replace(/\.([lr])$/, '$1');
+  n = n.replace(/_\d+$/, '');
+  return n.replace(/[:_\-.\s]/g, '');
+}
+
+// Both normalized variants: trailing _N stripped (BJS suffix Hips_66 → hips)
+// and kept (meaningful index: spine_02 → spine02).
+function autorigSeedNormVariants(name) {
+  if (!name) return [];
+  const stripped = autorigSeedNorm(name);
+  const kept = autorigSeedNorm(name.replace(/_(\d+)$/, ' $1')).replace(/ /g, '');
+  return stripped === kept ? [stripped] : [stripped, kept];
+}
+
+// canonical Mixamo joint name → skeleton transform node, resolved exactly like
+// the server's seedJointsFromSkins (greedy alias order + CC 3-bone spine shift).
+function buildCanonicalBoneNodeMap(skeletons) {
+  const byNorm = new Map(); // normalized bone name → { name, node }
+  skeletons.forEach(sk => sk.bones.forEach(b => {
+    const node = b.getTransformNode();
+    if (!node) return;
+    const bn = b.name || node.name || '';
+    for (const v of autorigSeedNormVariants(bn)) {
+      if (v && !byNorm.has(v)) byNorm.set(v, { name: bn, node });
+    }
+  }));
+  const map = new Map();
+  const assigned = new Set();
+  for (const [canon, aliases] of Object.entries(AUTORIG_SEED_ALIASES)) {
+    for (const a of aliases) {
+      const item = byNorm.get(a);
+      if (item && !assigned.has(item.name)) {
+        map.set(canon, item.node);
+        assigned.add(item.name);
+        break;
+      }
+    }
+  }
+  // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): match the
+  // merge-time chain shift so Spine/Spine1/Spine2 bind to the same bones the
+  // server seeded them from.
+  if (byNorm.has('waist') && byNorm.has('spine01') &&
+    byNorm.has('spine02') && !byNorm.has('spine03')) {
+    map.set('Spine', byNorm.get('waist').node);
+    map.set('Spine1', byNorm.get('spine01').node);
+    map.set('Spine2', byNorm.get('spine02').node);
+  }
+  return map;
+}
+
 // ═══════════════════════════════════════════════════════════
 // PREFERENCES
 // ═══════════════════════════════════════════════════════════
@@ -1578,7 +1687,7 @@ function schedulePostureRebake() {
 
 async function rebakePosturePreview() {
   if (!isServerAvailable || !originalCharacterGlbBuffer) return;
-  
+
   if (postureBakeAbortController) {
     postureBakeAbortController.abort();
   }
@@ -1587,7 +1696,7 @@ async function rebakePosturePreview() {
 
   const hasAnim = animationsGlbBuffer && animationsGlbBuffer.byteLength > 0;
   const stripAnims = hasAnim || animationsCleared;
-  
+
   showMergeProgress(true, 'Baking posture in background…');
   try {
     const formData = new FormData();
@@ -1612,7 +1721,7 @@ async function rebakePosturePreview() {
     const mergedBuffer = await res.arrayBuffer();
     characterGlbBuffer = mergedBuffer;          // this is what export uses
     if (hasAnim) animationsCleared = false;     // only real new anims un-clear; cleared state persists otherwise
-    
+
     completeMergeProgress();
   } catch (err) {
     if (err.name === 'AbortError') return; // ignore aborts
@@ -2098,6 +2207,33 @@ async function loadAnimationsOffline(arrayBuffer, filename) {
   });
 }
 
+function restoreCharacterToRestPose(char) {
+  if (!char) return;
+  if (char.rawSkeletons) {
+    char.rawSkeletons.forEach(skel => skel.returnToRest());
+    char.rawSkeletons.forEach(skel => {
+      skel.bones.forEach(bone => {
+        const node = bone.getTransformNode();
+        if (node) {
+          const origRot = char.originalBoneRotations?.get(node.uniqueId);
+          if (origRot) {
+            if (!node.rotationQuaternion) {
+              node.rotationQuaternion = origRot.clone();
+            } else {
+              node.rotationQuaternion.copyFrom(origRot);
+            }
+          }
+          const origPos = char.originalBonePositions?.get(node.uniqueId);
+          if (origPos) node.position.copyFrom(origPos);
+          const origScale = char.originalBoneScalings?.get(node.uniqueId);
+          if (origScale) node.scaling.copyFrom(origScale);
+          node.computeWorldMatrix(true);
+        }
+      });
+    });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
 // CORE GLB LOADER → BABYLON SCENE
 // ═══════════════════════════════════════════════════════════
@@ -2218,8 +2354,10 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     boundingRadius: computeMeshesBoundingRadius(charRes.meshes),
   };
 
-  // Cache original bone rotations for manual posture adjustment (arm/leg spread offsets)
+  // Cache original bone transforms (rotation, position, scaling) for rest pose restoration and manual posture adjustments
   const originalBoneRotations = new Map();
+  const originalBonePositions = new Map();
+  const originalBoneScalings = new Map();
   charRes.skeletons.forEach(skel => {
     skel.bones.forEach(bone => {
       const node = bone.getTransformNode();
@@ -2228,10 +2366,14 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
           node.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(node.rotation.y, node.rotation.x, node.rotation.z);
         }
         originalBoneRotations.set(node.uniqueId, node.rotationQuaternion.clone());
+        originalBonePositions.set(node.uniqueId, node.position.clone());
+        originalBoneScalings.set(node.uniqueId, node.scaling.clone());
       }
     });
   });
   activeCharacter.originalBoneRotations = originalBoneRotations;
+  activeCharacter.originalBonePositions = originalBonePositions;
+  activeCharacter.originalBoneScalings = originalBoneScalings;
 
   // Bind-pose local axes per posture-relevant bone. Offsets must rotate about
   // WORLD axes (X = pitch, Y = splay, Z = spread). Mixamo binds are
@@ -3106,24 +3248,24 @@ function renderAutoRigLegend(markers, gizmoManager) {
     // Hover linkage (Sidebar -> 3D and 2D Mockup)
     btn.addEventListener('pointerenter', () => {
       btn.classList.add('hovered');
-      
+
       const m = activeMarkers.get(jointName);
       if (m) {
         m.showBoundingBox = true;
       }
-      
+
       const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
       if (dot) dot.classList.add('active');
     });
 
     btn.addEventListener('pointerleave', () => {
       btn.classList.remove('hovered');
-      
+
       const m = activeMarkers.get(jointName);
       if (m) {
         m.showBoundingBox = false;
       }
-      
+
       const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
       if (dot) dot.classList.remove('active');
     });
@@ -3144,7 +3286,7 @@ function setupAutoRigMockupDots(markers, gizmoManager) {
     container.className = 'autorig-mockup-container';
     container.style.position = 'relative';
     container.style.width = '100%';
-    
+
     const img = body.querySelector('.autorig-mockup-img');
     if (img) {
       body.insertBefore(container, img);
@@ -3176,31 +3318,31 @@ function setupAutoRigMockupDots(markers, gizmoManager) {
       dot.style.setProperty('--color', group.color);
       dot.style.backgroundColor = group.color;
     }
-    
+
     const label = AUTORIG_JOINT_LABELS[jointName] || jointName;
     dot.title = label;
 
     // Hover linkage (Mockup -> 3D and Sidebar)
     dot.addEventListener('pointerenter', () => {
       dot.classList.add('active');
-      
+
       const m = activeMarkers.get(jointName);
       if (m) {
         m.showBoundingBox = true;
       }
-      
+
       const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
       if (btn) btn.classList.add('hovered');
     });
 
     dot.addEventListener('pointerleave', () => {
       dot.classList.remove('active');
-      
+
       const m = activeMarkers.get(jointName);
       if (m) {
         m.showBoundingBox = false;
       }
-      
+
       const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
       if (btn) btn.classList.remove('hovered');
     });
@@ -3611,7 +3753,7 @@ function forceAutoRigPose(pose) {
   // ── Rest: undo Force-Pose bone rotations & restore the analyzed layout ──
   if (pose === 'rest') {
     st.rigPoseBase?.clear();   // posture observer falls back to the bind pose
-    if (activeCharacter.rawSkeletons) activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
+    restoreCharacterToRestPose(activeCharacter);
     st.appliedPose = null;
     st.restLayout.forEach((p, name) => {
       st.canonical.set(name, p.clone());
@@ -3690,7 +3832,7 @@ function poseSkeletonArms(pose) {
   const st = autoRigState;
   const B = (n) => st.boneBindings.get(n);
   // Clean slate so alternating presses don't compound.
-  activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
+  restoreCharacterToRestPose(activeCharacter);
 
   // Measure original foot directions at rest (bind pose)
   const footRestDirs = new Map();
@@ -4351,7 +4493,7 @@ async function startAutoRigAdjustInner() {
   // spread/splay, shoulder raise, leg spread, spine straighten, hips tilt) keep
   // working and layer on top of the Force-Pose base (autoRigState.rigPoseBase).
   scene.animationGroups.forEach(ag => ag.stop());
-  activeCharacter.rawSkeletons.forEach(skel => skel.returnToRest());
+  restoreCharacterToRestPose(activeCharacter);
 
   // Marker parent must be the node whose LOCAL space matches the server's joint
   // space. For skinned characters that is the skeleton root's parent (it carries
@@ -4488,55 +4630,37 @@ async function startAutoRigAdjustInner() {
   if (activeCharacter.rawSkeletons?.length) {
     const mpInv0 = markerParent.getWorldMatrix().clone().invert();
     const nodes = [];
-    // canonical-name → bone node, so re-rig binds by NAME (robust to the server's
-    // joint space differing from Babylon's scene space on flipped/mirrored rigs)
-    const nodeByNorm = new Map();
+    // canonical-name → bone node via the server's own alias table, so re-rig
+    // binds by NAME on CC/AccuRig/UE/Unity/Blender rigs too (robust to the
+    // server's joint space differing from Babylon's scene space on
+    // flipped/mirrored rigs)
+    const nodeByCanon = buildCanonicalBoneNodeMap(activeCharacter.rawSkeletons);
     activeCharacter.rawSkeletons.forEach(sk => sk.bones.forEach(b => {
       const n = b.getTransformNode();
       if (n && !restRel.has(n)) {
         n.computeWorldMatrix(true);
         restRel.set(n, n.getWorldMatrix().multiply(mpInv0));
         nodes.push(n);
-        const norm = boneRoleNorm(b.name || n.name || '');
-        if (norm && !nodeByNorm.has(norm)) nodeByNorm.set(norm, n);
       }
     }));
-    markers.forEach((m, name) => {
-      // 1) exact joint-name match (LeftArm → mixamorig:LeftArm_09)
-      let bound = nodeByNorm.get(boneRoleNorm(name));
-      // 2) fallback to nearest bone for unmatched / nonstandard names
-      if (!bound) {
-        m.computeWorldMatrix(true);
-        const mw = m.getAbsolutePosition();
-        let bestD = Infinity;
-        nodes.forEach(n => {
-          const d = BABYLON.Vector3.DistanceSquared(mw, n.getAbsolutePosition());
-          if (d < bestD) { bestD = d; bound = n; }
-        });
-      }
-      if (bound) boneBindings.set(name, bound);
-    });
 
     // Re-rig GROUND TRUTH: the server's joint world coords can land in a
     // different space than Babylon's scene (FBX up-axis fixes, Sketchfab −Z
     // mirror, armature scale) — that's what put the markers upside-down/sunk.
     // For markers matched to a bone BY NAME, snap onto that bone's ACTUAL
-    // in-scene position (→ markerParent-local). Nearest-bone fallbacks and
-    // unmatched markers keep the server guess.
+    // in-scene position (→ markerParent-local).
     const mpInvSnap = markerParent.getWorldMatrix().clone().invert();
     const fitPairs = []; // { local: Vector3 (markerParent-local), server: [x,y,z] }
     markers.forEach((m, name) => {
-      const node = nodeByNorm.get(boneRoleNorm(name));
+      const node = nodeByCanon.get(name);
       if (!node) return;
       node.computeWorldMatrix(true);
-      // Restored session (P2): the markers already hold the user's exact applied
-      // coords — do NOT snap them to the (drifted) merged bones. Still record the
-      // local↔server pair from the marker's current spot so the Apply affine
-      // round-trips correctly.
-      if (!guess.restored) {
-        const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
-        m.position.copyFrom(local);
-      }
+      // Always snap markers to the actual bone positions in the scene to align
+      // them perfectly with the mesh. Since the skeleton carries the user's edits
+      // from the previous session, this restores those coordinates correctly while
+      // canceling out any coordinate transformations introduced by merges.
+      const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
+      m.position.copyFrom(local);
       const sv = guess.joints[name];
       // Do not include fingers in the coordinate-fitting system, as their procedural guesses
       // can deviate significantly from the actual bones and distort the global affine transform.
@@ -4550,6 +4674,44 @@ async function startAutoRigAdjustInner() {
     // markerParent-local → server space from the name-matched pairs so Apply
     // sends correct coordinates regardless of the model's baked transform.
     localToServerAffine = fitAffine3D(fitPairs);
+
+    // UNMATCHED markers (finger tips, joints missing from the skin) still hold
+    // raw server-space coords — rotated/mirrored relative to the scene on
+    // Sketchfab/FBX exports. Map them into markerParent-local space with the
+    // INVERSE affine fitted from the same name-matched pairs so every marker
+    // lands on the mesh.
+    const serverToLocalAffine = fitAffine3D(fitPairs.map(p => ({
+      local: new BABYLON.Vector3(p.server[0], p.server[1], p.server[2]),
+      server: [p.local.x, p.local.y, p.local.z],
+    })));
+    if (serverToLocalAffine) {
+      markers.forEach((m, name) => {
+        if (nodeByCanon.has(name)) return;
+        const sv = guess.joints[name];
+        if (!sv) return;
+        const mapped = serverToLocalAffine.apply(new BABYLON.Vector3(sv[0], sv[1], sv[2]));
+        m.position.set(mapped[0], mapped[1], mapped[2]);
+      });
+    }
+
+    // Bind markers to bones AFTER the snap/re-map above so the nearest-bone
+    // fallback measures distances with both sides in scene space (before, an
+    // unmatched marker sitting in server space could bind to a wildly wrong bone).
+    markers.forEach((m, name) => {
+      // 1) canonical joint-name match (LeftArm → mixamorig:LeftArm_09 / CC_Base_L_Upperarm)
+      let bound = nodeByCanon.get(name);
+      // 2) fallback to nearest bone for unmatched / nonstandard names
+      if (!bound) {
+        m.computeWorldMatrix(true);
+        const mw = m.getAbsolutePosition();
+        let bestD = Infinity;
+        nodes.forEach(n => {
+          const d = BABYLON.Vector3.DistanceSquared(mw, n.getAbsolutePosition());
+          if (d < bestD) { bestD = d; bound = n; }
+        });
+      }
+      if (bound) boneBindings.set(name, bound);
+    });
   }
   markers.forEach((m, name) => canonical.set(name, m.position.clone()));
 
@@ -4599,7 +4761,7 @@ async function startAutoRigAdjustInner() {
     if (lastHoveredJoint) {
       const oldBtn = document.querySelector(`.autorig-joint-btn[data-joint="${lastHoveredJoint}"]`);
       if (oldBtn) oldBtn.classList.remove('hovered');
-      
+
       const oldDot = document.querySelector(`.autorig-mockup-dot[data-joint="${lastHoveredJoint}"]`);
       if (oldDot) oldDot.classList.remove('active');
 
@@ -4621,15 +4783,15 @@ async function startAutoRigAdjustInner() {
     if (mesh?.metadata?.autorigJoint) {
       const jointName = mesh.metadata.autorigJoint;
       showTip(jointName, scene.pointerX, scene.pointerY);
-      
+
       if (lastHoveredJoint !== jointName) {
         clearLastHovered();
         lastHoveredJoint = jointName;
-        
+
         // Highlight Sidebar button
         const btn = document.querySelector(`.autorig-joint-btn[data-joint="${jointName}"]`);
         if (btn) btn.classList.add('hovered');
-        
+
         // Highlight 2D Mockup dot
         const dot = document.querySelector(`.autorig-mockup-dot[data-joint="${jointName}"]`);
         if (dot) dot.classList.add('active');
@@ -4781,7 +4943,7 @@ async function startAutoRigAdjustInner() {
       m.position.addInPlace(localDelta);
 
       updateCanonicalFromMarker(m);
-      
+
       const symmetric = document.getElementById('autorig-symmetry')?.checked;
       if (symmetric) {
         const twinName = mirrorJointName(name);
@@ -4802,7 +4964,7 @@ async function startAutoRigAdjustInner() {
       if ((!snap || snap.checked) && !document.getElementById('autorig-pose-profiling')?.checked) {
         snapMarkerToMeshDepth(m);
         updateCanonicalFromMarker(m);
-        
+
         const symmetric = document.getElementById('autorig-symmetry')?.checked;
         if (symmetric) {
           const twinName = mirrorJointName(name);
@@ -5080,7 +5242,7 @@ function cancelAutoRigAdjust() {
     // Clear the Force-Pose base so the (still-running) posture observer returns
     // to the bind pose, then drop to rest before idle restarts.
     autoRigState.rigPoseBase?.clear();
-    if (activeCharacter?.rawSkeletons) activeCharacter.rawSkeletons.forEach(sk => sk.returnToRest());
+    restoreCharacterToRestPose(activeCharacter);
     // Restart idle: rig mode stopped every animation group and froze the
     // skeleton in rest pose. AnimCtrl.play() short-circuits when the requested
     // group is already `cur` (it only re-weights, never restarts a stopped
@@ -6421,9 +6583,7 @@ function clearAllAnimations() {
         activeCharacter.charCtrl.anim = activeCharacter.animCtrl;
 
         // Reset skeleton to rest pose (same as auto rig / adjust mode)
-        if (scene.skeletons) {
-          scene.skeletons.forEach(skel => skel.returnToRest());
-        }
+        restoreCharacterToRestPose(activeCharacter);
       }
 
       // Clear stored animations GLB buffer as well
