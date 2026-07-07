@@ -61,6 +61,26 @@ class ParticleSystemMock {
 }
 ParticleSystemMock.BLENDMODE_ADD = 1;
 
+class PhysicsShapeCapsuleMock {
+  constructor() { this.material = null; }
+  dispose() { this._disposed = true; }
+}
+
+class PhysicsBodyMock {
+  constructor(root) {
+    this.root = root;
+    this.vel = new Vector3();
+    this.disablePreStep = false;
+    this.shape = null;
+    PhysicsBodyMock.last = this;
+  }
+  setMassProperties() { }
+  getLinearVelocity() { return this.vel.clone(); }
+  setLinearVelocity(v) { this.vel.copyFrom(v); }
+  setAngularVelocity() { }
+  dispose() { this._disposed = true; }
+}
+
 function makeBabylon() {
   return {
     Vector3, Quaternion, Ray,
@@ -69,6 +89,9 @@ function makeBabylon() {
     ParticleSystem: ParticleSystemMock,
     Texture: class { constructor() { } },
     Color4: class { constructor(r, g, b, a) { this.r = r; this.g = g; this.b = b; this.a = a; } },
+    PhysicsShapeCapsule: PhysicsShapeCapsuleMock,
+    PhysicsBody: PhysicsBodyMock,
+    PhysicsMotionType: { DYNAMIC: 1 },
   };
 }
 
@@ -105,7 +128,18 @@ function makeWorld() {
     onPointerObservable: makeObservable(),
     getEngine: () => engine,
     pickWithRay(ray, predicate) {
-      // Only downward rays intersect the virtual floor; horizontal/up rays miss.
+      // Upward rays: virtual ceiling plane (world.ceilingY, disabled by default)
+      if (ray.direction.y > 0.5) {
+        if (world.ceilingY === undefined || world.ceilingY === null) return null;
+        if (predicate && !predicate(world.floorMesh)) return null;
+        const cDist = world.ceilingY - ray.origin.y;
+        if (cDist < 0 || cDist > ray.length) return null;
+        return {
+          hit: true, distance: cDist, pickedMesh: world.floorMesh,
+          getNormal: () => new Vector3(0, -1, 0),
+        };
+      }
+      // Downward rays: virtual floor plane
       if (!(ray.direction.y < -0.5)) return null;
       if (world.floorY === null) return null;
       if (predicate && !predicate(world.floorMesh)) return null;
@@ -218,7 +252,8 @@ function makeCtrl(env, options = {}) {
   return ctrl;
 }
 
-// Advance the simulation: fires every onBeforeRenderObservable observer per frame
+// Advance the simulation: fires every onBeforeRenderObservable observer per frame.
+// When a mock Havok body exists, integrates velocity + gravity like the solver would.
 function step(env, seconds, dtMs = 1000 / 60) {
   const { world } = env;
   world.dtMs = dtMs;
@@ -226,6 +261,17 @@ function step(env, seconds, dtMs = 1000 / 60) {
   for (let i = 0; i < frames; i++) {
     world.clock.ms += dtMs;
     for (const o of [...world.scene.onBeforeRenderObservable.observers]) o.fn();
+    const body = world.physicsBody;
+    if (body) {
+      const dt = dtMs / 1000;
+      world.root.position.addInPlace(body.vel.scale(dt));
+      body.vel.y -= 22 * dt; // Havok world gravity
+      // Capsule bottom (physics anchor) sits 0.90 below the capsule center
+      if (world.floorY !== null && world.root.position.y - 0.90 < world.floorY) {
+        world.root.position.y = world.floorY + 0.90;
+        if (body.vel.y < 0) body.vel.y = 0;
+      }
+    }
   }
 }
 
@@ -446,4 +492,185 @@ test('initPhysics default gravity derives from DEFAULT_CHAR_CONFIG.PHYSICS.GRAV'
   // Static source check: no hardcoded -22 fallback vector left in initPhysics
   assert.match(CONTROLLER_SRC, /DEFAULT_CHAR_CONFIG\.PHYSICS\.GRAV, 0\)/);
   assert.doesNotMatch(CONTROLLER_SRC, /initPhysics\(scene, gravity = new BABYLON\.Vector3\(0, -22, 0\)\)/);
+});
+
+// ── New behaviour: pause, persistence, events, ceiling, slide, moonwalk, Havok ──
+
+test('setEnabled(false) freezes input and updates; setEnabled(true) resumes', () => {
+  const env = loadController();
+  const ctrl = makeCtrl(env);
+  step(env, 0.5);
+  ctrl.setEnabled(false);
+
+  pressKey(ctrl, 'Space');
+  assert.notEqual(ctrl.state, 'JUMP_START', 'disabled controller must ignore input');
+  const y = env.world.root.position.y;
+  const t = ctrl.stateT;
+  step(env, 0.3);
+  assert.equal(env.world.root.position.y, y, 'disabled controller must not move');
+  assert.equal(ctrl.stateT, t, 'disabled controller must not tick');
+
+  ctrl.setEnabled(true);
+  step(env, 0.1);
+  pressKey(ctrl, 'Space');
+  assert.equal(ctrl.state, 'JUMP_START', 're-enabled controller must respond again');
+});
+
+test('persistSettings:false — config wins over localStorage and nothing is written', () => {
+  const env = loadController();
+  env.storage.set('double-jump-enabled', 'false');
+  env.storage.set('speed-multiplier', '9');
+  const sizeBefore = env.storage.size;
+  const ctrl = makeCtrl(env, { persistSettings: false, config: { DOUBLE_JUMP_ENABLED: true } });
+  assert.equal(ctrl.DOUBLE_JUMP_ENABLED, true, 'stale localStorage must be ignored');
+  assert.equal(ctrl.SPEED_MULTIPLIER, 1.0);
+  ctrl.playParticles(false); // method that normally writes localStorage
+  assert.equal(env.storage.size, sizeBefore, 'no localStorage writes allowed');
+});
+
+test('onJump / onLand / onRoll gameplay events fire with payloads', () => {
+  const env = loadController();
+  const events = [];
+  const ctrl = makeCtrl(env, {
+    callbacks: {
+      onJump: (e) => events.push(['jump', e]),
+      onLand: (e) => events.push(['land', e]),
+      onRoll: (e) => events.push(['roll', e]),
+    },
+  });
+  step(env, 0.6); // settle past the initial-spawn grace
+  pressKey(ctrl, 'Space');
+  releaseKey(ctrl, 'Space');
+  assert.equal(events[0][0], 'jump');
+  assert.equal(events[0][1].double, false);
+  step(env, 2.0);
+  const land = events.find(e => e[0] === 'land');
+  assert.ok(land, 'onLand must fire');
+  assert.ok(land[1].fallHeight > 0.3, `fallHeight=${land[1].fallHeight}`);
+  assert.ok(land[1].velocity < 0, 'landing velocity is downward');
+
+  pressKey(ctrl, 'KeyR');
+  const roll = events.find(e => e[0] === 'roll');
+  assert.ok(roll, 'onRoll must fire');
+  assert.equal(typeof roll[1].moving, 'boolean');
+});
+
+test('head bump: ascending into a ceiling kills upward velocity', () => {
+  const env = loadController();
+  env.world.ceilingY = 2.6;
+  const ctrl = makeCtrl(env);
+  step(env, 0.5);
+  pressKey(ctrl, 'Space');
+  let maxY = 0;
+  for (let i = 0; i < 60; i++) { // 1s at 60fps
+    step(env, 1 / 60);
+    maxY = Math.max(maxY, env.world.root.position.y);
+  }
+  // Without the fix the apex is ~3.0 (jump arc ignores the ceiling entirely)
+  assert.ok(maxY < 2.0, `apex must stay under the ceiling, got ${maxY.toFixed(2)}`);
+  step(env, 1.5);
+  assert.equal(ctrl.grounded, true, 'must fall back and land after the bump');
+});
+
+test('steep slope: character slides downhill instead of hanging in place', () => {
+  const env = loadController();
+  const a = 65 * Math.PI / 180; // steeper than the 50° limit, tilted toward +x
+  env.world.floorNormal = new Vector3(Math.sin(a), Math.cos(a), 0);
+  const ctrl = makeCtrl(env);
+  step(env, 1.5);
+  assert.equal(ctrl.grounded, false);
+  assert.ok(env.world.root.position.x > 0.5,
+    `must slide downhill (+x), got x=${env.world.root.position.x.toFixed(2)}`);
+});
+
+test('anti-moonwalk: blocked movement feeds ~zero speed to the anim blend tree', () => {
+  const env = loadController();
+  const locoMock = { lastSpeed: null, updateSpeed(v) { this.lastSpeed = v; } };
+  env.world.anim.g.set('Locomotion', locoMock);
+  // Wall: horizontal displacement is fully blocked, vertical passes through
+  const origMove = env.world.root.moveWithCollisions.bind(env.world.root);
+  env.world.root.moveWithCollisions = (disp) => origMove(new Vector3(0, disp.y, 0));
+  const ctrl = makeCtrl(env);
+  step(env, 0.5);
+  ctrl.keys['KeyW'] = true; // hold forward against the wall
+  step(env, 1.5);
+  assert.ok(ctrl.speed > 1.0, 'logical speed keeps pushing');
+  assert.ok(locoMock.lastSpeed !== null && locoMock.lastSpeed < 0.5,
+    `anim speed must collapse when blocked, got ${locoMock.lastSpeed}`);
+});
+
+test('wall-blocked: no vertical bobbing and no dust while pushing a wall', () => {
+  const env = loadController();
+  const origMove = env.world.root.moveWithCollisions.bind(env.world.root);
+  env.world.root.moveWithCollisions = (disp) => origMove(new Vector3(0, disp.y, 0));
+  const ctrl = makeCtrl(env);
+  step(env, 0.5);
+  ctrl.keys['KeyW'] = true;
+  step(env, 1.5); // long enough for _realSpeedSmooth to collapse
+
+  // Bobbing must be off: sample visual Y over a walk-bob period, expect it flat
+  const ys = [];
+  for (let i = 0; i < 40; i++) { step(env, 1 / 60); ys.push(env.world.visualMesh.position.y); }
+  const spread = Math.max(...ys) - Math.min(...ys);
+  assert.ok(spread < 0.005, `visual Y must not bounce against a wall, spread=${spread.toFixed(4)}`);
+  assert.equal(ctrl._bobTime, 0, 'bob phase must stay reset');
+  assert.equal(ctrl.dustPS.emitRate, 0, 'no dust while blocked');
+
+  // Unblock the wall — bobbing resumes while walking
+  env.world.root.moveWithCollisions = origMove;
+  step(env, 1.0);
+  const ys2 = [];
+  for (let i = 0; i < 40; i++) { step(env, 1 / 60); ys2.push(env.world.visualMesh.position.y); }
+  const spread2 = Math.max(...ys2) - Math.min(...ys2);
+  assert.ok(spread2 > 0.005, `bobbing must resume when moving freely, spread=${spread2.toFixed(4)}`);
+});
+
+test('environment mesh with "character" in its name is still valid ground', () => {
+  const env = loadController();
+  const ctrl = makeCtrl(env);
+  assert.equal(ctrl._isMeshCharacter({ name: 'character_statue', parent: null }), false);
+  assert.equal(ctrl._isMeshCharacter({ name: 'old_wrapper_rock', parent: null }), false);
+  assert.equal(ctrl._isMeshCharacter(env.world.root), true);
+  assert.equal(ctrl._isMeshCharacter(env.world.visualMesh), true);
+  assert.equal(ctrl._isMeshCharacter({ name: 'playerCapsule_2', parent: null }), true);
+});
+
+test('Havok mode: grounds, jumps and lands with a physics body', () => {
+  const env = loadController();
+  const ctrl = makeCtrl(env, { usePhysics: true });
+  env.world.physicsBody = ctrl.physicsBody;
+  assert.ok(ctrl.physicsBody, 'physics body must be created');
+  assert.ok(ctrl._standShape && ctrl._crouchShape);
+
+  step(env, 0.6);
+  assert.equal(ctrl.grounded, true, 'must ground on the floor via ray + body');
+
+  pressKey(ctrl, 'Space');
+  assert.equal(ctrl.state, 'JUMP_START');
+  step(env, 0.3);
+  assert.equal(ctrl.grounded, false);
+  assert.ok(env.world.root.position.y > 1.3, `airborne, y=${env.world.root.position.y.toFixed(2)}`);
+
+  step(env, 2.5);
+  assert.equal(ctrl.grounded, true, 'must land again');
+});
+
+test('Havok mode: destroy() disposes body and both capsule shapes', () => {
+  const env = loadController();
+  const ctrl = makeCtrl(env, { usePhysics: true });
+  const body = ctrl.physicsBody;
+  ctrl.destroy();
+  assert.equal(body._disposed, true);
+  assert.equal(ctrl._standShape._disposed, true);
+  assert.equal(ctrl._crouchShape._disposed, true);
+});
+
+test('runtime swap destroys the old character only AFTER the new load succeeds', () => {
+  // Static source checks on loadCharacterRuntime / swapCharacterAnimations
+  const body = CONTROLLER_SRC.slice(CONTROLLER_SRC.indexOf('async function loadCharacterRuntime'));
+  const destroyIdx = body.indexOf('prevHandle.destroy()');
+  const loadIdx = body.indexOf('await setupCharacter');
+  assert.ok(loadIdx >= 0 && destroyIdx > loadIdx, 'destroy must come after the awaited load');
+  assert.match(body, /setEnabled\(true\)/, 'old character must be re-enabled on failure');
+  assert.match(CONTROLLER_SRC, /revokeObjectURL/, 'swap blob URLs must be revoked');
 });

@@ -49,6 +49,11 @@ const DEFAULT_CHAR_CONFIG = {
     COYOTE_TIME: 0.12,    // Seconds after walking off a ledge during which a jump is still accepted
     JUMP_BUFFER_TIME: 0.15, // Seconds before landing during which a jump press is buffered and fires on touchdown
     OUT_OF_BOUNDS_Y: -15, // World Y below which the character teleports back to its spawn point
+    TERMINAL_VELOCITY: 25, // Max falling speed (m/s, kinematic mode)
+    LAND_ANIM_MIN_VEL: 3.0, // Min downward speed (m/s) for the landing animation/squash to trigger
+    LAND_ANIM_MIN_HEIGHT: 0.4, // Min fall height (m) for the landing animation to trigger
+    ROLL_SPEED_GROUND: 5.2, // Horizontal dash speed of a grounded roll
+    ROLL_SPEED_AIR: 6.2,  // Horizontal dash speed of an air roll
     SPD_WALK: 2.5,        // Maximum physical walking speed
     SPD_JOG: 3,           // Maximum physical jogging speed (blend speed threshold)
     SPD_SPRINT: 5,        // Maximum physical sprinting speed
@@ -116,6 +121,10 @@ const KEYS = DEFAULT_CHAR_CONFIG.KEYS;
 // ═══════════════════════════════════════════════════════════
 // UTILS & MATH HELPERS
 // ═══════════════════════════════════════════════════════════
+// Registry of every mesh belonging to ANY character controller in the scene.
+// Ground/wall rays consult it by reference instead of guessing from mesh names.
+const CHARACTER_MESHES = new WeakSet();
+
 function lerp(a, b, t) {
   return a + (b - a) * Math.min(1, t);
 }
@@ -818,6 +827,12 @@ class CharCtrl {
   constructor(root, visualMesh, camera, anim, scene, options = {}) {
     this.root = root; // Capsule collider parent mesh
     this.visualMesh = visualMesh; // Visual character mesh
+    // Register every mesh of this character so environment rays skip them by reference
+    CHARACTER_MESHES.add(root);
+    CHARACTER_MESHES.add(visualMesh);
+    if (visualMesh.getChildMeshes) {
+      visualMesh.getChildMeshes().forEach(m => CHARACTER_MESHES.add(m));
+    }
     this._visualBoundingRadius = computeVisualBoundingRadius(visualMesh);
     this.camera = camera;
     if (this.camera) {
@@ -834,14 +849,26 @@ class CharCtrl {
     this.callbacks = Object.assign({
       onStateChange: null,
       onSpeedChange: null,
-      onCombo: null
+      onCombo: null,
+      onJump: null,   // ({ double }) — fired on takeoff
+      onLand: null,   // ({ fallHeight, velocity, airTime }) — fired on touchdown (fall damage, SFX...)
+      onRoll: null    // ({ moving }) — fired when a roll/dodge starts
     }, options.callbacks || {});
+
+    // When false, the controller neither reads nor writes localStorage — config
+    // values rule. Set it for library embeds that must not leak settings
+    // across projects sharing the same origin.
+    this._persist = options.persistSettings !== false;
+
+    // Master switch: when disabled the controller ignores input and skips its
+    // per-frame update (pause menus, cutscenes, character swaps).
+    this.enabled = options.enabled !== false;
 
     // Physics & Speeds Config
     const config = Object.assign({}, DEFAULT_CHAR_CONFIG.PHYSICS, options.config || {});
 
     // Use physics parameter
-    this.usePhysics = options.usePhysics !== undefined ? options.usePhysics : (localStorage.getItem('use-physics') !== 'false');
+    this.usePhysics = options.usePhysics !== undefined ? options.usePhysics : (this._lsGet('use-physics') !== 'false');
 
     this.GRAV = config.GRAV;
     this.JUMP_PWR = config.JUMP_PWR;
@@ -861,48 +888,53 @@ class CharCtrl {
     this.COYOTE_TIME = config.COYOTE_TIME !== undefined ? config.COYOTE_TIME : 0.12;
     this.JUMP_BUFFER_TIME = config.JUMP_BUFFER_TIME !== undefined ? config.JUMP_BUFFER_TIME : 0.15;
     this.OUT_OF_BOUNDS_Y = config.OUT_OF_BOUNDS_Y !== undefined ? config.OUT_OF_BOUNDS_Y : -15;
+    this.TERMINAL_VELOCITY = config.TERMINAL_VELOCITY !== undefined ? config.TERMINAL_VELOCITY : 25;
+    this.LAND_ANIM_MIN_VEL = config.LAND_ANIM_MIN_VEL !== undefined ? config.LAND_ANIM_MIN_VEL : 3.0;
+    this.LAND_ANIM_MIN_HEIGHT = config.LAND_ANIM_MIN_HEIGHT !== undefined ? config.LAND_ANIM_MIN_HEIGHT : 0.4;
+    this.ROLL_SPEED_GROUND = config.ROLL_SPEED_GROUND !== undefined ? config.ROLL_SPEED_GROUND : 5.2;
+    this.ROLL_SPEED_AIR = config.ROLL_SPEED_AIR !== undefined ? config.ROLL_SPEED_AIR : 6.2;
     // AIR_CONTROL is a 0..1 coefficient (booleans map to 0/1 for back-compat)
     const toAirCoef = (v) => v === true || v === 'true' ? 1 : (v === false || v === 'false' ? 0 : Math.max(0, Math.min(1, parseFloat(v) || 0)));
-    const savedAirControl = localStorage.getItem('air-control-enabled');
+    const savedAirControl = this._lsGet('air-control-enabled');
     this.AIR_CONTROL = savedAirControl !== null ? toAirCoef(savedAirControl) : (config.AIR_CONTROL !== undefined ? toAirCoef(config.AIR_CONTROL) : 0);
     // Load configurable states from localStorage, falling back to configuration block defaults
-    const savedCamFollowLock = localStorage.getItem('cam-follow-lock');
+    const savedCamFollowLock = this._lsGet('cam-follow-lock');
     this.CAM_FOLLOW_LOCK = savedCamFollowLock !== null ? (savedCamFollowLock === 'true') : config.CAM_FOLLOW_LOCK;
 
-    const savedDynamicFov = localStorage.getItem('dynamic-fov');
+    const savedDynamicFov = this._lsGet('dynamic-fov');
     this.DYNAMIC_FOV = savedDynamicFov !== null ? (savedDynamicFov === 'true') : config.DYNAMIC_FOV;
 
-    const savedDynamicFovMax = localStorage.getItem('dynamic-fov-max');
+    const savedDynamicFovMax = this._lsGet('dynamic-fov-max');
     this.DYNAMIC_FOV_MAX = savedDynamicFovMax !== null ? parseFloat(savedDynamicFovMax) : config.DYNAMIC_FOV_MAX;
 
-    const savedCamTilt = localStorage.getItem('cam-tilt');
+    const savedCamTilt = this._lsGet('cam-tilt');
     this.CAM_TILT = savedCamTilt !== null ? (savedCamTilt === 'true') : (config.CAM_TILT !== undefined ? config.CAM_TILT : false);
 
-    const savedCamTiltAmount = localStorage.getItem('cam-tilt-amount');
+    const savedCamTiltAmount = this._lsGet('cam-tilt-amount');
     this.CAM_TILT_AMOUNT = savedCamTiltAmount !== null ? parseFloat(savedCamTiltAmount) : (config.CAM_TILT_AMOUNT !== undefined ? config.CAM_TILT_AMOUNT : 0.15);
 
-    const savedCamFollowPitch = localStorage.getItem('cam-follow-pitch');
+    const savedCamFollowPitch = this._lsGet('cam-follow-pitch');
     this.CAM_FOLLOW_PITCH = savedCamFollowPitch !== null ? parseFloat(savedCamFollowPitch) : (config.CAM_FOLLOW_PITCH !== undefined ? config.CAM_FOLLOW_PITCH : Math.PI / 3.0);
 
-    const savedCamFollowDist = localStorage.getItem('cam-follow-dist');
+    const savedCamFollowDist = this._lsGet('cam-follow-dist');
     this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
 
-    const savedCamLockPitch = localStorage.getItem('cam-lock-pitch');
+    const savedCamLockPitch = this._lsGet('cam-lock-pitch');
     this.CAM_LOCK_PITCH = savedCamLockPitch !== null ? (savedCamLockPitch === 'true') : (config.CAM_LOCK_PITCH !== undefined ? config.CAM_LOCK_PITCH : false);
 
-    const savedJoystickLockX = localStorage.getItem('joystick-lock-x');
+    const savedJoystickLockX = this._lsGet('joystick-lock-x');
     this.JOYSTICK_LOCK_X = savedJoystickLockX !== null ? (savedJoystickLockX === 'true') : (config.JOYSTICK_LOCK_X !== undefined ? config.JOYSTICK_LOCK_X : false);
 
-    const savedDoubleJump = localStorage.getItem('double-jump-enabled');
+    const savedDoubleJump = this._lsGet('double-jump-enabled');
     this.DOUBLE_JUMP_ENABLED = savedDoubleJump !== null ? (savedDoubleJump === 'true') : (config.DOUBLE_JUMP_ENABLED !== undefined ? config.DOUBLE_JUMP_ENABLED : true);
 
-    const savedSpeedMultiplier = localStorage.getItem('speed-multiplier');
+    const savedSpeedMultiplier = this._lsGet('speed-multiplier');
     this.SPEED_MULTIPLIER = savedSpeedMultiplier !== null ? parseFloat(savedSpeedMultiplier) : (config.SPEED_MULTIPLIER !== undefined ? config.SPEED_MULTIPLIER : 1.0);
 
-    const savedShowCombo = localStorage.getItem('show-combo');
+    const savedShowCombo = this._lsGet('show-combo');
     this.SHOW_COMBO = savedShowCombo !== null ? (savedShowCombo === 'true') : true;
 
-    const savedPlayParticles = localStorage.getItem('play-particles');
+    const savedPlayParticles = this._lsGet('play-particles');
     this.PLAY_PARTICLES = savedPlayParticles !== null ? (savedPlayParticles === 'true') : (config.PLAY_PARTICLES !== undefined ? config.PLAY_PARTICLES : true);
 
     this._originalSensibilityX = this.camera ? this.camera.angularSensibilityX : 1000;
@@ -911,7 +943,7 @@ class CharCtrl {
     // console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
     // Apply Hide Cursor state if persisted in localStorage
-    if (localStorage.getItem('hide-cursor') === 'true') {
+    if (this._lsGet('hide-cursor') === 'true') {
       document.body.classList.add('cursor-hidden');
     }
 
@@ -1069,6 +1101,7 @@ class CharCtrl {
     this._lastCameraRadius = this.camera.radius;
 
     this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
+      if (this._destroyed || !this.enabled) return;
       // Sync camera radius zoom updates (wheel, trackpad, pinch) back to CAM_FOLLOW_DIST and HUD
       const now = performance.now();
       const isWheelZooming = (now - (this._lastWheelTime || 0)) < 250;
@@ -1110,7 +1143,7 @@ class CharCtrl {
         const maxVal = slider ? parseFloat(slider.max) : 15;
         this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
         this._baseCamFollowDist = this.CAM_FOLLOW_DIST / (this._capScaleY || 1.0);
-        localStorage.setItem('cam-follow-dist', this.CAM_FOLLOW_DIST);
+        this._lsSet('cam-follow-dist', this.CAM_FOLLOW_DIST);
 
         const label = document.getElementById('cam-dist-val');
         if (slider) {
@@ -1140,7 +1173,7 @@ class CharCtrl {
           const lo = this.camera.lowerBetaLimit || 0.05;
           const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
           this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.camera.beta));
-          localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+          this._lsSet('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
           // Sync HUD slider and label
           const slider = document.getElementById('slider-cam-pitch');
           const label = document.getElementById('cam-pitch-val');
@@ -1310,6 +1343,7 @@ class CharCtrl {
   // ── INPUT ──────────────────────────────────────────────
   _setupInput() {
     this._boundKeyDown = e => {
+      if (!this.enabled) return;
       const modal = document.getElementById('info-panel-modal');
       if (modal && modal.classList.contains('open')) {
         return;
@@ -1565,6 +1599,24 @@ class CharCtrl {
     this.spawnPoint = position.clone();
   }
 
+  // Pause/resume the controller (menus, cutscenes, swaps). Disabling drops all
+  // held keys and returns the character to idle so nothing keeps moving.
+  setEnabled(on) {
+    on = !!on;
+    if (this.enabled === on) return;
+    this.enabled = on;
+    if (!on && !this._destroyed) this._resetInputState();
+  }
+
+  // localStorage access gated behind the persistSettings option
+  _lsGet(key) {
+    return this._persist ? localStorage.getItem(key) : null;
+  }
+
+  _lsSet(key, value) {
+    if (this._persist) localStorage.setItem(key, value);
+  }
+
   destroy() {
     this._destroyed = true;
 
@@ -1654,7 +1706,7 @@ class CharCtrl {
 
   playParticles(enable) {
     this.PLAY_PARTICLES = !!enable;
-    localStorage.setItem('play-particles', this.PLAY_PARTICLES);
+    this._lsSet('play-particles', this.PLAY_PARTICLES);
     if (!this.PLAY_PARTICLES && this.dustPS) {
       this.dustPS.emitRate = 0;
       this.dustPS.stop();
@@ -1662,6 +1714,7 @@ class CharCtrl {
   }
 
   _keyDown(code) {
+    if (this._destroyed || !this.enabled) return;
     const inAction = this._isInAction();
 
     if (this._matchesAction(code, 'CROUCH')) {
@@ -1786,6 +1839,7 @@ class CharCtrl {
     this.jumpVel = this.JUMP_PWR;
     this.grounded = false;
     this._setState(S.JUMP_START);
+    if (this.callbacks.onJump) this.callbacks.onJump({ double: false });
     // Dynamic takeoff squash
     this.targetScale.set(1.05, 0.92, 1.05);
     this._setTimeout(() => {
@@ -1805,6 +1859,7 @@ class CharCtrl {
     this._hasDoubleJumped = true;
     this.jumpVel = this.JUMP_PWR * 1.0;
     this._setState(S.JUMP_START);
+    if (this.callbacks.onJump) this.callbacks.onJump({ double: true });
 
     // Update takeoff momentum (moveDir) at the moment of double jump to respect new input direction!
     let inputX = 0, inputZ = 0;
@@ -1868,6 +1923,7 @@ class CharCtrl {
       inputX = this.touchVector.x; inputZ = this.touchVector.y;
     }
     this._rollMoving = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
+    if (this.callbacks.onRoll) this.callbacks.onRoll({ moving: this._rollMoving });
 
     // Check if we are in mid-air and have existing horizontal velocity to preserve and boost momentum
     let currentFwdDir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY)).normalize();
@@ -1896,7 +1952,7 @@ class CharCtrl {
         // No input, but has mid-air momentum: push in the direction of the momentum
         this._rollDir = currentFwdDir;
       }
-      const baseRollSpeed = this.grounded ? 5.2 : 6.2; // Adjusted horizontal impulse/dash speed
+      const baseRollSpeed = this.grounded ? this.ROLL_SPEED_GROUND : this.ROLL_SPEED_AIR;
       this.speed = Math.max(this.speed, baseRollSpeed * this.SPEED_MULTIPLIER);
     } else {
       this._rollDir = currentFwdDir;
@@ -2255,6 +2311,9 @@ class CharCtrl {
   _isMeshCharacter(mesh) {
     if (!mesh) return false;
     if (mesh === this.root || mesh === this.visualMesh) return true;
+    // Explicitly registered character meshes (this controller AND any other
+    // CharCtrl instance in the scene — characters never count as environment).
+    if (CHARACTER_MESHES.has(mesh)) return true;
 
     // Check if it shares any skeleton in the scene that is currently active on our visual mesh
     if (mesh.skeleton) {
@@ -2268,7 +2327,7 @@ class CharCtrl {
     // Traverse parent hierarchy to see if it belongs to this character
     let p = mesh.parent;
     while (p) {
-      if (p === this.root || p === this.visualMesh) return true;
+      if (p === this.root || p === this.visualMesh || CHARACTER_MESHES.has(p)) return true;
       if (typeof p.getParent === 'function') {
         p = p.getParent();
       } else {
@@ -2276,13 +2335,11 @@ class CharCtrl {
       }
     }
 
-    // Check name pattern matching
+    // Last-resort name fallback: ONLY the unambiguous controller-made capsule name.
+    // The old broad match ('character', 'wrapper', 'autorig') made any ENVIRONMENT
+    // mesh containing those words invisible to ground/wall rays.
     const lowerName = (mesh.name || "").toLowerCase();
-    if (lowerName.includes("character") || lowerName.includes("playercapsule") || lowerName.includes("autorig") || lowerName.includes("wrapper")) {
-      return true;
-    }
-
-    return false;
+    return lowerName.includes("playercapsule");
   }
 
   // ── RAYCAST GROUND DETECT ──────────────────────────────
@@ -2351,6 +2408,7 @@ class CharCtrl {
       if (normal.y < 0) normal.scaleInPlace(-1);
       if (normal.y < this._minWalkableNy) {
         steepHit = true; // too steep to stand on — not ground
+        this._steepNormal = normal; // kept for downhill sliding
         continue;
       }
 
@@ -2440,7 +2498,7 @@ class CharCtrl {
 
   // ── UPDATE ─────────────────────────────────────────────
   _update() {
-    if (this._destroyed) return;
+    if (this._destroyed || !this.enabled) return;
     // Clamp long frame times (tab stalls, GC hitches) instead of skipping the
     // whole update — skipping froze the character for the entire slow frame.
     const rawDt = this.scene.getEngine().getDeltaTime() / 1000;
@@ -2528,6 +2586,11 @@ class CharCtrl {
       const fallingVel = this.usePhysics ? currentVelocity.y : this.jumpVel;
       const isInitialSpawn = this._timeSinceSpawn < 0.5;
 
+      // Gameplay event: touchdown (fall damage, footstep SFX, screen effects...)
+      if (!isInitialSpawn && this.callbacks.onLand) {
+        this.callbacks.onLand({ fallHeight, velocity: fallingVel, airTime: this._airborneTime });
+      }
+
       if (isInitialSpawn) {
         // Quietly settle character without emitting landing dust or playing landing camera shakes/anims
         this._rollOnLand = false;
@@ -2554,7 +2617,7 @@ class CharCtrl {
         this._rollOnLand = false;
         this._emitLandingDust();
         this._roll();
-      } else if (fallingVel < -3.0 && fallHeight > 0.4) {
+      } else if (fallingVel < -this.LAND_ANIM_MIN_VEL && fallHeight > this.LAND_ANIM_MIN_HEIGHT) {
         this._rollOnLand = false;
         this._setState(S.JUMP_LAND);
         this.anim.play('Jump_Land', false, 0.15, () => this._returnToLoco(), 1.35);
@@ -2673,8 +2736,22 @@ class CharCtrl {
       }
     } else {
       if (!this.grounded) {
+        // Head bump: ascending into a ceiling must kill the upward velocity,
+        // otherwise the capsule "sticks" to the ceiling until gravity wins.
+        if (this.jumpVel > 0.5) {
+          const headY = (this.root.ellipsoid ? this.root.ellipsoid.y : this._standEllipsoidY) +
+            (this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0);
+          this._groundRay.origin.copyFrom(this.root.position);
+          this._groundRay.origin.y += headY * 0.9;
+          this._groundRay.direction = this._upDir;
+          this._groundRay.length = headY * 0.2 + 0.15;
+          const headPick = this.scene.pickWithRay(this._groundRay, this._envPredicate);
+          this._groundRay.direction = this._downDir; // restore for ground probes
+          if (headPick && headPick.hit) this.jumpVel = 0;
+        }
+
         this.jumpVel -= this.GRAV * dt;
-        if (this.jumpVel < -25) this.jumpVel = -25; // Clamp terminal velocity
+        if (this.jumpVel < -this.TERMINAL_VELOCITY) this.jumpVel = -this.TERMINAL_VELOCITY;
 
         // Fall detection: transition to JUMP_LOOP when falling off platforms.
         // Requires 0.35s airborne so stair-step ledge snaps (resolve in <0.1s) don't trigger fall animation.
@@ -3035,6 +3112,19 @@ class CharCtrl {
         const verticalDisplacement = new BABYLON.Vector3(0, (moveVelocity.y + snapDown) * dt, 0);
         const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
 
+        // Steep-slope slide: on a rejected (too steep) surface, convert part of
+        // the fall into downhill motion along the slope instead of hanging in
+        // place — steeper surface = faster slide.
+        if (this._onSteepSlope && this._steepNormal && this.jumpVel < 0) {
+          const n = this._steepNormal;
+          const hLen = Math.sqrt(n.x * n.x + n.z * n.z);
+          if (hLen > 0.01) {
+            const slideSpeed = Math.min(-this.jumpVel, this.TERMINAL_VELOCITY) * (1 - n.y);
+            totalDisplacement.x += (n.x / hLen) * slideSpeed * dt;
+            totalDisplacement.z += (n.z / hLen) * slideSpeed * dt;
+          }
+        }
+
         this.root.moveWithCollisions(totalDisplacement);
       }
 
@@ -3225,6 +3315,24 @@ class CharCtrl {
     }
 
     // ── UPDATE LOCOMOTION ANIMATIONS ──────────────────────
+    // Real post-collision horizontal speed — feeds the anim blend tree so the
+    // character doesn't run in place ("moonwalk") when a wall blocks movement.
+    {
+      const rdx = this.root.position.x - (this._lastPosX !== undefined ? this._lastPosX : this.root.position.x);
+      const rdz = this.root.position.z - (this._lastPosZ !== undefined ? this._lastPosZ : this.root.position.z);
+      const realSpeed = Math.sqrt(rdx * rdx + rdz * rdz) / dt;
+      // Ignore teleport spikes (OOB recovery, manual repositioning)
+      if (realSpeed < this.SPD_SPRINT * this.SPEED_MULTIPLIER * 3) {
+        if (this._realSpeedSmooth === undefined) this._realSpeedSmooth = realSpeed;
+        this._realSpeedSmooth = lerp(this._realSpeedSmooth, realSpeed, 1 - Math.exp(-10 * dt));
+      }
+    }
+    // Effective speed = what the character ACTUALLY moves. Drives every
+    // speed-based presentation effect (bob, dust, FOV, lean) so pushing
+    // against a wall doesn't bounce/kick dust/zoom like real running.
+    const effSpeed = this._realSpeedSmooth !== undefined
+      ? Math.min(this.speed, this._realSpeedSmooth)
+      : this.speed;
     const canLoco = !inAction;
     if (canLoco && !this.sitting) {
       const activeLocoMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
@@ -3238,7 +3346,7 @@ class CharCtrl {
 
       // Play dust trails while walking, sprinting or rolling on ground with actual speed
       const activeMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
-      if (this.grounded && activeMove && this.speed > 0.65 && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
+      if (this.grounded && activeMove && effSpeed > 0.65 && (this.state === S.SPRINT || this.state === S.WALK || this.state === S.ROLL)) {
         this.dustPS.manualEmitCount = -1; // Reset to continuous emission mode
         this.dustPS.emitRate = this.state === S.SPRINT ? 180 : (this.state === S.WALK ? 25 : 80);
         if (!this.dustPS.isStarted()) {
@@ -3276,12 +3384,15 @@ class CharCtrl {
     this.visualLocalY = Math.max(this.targetLocalY - 0.02 * this._capScaleY, Math.min(this.targetLocalY + maxUpperSuspension, this.visualLocalY));
     this.visualMesh.position.y = this.visualLocalY;
 
-    // 1b. Kinetic Locomotion Bobbing
-    if (this.grounded && hasMove && this.speed > 0.1 && !inAction) {
+    // 1b. Kinetic Locomotion Bobbing — driven by EFFECTIVE speed: a character
+    // blocked by a wall must not keep the vertical walk/run bounce.
+    if (this.grounded && hasMove && effSpeed > 0.3 && !inAction) {
       // Bob speed and amplitude scale with movement state
       const bobFreq = this.state === S.SPRINT ? 14.5 : 9.5;
-      const bobAmpY = this.state === S.SPRINT ? 0.032 : 0.016;
-      const bobAmpX = this.state === S.SPRINT ? 0.020 : 0.009;
+      // Amplitude also eases out as the real movement collapses (wall sliding)
+      const bobScale = Math.min(1, effSpeed / Math.max(0.001, this.SPD_WALK));
+      const bobAmpY = (this.state === S.SPRINT ? 0.032 : 0.016) * bobScale;
+      const bobAmpX = (this.state === S.SPRINT ? 0.020 : 0.009) * bobScale;
 
       this._bobTime += dt * bobFreq;
       const bobOffsetH = Math.cos(this._bobTime * 0.5) * bobAmpX;
@@ -3298,8 +3409,8 @@ class CharCtrl {
 
     // 2. Procedural Leaning (Pitch & Roll)
     // Leaning forward when moving forward, backward when decelerating/braking
-    const physicalSpeed = this.usePhysics ? Math.sqrt(currentVelocity.x * currentVelocity.x + currentVelocity.z * currentVelocity.z) : this.speed;
-    const currentSpeedRatio = this.usePhysics ? Math.min(1.0, physicalSpeed / this.SPD_SPRINT) : (this.speed / this.SPD_SPRINT);
+    const physicalSpeed = this.usePhysics ? Math.sqrt(currentVelocity.x * currentVelocity.x + currentVelocity.z * currentVelocity.z) : effSpeed;
+    const currentSpeedRatio = this.usePhysics ? Math.min(1.0, physicalSpeed / this.SPD_SPRINT) : (effSpeed / this.SPD_SPRINT);
     const acceleration = (this.speed - this._lastSpeed) / dt;
     let targetPitch = 0;
 
@@ -3391,7 +3502,7 @@ class CharCtrl {
     // the real speed once the roll finishes — so no aggressive zoom snap.
     if (this._fovSpeed === undefined) this._fovSpeed = this.speed;
     if (this.state !== S.ROLL && !this._rollActive) {
-      this._fovSpeed = lerp(this._fovSpeed, this.speed, 1 - Math.exp(-6 * dt));
+      this._fovSpeed = lerp(this._fovSpeed, effSpeed, 1 - Math.exp(-6 * dt));
     }
     const targetFOV = this.DYNAMIC_FOV
       ? (this._initialCameraFOV + (this._fovSpeed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
@@ -3504,6 +3615,8 @@ class CharCtrl {
 
     // Save current Y position for vertical stairs stabilization in the next frame
     this._lastY = this.root.position.y;
+    this._lastPosX = this.root.position.x;
+    this._lastPosZ = this.root.position.z;
   }
 
   _updateLocoAnim(hasMove, sprint, backward, blend = 0.35) {
@@ -3648,10 +3761,15 @@ class CharCtrl {
     // Play the unified Locomotion Blend Tree
     this.anim.play('Locomotion', true, blend);
 
-    // Feed current physical speed to dynamically blend weights
+    // Feed current physical speed to dynamically blend weights. Clamped by the
+    // real post-collision speed so a wall-blocked character eases toward idle
+    // instead of sprinting in place.
     const loco = this.anim.g.get('Locomotion');
     if (loco) {
-      loco.updateSpeed(this.speed);
+      const effectiveSpeed = this._realSpeedSmooth !== undefined
+        ? Math.min(this.speed, this._realSpeedSmooth)
+        : this.speed;
+      loco.updateSpeed(effectiveSpeed);
     }
   }
 
@@ -3754,9 +3872,10 @@ function _makeCharacterDestroyer(scene, charCtrl, animCtrl, playerCapsule, loadR
   };
 }
 
-// Load a new character at runtime, disposing a previous one first.
+// Load a new character at runtime, disposing a previous one only AFTER the new
+// one loaded successfully — a failed fetch/merge keeps the old character alive.
 //   prevHandle — the object returned by a prior setupCharacter / loadCharacterRuntime
-//                (its .destroy() is called before the new load). Pass null on first load.
+//                (destroyed on success). Pass null on first load.
 //   options    — same options object accepted by setupCharacter, e.g.
 //     Option A (pre-merged GLB):
 //       { filename: 'character_animated_2.glb', assetsPath: 'assets/', shadow, ... }
@@ -3770,9 +3889,9 @@ async function loadCharacterRuntime(scene, camera, usePhysics, options = {}, pre
   if (prevHandle?.playerCapsule && !options.spawnPosition) {
     options = Object.assign({}, options, { spawnPosition: prevHandle.playerCapsule.position.clone() });
   }
-  if (prevHandle && typeof prevHandle.destroy === 'function') {
-    prevHandle.destroy();
-  }
+  // Freeze the old character's input while the new one loads, but do NOT destroy
+  // it yet — if the load/merge fails we re-enable it and the player keeps playing.
+  if (prevHandle?.charCtrl?.setEnabled) prevHandle.charCtrl.setEnabled(false);
 
   options = Object.assign({}, options);
 
@@ -3794,7 +3913,18 @@ async function loadCharacterRuntime(scene, camera, usePhysics, options = {}, pre
     delete options.animationsUrl;
   }
 
-  return setupCharacter(scene, camera, usePhysics, options);
+  let newHandle;
+  try {
+    newHandle = await setupCharacter(scene, camera, usePhysics, options);
+  } catch (err) {
+    // Load failed — restore the previous character instead of leaving the scene empty.
+    if (prevHandle?.charCtrl?.setEnabled) prevHandle.charCtrl.setEnabled(true);
+    throw err;
+  }
+  if (prevHandle && typeof prevHandle.destroy === 'function') {
+    prevHandle.destroy();
+  }
+  return newHandle;
 }
 
 // Swap ONLY the animations on the current character at runtime (keep the mesh).
@@ -3806,17 +3936,26 @@ async function loadCharacterRuntime(scene, camera, usePhysics, options = {}, pre
 async function swapCharacterAnimations(scene, camera, usePhysics, handle, characterGlb, animationsGlb, extraOptions = {}) {
   // Reuse the runtime loader's Option-B path (mesh + animations → server merge),
   // which already rebuilds AnimCtrl/CharCtrl against the retargeted groups.
+  const createdUrls = [];
   const toUrl = async (src) => {
     if (typeof src === 'string') return src; // already a URL/path
     const buf = src instanceof ArrayBuffer ? src : await src.arrayBuffer();
-    return URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
+    const url = URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
+    createdUrls.push(url);
+    return url;
   };
   const options = Object.assign({
     assetsPath: '',
     filename: await toUrl(characterGlb),
     animationsFilename: await toUrl(animationsGlb),
   }, extraOptions);
-  return loadCharacterRuntime(scene, camera, usePhysics, options, handle);
+  try {
+    return await loadCharacterRuntime(scene, camera, usePhysics, options, handle);
+  } finally {
+    // Object URLs pin the whole GLB in memory until revoked — every swap leaked
+    // both buffers before this cleanup.
+    createdUrls.forEach(u => URL.revokeObjectURL(u));
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
