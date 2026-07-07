@@ -372,8 +372,9 @@ function bindCharacterSwapUI(switchCharacter) {
     run(() => switchCharacter({ assetsPath: 'assets/', filename: select.value }));
   });
 
-  // External GLB import — loaded as-is (Option A). Use it for GLBs that already
-  // carry their animations. For a raw mesh, load it then press "Merge Anims".
+  // External GLB import — merged by default with assets/animations-basic.glb
+  // (Option B, server retarget), so any raw mesh imports ready to play.
+  // "Merge Anims" stays available to re-merge later.
   importBtn?.addEventListener('click', () => fileInput?.click());
   fileInput?.addEventListener('change', () => {
     const file = fileInput.files && fileInput.files[0];
@@ -381,8 +382,13 @@ function bindCharacterSwapUI(switchCharacter) {
     const url = URL.createObjectURL(file);
     lastMeshUrl = url; // remember it so Merge Anims can re-merge this mesh
     run(async () => {
-      try { await switchCharacter({ glbUrl: url }); }
-      finally { fileInput.value = ''; }
+      try {
+        await switchCharacter({
+          glbUrl: url,
+          animationsFilename: 'animations-basic.glb',
+          assetsPath: 'assets/',
+        });
+      } finally { fileInput.value = ''; }
       // NOTE: do not revoke url here — keep it for a later Merge Anims.
     });
   });
