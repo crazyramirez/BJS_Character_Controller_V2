@@ -88,6 +88,9 @@ body {
   pointer-events: none;
   user-select: none;
   z-index: 100;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 32px);
 }
 
 .panel {
@@ -596,14 +599,37 @@ body.touch-device .bmac-mobile-only {
   transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
   min-width: 180px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: calc(100dvh - 32px);
 }
 
 .hud-content {
   max-height: 800px;
   opacity: 1;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1 1 auto;
+  min-height: 0;
   transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease, margin-top 0.45s ease;
   margin-top: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.hud-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.hud-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hud-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
 }
 
 #hud .panel.keys-grid {
@@ -611,6 +637,7 @@ body.touch-device .bmac-mobile-only {
   max-height: 300px;
   opacity: 1;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 #hud-toggle {
@@ -788,6 +815,7 @@ body.touch-device .bmac-mobile-only {
   max-height: 200px;
   opacity: 1;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .bmac-content {
