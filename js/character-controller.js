@@ -41,8 +41,14 @@ const DEFAULT_CHAR_CONFIG = {
 
   // Physics & Speeds Config
   PHYSICS: {
-    GRAV: 22,             // Gravity force pulling the character down
+    GRAV: 22,             // Gravity force. Kinematic mode reads it per-character; initPhysics() uses it as the Havok world default too, so both modes share ONE source of truth.
     JUMP_PWR: 9.5,        // Vertical takeoff impulse force for jumping
+    MAX_SLOPE_ANGLE: 50,  // Max walkable slope in degrees — steeper ground contacts are rejected (character slides/falls instead of sticking)
+    STEP_HEIGHT: 0.50,    // Max obstacle height (m, at default 1.8m capsule) auto-climbed as a step
+    GROUND_PROBE_DISTANCE: 0, // Ground ray length override in meters (0 = automatic per mode: 0.36 Havok / 0.28 kinematic)
+    COYOTE_TIME: 0.12,    // Seconds after walking off a ledge during which a jump is still accepted
+    JUMP_BUFFER_TIME: 0.15, // Seconds before landing during which a jump press is buffered and fires on touchdown
+    OUT_OF_BOUNDS_Y: -15, // World Y below which the character teleports back to its spawn point
     SPD_WALK: 2.5,        // Maximum physical walking speed
     SPD_JOG: 3,           // Maximum physical jogging speed (blend speed threshold)
     SPD_SPRINT: 5,        // Maximum physical sprinting speed
@@ -51,7 +57,7 @@ const DEFAULT_CHAR_CONFIG = {
     ACCEL: 14,            // Movement acceleration rate (speed-up responsiveness)
     DECEL: 16,            // Movement deceleration rate (braking/stopping responsiveness)
     ROT_SPD: 40,          // Character yaw rotation speed responsiveness
-    AIR_CONTROL: false,   // Steering control in mid-air (true = full control, false = no control)
+    AIR_CONTROL: false,   // Mid-air steering: false/0 = none, true/1 = full, or any 0..1 coefficient scaling air acceleration
     DYNAMIC_FOV: true,    // Dynamically adjust camera Field of View based on movement speed
     DYNAMIC_FOV_MAX: 0.10, // Maximum camera FOV expansion amount added at full sprint speed
     CAM_TILT: false,      // Drone-style camera banking (roll) when moving laterally at speed
@@ -847,8 +853,18 @@ class CharCtrl {
     this.ACCEL = config.ACCEL;
     this.DECEL = config.DECEL;
     this.ROT_SPD = config.ROT_SPD;
+    this.MAX_SLOPE_ANGLE = config.MAX_SLOPE_ANGLE !== undefined ? config.MAX_SLOPE_ANGLE : 50;
+    // Minimum walkable normal.y — contacts below this are rejected as ground
+    this._minWalkableNy = Math.cos(this.MAX_SLOPE_ANGLE * Math.PI / 180);
+    this.STEP_HEIGHT = config.STEP_HEIGHT !== undefined ? config.STEP_HEIGHT : 0.50;
+    this.GROUND_PROBE_DISTANCE = config.GROUND_PROBE_DISTANCE || 0;
+    this.COYOTE_TIME = config.COYOTE_TIME !== undefined ? config.COYOTE_TIME : 0.12;
+    this.JUMP_BUFFER_TIME = config.JUMP_BUFFER_TIME !== undefined ? config.JUMP_BUFFER_TIME : 0.15;
+    this.OUT_OF_BOUNDS_Y = config.OUT_OF_BOUNDS_Y !== undefined ? config.OUT_OF_BOUNDS_Y : -15;
+    // AIR_CONTROL is a 0..1 coefficient (booleans map to 0/1 for back-compat)
+    const toAirCoef = (v) => v === true || v === 'true' ? 1 : (v === false || v === 'false' ? 0 : Math.max(0, Math.min(1, parseFloat(v) || 0)));
     const savedAirControl = localStorage.getItem('air-control-enabled');
-    this.AIR_CONTROL = savedAirControl !== null ? (savedAirControl === 'true') : (config.AIR_CONTROL !== undefined ? config.AIR_CONTROL : false);
+    this.AIR_CONTROL = savedAirControl !== null ? toAirCoef(savedAirControl) : (config.AIR_CONTROL !== undefined ? toAirCoef(config.AIR_CONTROL) : 0);
     // Load configurable states from localStorage, falling back to configuration block defaults
     const savedCamFollowLock = localStorage.getItem('cam-follow-lock');
     this.CAM_FOLLOW_LOCK = savedCamFollowLock !== null ? (savedCamFollowLock === 'true') : config.CAM_FOLLOW_LOCK;
@@ -933,7 +949,6 @@ class CharCtrl {
     this._wasOnScalable = false;
     this.onStairs = false;
     this._airborneTime = 0;
-    this._lastGroundedFrame = 0;
     this._rollOnLand = false;
     this._rollActive = false;
     this._lastRollTime = 0;
@@ -961,6 +976,37 @@ class CharCtrl {
     this._touchListeners = [];
     this._pointerDragging = false;
 
+    // Lifecycle: every delayed callback goes through _setTimeout/_setInterval/_raf
+    // so destroy() can cancel them all and nothing mutates disposed meshes.
+    this._destroyed = false;
+    this._timeouts = new Set();
+    this._intervals = new Set();
+    this._rafIds = new Set();
+    this._camTiltPointerObserver = null;
+    this._recenterObserver = null;
+
+    // Spawn/checkpoint used for out-of-bounds recovery (override via setSpawnPoint)
+    this.spawnPoint = options.spawnPoint
+      ? options.spawnPoint.clone()
+      : this.root.position.clone();
+
+    // Reusable per-frame objects — avoid allocating vectors/rays/closures every frame
+    this._envPredicate = (mesh) => mesh.checkCollisions && !this._isMeshCharacter(mesh);
+    this._downDir = new BABYLON.Vector3(0, -1, 0);
+    this._upDir = new BABYLON.Vector3(0, 1, 0);
+    this._groundRay = new BABYLON.Ray(new BABYLON.Vector3(), this._downDir, 1);
+    this._probeOffsets = [
+      new BABYLON.Vector3(), new BABYLON.Vector3(), new BABYLON.Vector3(),
+      new BABYLON.Vector3(), new BABYLON.Vector3()
+    ];
+    this._avgNormal = new BABYLON.Vector3();
+    // Grounding / jump-assist timers (time-based, frame-rate independent)
+    this._groundMissTime = Infinity; // seconds since the ground ray last hit
+    this._jumpBufferedAt = -Infinity; // performance.now() of the last buffered jump press
+    // HUD updates are throttled to ~10 Hz; elements are cached lazily
+    this._hudAccum = 0;
+    this._hudEls = undefined;
+
     this._setupInput();
 
     // Setup procedural dust particles
@@ -980,7 +1026,7 @@ class CharCtrl {
     if (this.isTouch) {
       document.body.classList.add('touch-device');
       // Wait slightly for DOM loading
-      setTimeout(() => this._setupTouchHUD(), 200);
+      this._setTimeout(() => this._setupTouchHUD(), 200);
     }
 
     // Capture initial dimensions for automatic crouch scaling
@@ -1478,7 +1524,70 @@ class CharCtrl {
   get animationEvents() { return this.anim.animationEvents; }
   set animationEvents(v) { this.anim.animationEvents = v || {}; }
 
+  // ── Tracked delayed callbacks (all cancelled on destroy) ──
+  _setTimeout(fn, ms) {
+    if (this._destroyed) return 0;
+    const id = setTimeout(() => {
+      this._timeouts.delete(id);
+      if (!this._destroyed) fn();
+    }, ms);
+    this._timeouts.add(id);
+    return id;
+  }
+
+  _setInterval(fn, ms) {
+    if (this._destroyed) return 0;
+    const id = setInterval(() => {
+      if (this._destroyed) { clearInterval(id); this._intervals.delete(id); return; }
+      fn();
+    }, ms);
+    this._intervals.add(id);
+    return id;
+  }
+
+  _clearInterval(id) {
+    clearInterval(id);
+    this._intervals.delete(id);
+  }
+
+  _raf(fn) {
+    if (this._destroyed) return 0;
+    const id = requestAnimationFrame(() => {
+      this._rafIds.delete(id);
+      if (!this._destroyed) fn();
+    });
+    this._rafIds.add(id);
+    return id;
+  }
+
+  // Update the out-of-bounds recovery point (e.g. on reaching a checkpoint)
+  setSpawnPoint(position) {
+    this.spawnPoint = position.clone();
+  }
+
   destroy() {
+    this._destroyed = true;
+
+    // 0. Cancel every pending timer / interval / animation-frame callback
+    this._timeouts.forEach(id => clearTimeout(id));
+    this._timeouts.clear();
+    this._intervals.forEach(id => clearInterval(id));
+    this._intervals.clear();
+    this._rafIds.forEach(id => cancelAnimationFrame(id));
+    this._rafIds.clear();
+    if (this._rollTimeoutId) { clearTimeout(this._rollTimeoutId); this._rollTimeoutId = null; }
+    if (this._comboTO) { clearTimeout(this._comboTO); this._comboTO = null; }
+
+    // 0b. Remove the camera-tilt pointer observer and any in-flight recenter observer
+    if (this._camTiltPointerObserver) {
+      this.scene.onPointerObservable.remove(this._camTiltPointerObserver);
+      this._camTiltPointerObserver = null;
+    }
+    if (this._recenterObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._recenterObserver);
+      this._recenterObserver = null;
+    }
+
     // 1. Remove window keyboard and focus/blur event listeners
     if (this._boundKeyDown) window.removeEventListener('keydown', this._boundKeyDown);
     if (this._boundKeyUp) window.removeEventListener('keyup', this._boundKeyUp);
@@ -1581,7 +1690,7 @@ class CharCtrl {
             this._returnToLoco();
           } else {
             this._showCombo('CEILING BLOCKED');
-            setTimeout(() => this._hideCombo(), 1200);
+            this._setTimeout(() => this._hideCombo(), 1200);
           }
         } else {
           // stand -> crouch
@@ -1601,10 +1710,15 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'JUMP')) {
-      if (this.grounded && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
+      // Coyote time: shortly after walking off a ledge (no jump/roll in progress),
+      // still accept the jump as if grounded — feels fair at any frame rate.
+      const canCoyoteJump = !this.grounded && !this._isInAction() &&
+        this._airborneTime <= this.COYOTE_TIME && this.jumpVel <= 0.1;
+
+      if ((this.grounded || canCoyoteJump) && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
         if (this._isCeilingBlocked()) {
           this._showCombo('CEILING BLOCKED');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._setTimeout(() => this._hideCombo(), 1200);
         } else if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
@@ -1619,9 +1733,12 @@ class CharCtrl {
         if (this.DOUBLE_JUMP_ENABLED && !this._hasDoubleJumped) {
           this._doubleJump();
         } else {
+          // Buffer the press: if we land within JUMP_BUFFER_TIME it becomes an
+          // instant bunny-hop jump; an earlier press keeps the queued roll.
+          this._jumpBufferedAt = performance.now();
           this._rollOnLand = true;
           this._showCombo('ROLL QUEUED');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._setTimeout(() => this._hideCombo(), 1200);
         }
       }
     } else if (this._matchesAction(code, 'ROLL')) {
@@ -1630,7 +1747,7 @@ class CharCtrl {
       if (this._rollActive) return;
       if (now - this._lastRollTime < 1100) {
         this._showCombo('DODGE COOLDOWN');
-        setTimeout(() => this._hideCombo(), 800);
+        this._setTimeout(() => this._hideCombo(), 800);
         return;
       }
       if (!this.sitting) {
@@ -1641,12 +1758,12 @@ class CharCtrl {
         }
         if (this.grounded && this.crouching && this._isCeilingBlocked()) {
           this._showCombo('NO SPACE TO ROLL');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._setTimeout(() => this._hideCombo(), 1200);
           return;
         }
         if (!this.grounded) {
           this._showCombo('AIR DASH');
-          setTimeout(() => this._hideCombo(), 800);
+          this._setTimeout(() => this._hideCombo(), 800);
         }
         this._roll();
       }
@@ -1665,12 +1782,13 @@ class CharCtrl {
 
   // ── ACTIONS ────────────────────────────────────────────
   _jump() {
+    this._jumpBufferedAt = -Infinity;
     this.jumpVel = this.JUMP_PWR;
     this.grounded = false;
     this._setState(S.JUMP_START);
     // Dynamic takeoff squash
     this.targetScale.set(1.05, 0.92, 1.05);
-    setTimeout(() => {
+    this._setTimeout(() => {
       if (!this.grounded) {
         this.targetScale.set(0.97, 1.05, 0.97);
       }
@@ -1717,14 +1835,14 @@ class CharCtrl {
     }
 
     this.targetScale.set(1.05, 0.92, 1.05);
-    setTimeout(() => {
+    this._setTimeout(() => {
       if (!this.grounded) {
         this.targetScale.set(0.97, 1.05, 0.97);
       }
     }, 100);
 
     this._showCombo('DOUBLE JUMP');
-    setTimeout(() => this._hideCombo(), 1200);
+    this._setTimeout(() => this._hideCombo(), 1200);
 
     this.anim.play('Jump_Start', false, 0.15, () => {
       if (this.state === S.JUMP_START && !this.grounded) {
@@ -1814,7 +1932,7 @@ class CharCtrl {
     // and scaled by ROLL_SPEED so it ends when the animation finishes.
     const rollDurationMs = 920 / ROLL_SPEED;
 
-    this._rollTimeoutId = setTimeout(() => {
+    this._rollTimeoutId = this._setTimeout(() => {
       this._rollActive = false;
       if (this.state !== S.ROLL) return;
 
@@ -1903,11 +2021,11 @@ class CharCtrl {
         this.anim.play('Jump_Loop', true, 0.7);
       } else {
         // Still ascending or at peak — wait one more frame
-        requestAnimationFrame(check);
+        this._raf(check);
       }
     };
 
-    requestAnimationFrame(check);
+    this._raf(check);
   }
 
   _punch() {
@@ -2032,7 +2150,7 @@ class CharCtrl {
       this.anim.play('Spell_Simple_Shoot', false, 0.15);
 
       // Let the player move almost immediately (50ms into the shoot animation)
-      setTimeout(() => {
+      this._setTimeout(() => {
         if (this.state === S.SPELL_SHOOT) {
           this._returnToLoco(0.35);
         }
@@ -2053,13 +2171,13 @@ class CharCtrl {
       if (this.state === S.INTERACT) this._returnToLoco(0.35);
     });
 
-    setTimeout(() => {
-      const cancelIfMoving = setInterval(() => {
-        if (this.state !== S.INTERACT) { clearInterval(cancelIfMoving); return; }
+    this._setTimeout(() => {
+      const cancelIfMoving = this._setInterval(() => {
+        if (this.state !== S.INTERACT) { this._clearInterval(cancelIfMoving); return; }
         const moving = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
           this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
           (this.isTouch && (Math.abs(this.touchVector.x) > 0.2 || Math.abs(this.touchVector.y) > 0.2));
-        if (moving) { clearInterval(cancelIfMoving); this._returnToLoco(0.35); }
+        if (moving) { this._clearInterval(cancelIfMoving); this._returnToLoco(0.35); }
       }, 50);
     }, recoveryDelay);
   }
@@ -2192,58 +2310,94 @@ class CharCtrl {
     // _wasOnScalable persists the extended ray one extra frame so descending a ramp/stair edge doesn't miss.
     // Add a small extra buffer (0.12m) while crouching is active to absorb the transition frames where
     // the ellipsoid hasn't fully settled yet and the ray might otherwise just miss the ground.
-    const baseRayLen = (this.usePhysics ? 0.36 : 0.28) * this._capScaleY;
+    // GROUND_PROBE_DISTANCE (config) overrides the automatic per-mode base length when > 0.
+    const baseRayLen = (this.GROUND_PROBE_DISTANCE > 0
+      ? this.GROUND_PROBE_DISTANCE
+      : (this.usePhysics ? 0.36 : 0.28)) * this._capScaleY;
     const crouchBuffer = this.crouching ? 0.12 * this._capScaleY : 0;
     const rayLen = (this.onScalable || this._wasOnScalable || this.state === S.ROLL) ? 0.55 * this._capScaleY : (baseRayLen + crouchBuffer);
-    const downDir = new BABYLON.Vector3(0, -1, 0);
 
     const radius = 0.22 * this._capScaleW; // Slightly inset from capsule width
-    const offsets = [
-      new BABYLON.Vector3(0, originYOffset, 0),         // Center
-      new BABYLON.Vector3(0, originYOffset, radius),    // Forward
-      new BABYLON.Vector3(0, originYOffset, -radius),   // Backward
-      new BABYLON.Vector3(-radius, originYOffset, 0),   // Left
-      new BABYLON.Vector3(radius, originYOffset, 0)     // Right
-    ];
+    const offsets = this._probeOffsets;
+    offsets[0].set(0, originYOffset, 0);        // Center
+    offsets[1].set(0, originYOffset, radius);   // Forward
+    offsets[2].set(0, originYOffset, -radius);  // Backward
+    offsets[3].set(-radius, originYOffset, 0);  // Left
+    offsets[4].set(radius, originYOffset, 0);   // Right
 
-    let hitAny = false;
-    let onScalable = false;
+    // Fire ALL probes, then pick the closest WALKABLE hit (normal.y >= cos(MAX_SLOPE_ANGLE))
+    // and average the compatible normals around the capsule. Steep contacts are rejected —
+    // the character slides/falls instead of treating a wall edge as ground.
+    let bestPick = null;
+    let bestNormal = null;
+    let steepHit = false;
+    this._avgNormal.set(0, 0, 0);
+    let avgCount = 0;
     this.onStairs = false;
 
-    for (const offset of offsets) {
-      const rayStart = this.root.position.add(offset);
-      const ray = new BABYLON.Ray(rayStart, downDir, rayLen);
-      const pick = this.scene.pickWithRay(ray, (mesh) => {
-        // Only collide with environment meshes
-        return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-      });
+    const ray = this._groundRay;
+    ray.direction = this._downDir;
+    ray.length = rayLen;
 
-      if (pick && pick.hit) {
-        hitAny = true;
-        this._groundNormal = pick.getNormal(true);
-        const name = pick.pickedMesh.name || "";
-        this.onStairs = /step|stair/i.test(name);
-        // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
-        if (pick.pickedMesh.meshType === "scalable" ||
-          (name && /step|stair|ramp|platform|floor/i.test(name))) {
-          onScalable = true;
-        } else {
-          const normal = this._groundNormal;
-          if (normal && normal.y < 0.99 && normal.y > 0.5) {
-            onScalable = true;
-          }
-        }
-        break;
+    for (let i = 0; i < offsets.length; i++) {
+      ray.origin.copyFrom(this.root.position).addInPlace(offsets[i]);
+      const pick = this.scene.pickWithRay(ray, this._envPredicate);
+      if (!(pick && pick.hit)) continue;
+
+      const normal = pick.getNormal(true);
+      if (!normal) continue;
+      // Rays fire downward, so a valid ground normal points up — flip normals
+      // from inverted-winding/double-sided meshes before the slope gate.
+      if (normal.y < 0) normal.scaleInPlace(-1);
+      if (normal.y < this._minWalkableNy) {
+        steepHit = true; // too steep to stand on — not ground
+        continue;
       }
+
+      if (!bestPick || pick.distance < bestPick.distance) {
+        bestPick = pick;
+        bestNormal = normal;
+      }
+      this._avgNormal.addInPlace(normal);
+      avgCount++;
     }
 
-    if (!hitAny) {
+    let onScalable = false;
+    if (bestPick) {
+      // Average only normals compatible with the best hit for a stable ground plane
+      // (all accepted normals already passed the walkable gate, so a simple mean is safe).
+      if (avgCount > 1) {
+        this._avgNormal.scaleInPlace(1 / avgCount);
+        if (this._avgNormal.lengthSquared() > 0.001) {
+          this._avgNormal.normalize();
+          // Only adopt the average when it agrees with the best hit (avoids
+          // blending across a hard edge like a stair lip + floor).
+          if (BABYLON.Vector3.Dot(this._avgNormal, bestNormal) > 0.95) {
+            bestNormal = this._avgNormal.clone();
+          }
+        }
+      }
+      this._groundNormal = bestNormal;
+
+      const name = bestPick.pickedMesh.name || "";
+      this.onStairs = /step|stair/i.test(name);
+      // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
+      if (bestPick.pickedMesh.meshType === "scalable" ||
+        (name && /step|stair|ramp|platform|floor/i.test(name))) {
+        onScalable = true;
+      } else if (bestNormal && bestNormal.y < 0.99 && bestNormal.y > 0.5) {
+        onScalable = true;
+      }
+    } else {
       this._groundNormal = null;
     }
 
+    // Expose steep contact info so movement can slide instead of sticking
+    this._onSteepSlope = !bestPick && steepHit;
+
     this._wasOnScalable = this.onScalable;
     this.onScalable = onScalable;
-    return hitAny;
+    return !!bestPick;
   }
 
   _isCeilingBlocked() {
@@ -2261,11 +2415,8 @@ class CharCtrl {
       rayLen = (this._standEllipsoidY * 2.0) + 0.1;
     }
 
-    const upDir = new BABYLON.Vector3(0, 1, 0);
-    const ray = new BABYLON.Ray(rayStart, upDir, rayLen);
-    const pick = this.scene.pickWithRay(ray, (mesh) => {
-      return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-    });
+    const ray = new BABYLON.Ray(rayStart, this._upDir, rayLen);
+    const pick = this.scene.pickWithRay(ray, this._envPredicate);
 
     return !!(pick && pick.hit);
   }
@@ -2289,8 +2440,12 @@ class CharCtrl {
 
   // ── UPDATE ─────────────────────────────────────────────
   _update() {
-    const dt = this.scene.getEngine().getDeltaTime() / 1000;
-    if (dt <= 0 || dt > 0.1) return;
+    if (this._destroyed) return;
+    // Clamp long frame times (tab stalls, GC hitches) instead of skipping the
+    // whole update — skipping froze the character for the entire slow frame.
+    const rawDt = this.scene.getEngine().getDeltaTime() / 1000;
+    if (rawDt <= 0) return;
+    const dt = Math.min(rawDt, 0.1);
     this.stateT += dt;
     this._timeSinceSpawn += dt;
 
@@ -2337,26 +2492,29 @@ class CharCtrl {
     if (this.usePhysics) {
       if (this.jumpVel > 0.1 || (isJumpingOrRolling && currentVelocity.y > 0.1)) {
         this.grounded = false;
+        this._groundMissTime = Infinity; // jumping — no grace period
       } else {
         const rayGrounded = this._checkGrounded();
         // Havok on ramps/stairs can briefly bounce the capsule above the ray reach.
         // Treat as grounded if: ray hit, OR Havok Y velocity is near-zero and we
-        // were grounded very recently (within 3 frames) — prevents false airborne on bumpy surfaces.
+        // were grounded very recently — prevents false airborne on bumpy surfaces.
+        // TIME-based grace (~50ms) so 30/60/144 FPS all behave identically
+        // (the old 2-frame counter tripled the grace window at 30 vs 144 FPS).
         if (rayGrounded) {
           this.grounded = true;
-          this._lastGroundedFrame = 0;
+          this._groundMissTime = 0;
         } else {
-          this._lastGroundedFrame = (this._lastGroundedFrame || 0) + 1;
-          // Buffer only for ramp/stair micro-bounce — never during jump states.
-          // Increased velocity threshold from 1.5 to 3.5 to prevent losing grounding while sprinting down slopes.
-          this.grounded = !isJumpingOrRolling && (this._lastGroundedFrame <= 2) && Math.abs(currentVelocity.y) < 3.5;
+          this._groundMissTime += dt;
+          this.grounded = !isJumpingOrRolling && (this._groundMissTime <= 0.05) && Math.abs(currentVelocity.y) < 3.5;
         }
       }
     } else {
       if (this.jumpVel > 0.1) {
         this.grounded = false;
+        this._groundMissTime = Infinity;
       } else {
         this.grounded = this._checkGrounded();
+        this._groundMissTime = this.grounded ? 0 : this._groundMissTime + dt;
       }
     }
 
@@ -2386,6 +2544,12 @@ class CharCtrl {
         // _resolvePostRoll hands off to loco (re-seeding speed from input).
         this._emitLandingDust();
         this.jumpVel = 0;
+      } else if ((performance.now() - this._jumpBufferedAt) <= this.JUMP_BUFFER_TIME * 1000 && !this.crouching && !this._isCeilingBlocked()) {
+        // Jump buffered just before touchdown — fire it instantly (bunny hop)
+        this._jumpBufferedAt = -Infinity;
+        this._rollOnLand = false;
+        this._emitLandingDust();
+        this._jump();
       } else if (this._rollOnLand && this.speed > 1.0) {
         this._rollOnLand = false;
         this._emitLandingDust();
@@ -2473,9 +2637,7 @@ class CharCtrl {
           const originYOffset = useCrouchHeight ? -0.65 : -0.85;
           const snapRayStart = this.root.position.add(new BABYLON.Vector3(0, originYOffset, 0));
           const snapRay = new BABYLON.Ray(snapRayStart, new BABYLON.Vector3(0, -1, 0), 0.5);
-          const snapPick = this.scene.pickWithRay(snapRay, (mesh) => {
-            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-          });
+          const snapPick = this.scene.pickWithRay(snapRay, this._envPredicate);
           if (snapPick && snapPick.hit) {
             _snapVelY = -2.5;
           }
@@ -2619,9 +2781,7 @@ class CharCtrl {
 
       for (const h of heights) {
         const rayStart = this.root.position.add(new BABYLON.Vector3(0, h, 0));
-        const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), (mesh) => {
-          return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-        });
+        const pick = this.scene.pickWithRay(new BABYLON.Ray(rayStart, rayDir, 1.0), this._envPredicate);
         if (pick && pick.hit) {
           const availableSpace = Math.max(0, pick.distance - this._standEllipsoidWidth - margin);
           safeMaxOffsetZ = Math.min(safeMaxOffsetZ, availableSpace);
@@ -2669,7 +2829,10 @@ class CharCtrl {
             tgt *= Math.abs(inputZ) * this.SPEED_MULTIPLIER;
           }
 
-          const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
+          // In the air the accel/decel responsiveness scales with the AIR_CONTROL
+          // coefficient (0..1) instead of being all-or-nothing.
+          const airScale = this.grounded ? 1 : this.AIR_CONTROL;
+          const rate = (inputZ !== 0 ? this.ACCEL : this.DECEL) * airScale;
           this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
           if (this.speed < 0.05) this.speed = 0;
         }
@@ -2678,13 +2841,14 @@ class CharCtrl {
         if (!this.grounded) {
           // Air control logic:
           if (this.AIR_CONTROL) {
+            // AIR_CONTROL is a 0..1 coefficient scaling how fast air speed responds
             let tgtSpeed = this.speed;
             if (hasMove) {
               let idealTgt = (isSprinting ? this.SPD_SPRINT : this.SPD_WALK) * this.SPEED_MULTIPLIER;
               idealTgt *= inputMag;
-              tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
+              tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * this.AIR_CONTROL * dt));
             } else {
-              tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
+              tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * this.AIR_CONTROL * dt));
             }
             this.speed = tgtSpeed;
           }
@@ -2747,9 +2911,7 @@ class CharCtrl {
         const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.51 * this._capScaleY, 0));
         const rayDist = this._standEllipsoidWidth + 0.15; // slightly ahead of capsule edge
         const ray = new BABYLON.Ray(rayStart, dir, rayDist);
-        const pick = this.scene.pickWithRay(ray, (mesh) => {
-          return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-        });
+        const pick = this.scene.pickWithRay(ray, this._envPredicate);
         if (pick && pick.hit) {
           wallNormal = pick.getNormal(true);
         }
@@ -2778,21 +2940,17 @@ class CharCtrl {
           const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85 * this._capScaleY, 0));
           const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, dir, rayDist);
-          const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
-            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-          });
+          const lowPick = this.scene.pickWithRay(lowRay, this._envPredicate);
 
           if (lowPick && lowPick.hit) {
-            // Check high ray at step limit height (0.50 above bottom, so -0.40 relative to center, scaled)
-            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
+            // Check high ray at the configured STEP_HEIGHT above the capsule bottom (-0.90)
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, (-0.90 + this.STEP_HEIGHT) * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, dir, rayDist);
-            const highPick = this.scene.pickWithRay(highRay, (mesh) => {
-              return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-            });
+            const highPick = this.scene.pickWithRay(highRay, this._envPredicate);
 
             // If the low obstacle is hit, but not the high one, we can climb it!
             if (!highPick || !highPick.hit) {
-              stepClimbVelY = 2.0; // Apply upward step velocity to slide onto the step
+              stepClimbVelY = 2.0 * this._capScaleY; // Upward step velocity, scaled with capsule size
             }
           }
         }
@@ -2891,19 +3049,15 @@ class CharCtrl {
           const lowRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.85 * this._capScaleY, 0));
           const rayDist = 0.7 * this._capScaleW; // slightly ahead of capsule edge (radius + margin)
           const lowRay = new BABYLON.Ray(lowRayStart, this._rollDir, rayDist);
-          const lowPick = this.scene.pickWithRay(lowRay, (mesh) => {
-            return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-          });
+          const lowPick = this.scene.pickWithRay(lowRay, this._envPredicate);
 
           if (lowPick && lowPick.hit) {
-            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, -0.40 * this._capScaleY, 0));
+            const highRayStart = this.root.position.add(new BABYLON.Vector3(0, (-0.90 + this.STEP_HEIGHT) * this._capScaleY, 0));
             const highRay = new BABYLON.Ray(highRayStart, this._rollDir, rayDist);
-            const highPick = this.scene.pickWithRay(highRay, (mesh) => {
-              return mesh.checkCollisions && !this._isMeshCharacter(mesh);
-            });
+            const highPick = this.scene.pickWithRay(highRay, this._envPredicate);
 
             if (!highPick || !highPick.hit) {
-              stepClimbVelY = 2.0; // Apply upward step velocity to slide onto the step
+              stepClimbVelY = 2.0 * this._capScaleY; // Upward step velocity, scaled with capsule size
             }
           }
         }
@@ -3050,11 +3204,11 @@ class CharCtrl {
       this.speed = 0; // Ensure speed is reset to 0 during non-movement actions
     }
 
-    // Teleport back if character falls out of bounds
-    if (this.root.position.y < -15) {
+    // Teleport back to the spawn/checkpoint if the character falls out of bounds
+    if (this.root.position.y < this.OUT_OF_BOUNDS_Y) {
       if (this.usePhysics) {
         this.physicsBody.disablePreStep = false;
-        this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
+        this.root.position.copyFrom(this.spawnPoint);
         this.root.rotationQuaternion = BABYLON.Quaternion.Identity();
         this.rotY = 0;
         this.jumpVel = 0;
@@ -3062,7 +3216,7 @@ class CharCtrl {
         this.physicsBody.setLinearVelocity(BABYLON.Vector3.Zero());
         this.physicsBody.setAngularVelocity(BABYLON.Vector3.Zero());
       } else {
-        this.root.position.copyFrom(new BABYLON.Vector3(0, 1.2, 0));
+        this.root.position.copyFrom(this.spawnPoint);
         this.root.rotation.y = 0;
         this.rotY = 0;
         this.jumpVel = 0;
@@ -3211,7 +3365,7 @@ class CharCtrl {
           this._camShake = 0.08;
         }
         // Smoothly restore to normal scale after squash duration
-        setTimeout(() => {
+        this._setTimeout(() => {
           this.targetScale.set(1, 1, 1);
         }, 120);
       }
@@ -3251,7 +3405,7 @@ class CharCtrl {
     if (!this._camTiltPointerInit) {
       this._camTiltPointerInit = true;
       this._camTiltDragPx = 0;
-      this.scene.onPointerObservable.add((pi) => {
+      this._camTiltPointerObserver = this.scene.onPointerObservable.add((pi) => {
         if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE && pi.event && pi.event.buttons > 0) {
           this._camTiltDragPx += pi.event.movementX || 0;
         }
@@ -3312,40 +3466,39 @@ class CharCtrl {
     this._lastRotY = this.rotY;
     this._lastSpeed = this.speed;
 
-    // Speed update callback / HUD
+    // Speed update callback (kept per-frame — apps may drive game logic from it)
     if (this.callbacks.onSpeedChange) {
       this.callbacks.onSpeedChange(this.speed);
-    } else {
-      const hudSpeed = document.getElementById('hud-speed');
-      if (hudSpeed) {
-        hudSpeed.textContent = `spd: ${this.speed.toFixed(1)}`;
+    }
+
+    // HUD / mobile button DOM updates throttled to ~10 Hz with cached lookups —
+    // per-frame getElementById calls showed up as measurable per-frame cost.
+    this._hudAccum += dt;
+    if (this._hudAccum >= 0.1) {
+      this._hudAccum = 0;
+      if (this._hudEls === undefined) {
+        this._hudEls = {
+          speed: document.getElementById('hud-speed'),
+          fps: document.getElementById('hud-fps'),
+          fpsInline: document.getElementById('hud-fps-inline'),
+          btnCrouch: document.getElementById('btn-crouch'),
+          btnSprint: document.getElementById('btn-sprint'),
+        };
       }
-    }
+      const els = this._hudEls;
 
-    // Update FPS inside the HUD
-    const fpsText = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
-    const hudFps = document.getElementById('hud-fps');
-    if (hudFps) {
-      hudFps.textContent = fpsText;
-    }
-    const hudFpsInline = document.getElementById('hud-fps-inline');
-    if (hudFpsInline) {
-      hudFpsInline.textContent = fpsText;
-    }
-
-    // Update active visual state for mobile toggle buttons
-    if (this.isTouch) {
-      const btnCrouch = document.getElementById('btn-crouch');
-      const btnSprint = document.getElementById('btn-sprint');
-
-      if (btnCrouch) {
-        if (this.crouching) btnCrouch.classList.add('active');
-        else btnCrouch.classList.remove('active');
+      if (!this.callbacks.onSpeedChange && els.speed) {
+        els.speed.textContent = `spd: ${this.speed.toFixed(1)}`;
       }
 
-      if (btnSprint) {
-        if (this.sprinting) btnSprint.classList.add('active');
-        else btnSprint.classList.remove('active');
+      const fpsText = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
+      if (els.fps) els.fps.textContent = fpsText;
+      if (els.fpsInline) els.fpsInline.textContent = fpsText;
+
+      // Update active visual state for mobile toggle buttons
+      if (this.isTouch) {
+        if (els.btnCrouch) els.btnCrouch.classList.toggle('active', this.crouching);
+        if (els.btnSprint) els.btnSprint.classList.toggle('active', this.sprinting);
       }
     }
 
@@ -3522,6 +3675,9 @@ class CharCtrl {
 
     const diffBeta = targetBeta - startBeta;
 
+    if (this._recenterObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._recenterObserver);
+    }
     const obs = this.scene.onBeforeRenderObservable.add(() => {
       const dt = this.scene.getEngine().getDeltaTime() / 1000;
       elapsed += dt;
@@ -3535,15 +3691,21 @@ class CharCtrl {
 
       if (t >= 1.0) {
         this.scene.onBeforeRenderObservable.remove(obs);
+        if (this._recenterObserver === obs) this._recenterObserver = null;
       }
     });
+    this._recenterObserver = obs;
   }
 }
 
 // ═══════════════════════════════════════════════════════════
 // SHARED PHYSICS INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
-async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
+// Havok world gravity defaults to the SAME configured GRAV as kinematic mode,
+// so tuning DEFAULT_CHAR_CONFIG.PHYSICS.GRAV changes both. Pass an explicit
+// gravity vector only to intentionally decouple world gravity from it.
+async function initPhysics(scene, gravity = null) {
+  if (!gravity) gravity = new BABYLON.Vector3(0, -DEFAULT_CHAR_CONFIG.PHYSICS.GRAV, 0);
   const physicsOverride = localStorage.getItem('use-physics');
   if (physicsOverride === 'false') return false;
   try {
@@ -3776,6 +3938,9 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         const charOptions = Object.assign({}, options.charOptions);
         if (options.keys) charOptions.keys = options.keys;
         if (options.config) charOptions.config = options.config;
+        // Propagate the ACTUAL physics availability — CharCtrl must never fall back
+        // to localStorage here, or a failed Havok init still builds a physics body.
+        charOptions.usePhysics = usePhysics;
         const charCtrl = new CharCtrl(playerCapsule, mergedRoot, camera, animCtrl, scene, charOptions);
         if (typeof options.configure === 'function') {
           options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
@@ -3942,6 +4107,9 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const charOptions = Object.assign({}, options.charOptions);
   if (options.keys) charOptions.keys = options.keys;
   if (options.config) charOptions.config = options.config;
+  // Propagate the ACTUAL physics availability — CharCtrl must never fall back
+  // to localStorage here, or a failed Havok init still builds a physics body.
+  charOptions.usePhysics = usePhysics;
 
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, charOptions);
 
@@ -3969,6 +4137,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
 // Expose classes and definitions to the global window object for easy consumption in classical script-based setups
 window.S = S;
+window.DEFAULT_CHAR_CONFIG = DEFAULT_CHAR_CONFIG;
 window.ACTION_STATES = ACTION_STATES;
 window.AnimCtrl = AnimCtrl;
 window.CharCtrl = CharCtrl;
