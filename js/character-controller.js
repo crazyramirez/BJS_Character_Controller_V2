@@ -2001,10 +2001,10 @@ class CharCtrl {
   _isMeshCharacter(mesh) {
     if (!mesh) return false;
     if (mesh === this.root || mesh === this.visualMesh) return true;
-    
+
     // Check if it shares any skeleton in the scene that is currently active on our visual mesh
     if (mesh.skeleton) {
-      const activeSkel = this.visualMesh.skeleton || 
+      const activeSkel = this.visualMesh.skeleton ||
         (this.visualMesh.getChildMeshes && this.visualMesh.getChildMeshes().find(m => m.skeleton)?.skeleton);
       if (activeSkel && mesh.skeleton === activeSkel) {
         return true;
@@ -2021,13 +2021,13 @@ class CharCtrl {
         p = p.parent;
       }
     }
-    
+
     // Check name pattern matching
     const lowerName = (mesh.name || "").toLowerCase();
     if (lowerName.includes("character") || lowerName.includes("playercapsule") || lowerName.includes("autorig") || lowerName.includes("wrapper")) {
       return true;
     }
-    
+
     return false;
   }
 
