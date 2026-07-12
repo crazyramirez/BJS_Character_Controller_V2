@@ -272,6 +272,14 @@
                   </div>
                   <input type="range" id="slider-hips-tilt" min="-30" max="30" step="0.1" value="0">
                 </div>
+                <div class="control-group" style="margin-bottom:10px;">
+                  <div class="control-label"
+                    style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span>Hands Close / Open</span>
+                    <span class="control-value" id="val-hands-open-close" style="color:var(--text-cyan);">0°</span>
+                  </div>
+                  <input type="range" id="slider-hands-open-close" min="-10" max="45" step="0.5" value="0">
+                </div>
               </div>
             </div>
           </div>
@@ -304,6 +312,15 @@
                     Drag the yellow joint markers in the viewport to match your character's anatomy
                     (click a marker to attach the move gizmo), then apply.
                   </p>
+                  <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;">
+                    Skeleton target
+                    <select id="autorig-skeleton-preset" style="width:100%; margin-top:4px;">
+                      <option value="mixamo">Mixamo / Babylon.js</option>
+                      <option value="unity">Unity Humanoid</option>
+                      <option value="unreal">Unreal Engine</option>
+                      <option value="blender">Blender / Rigify</option>
+                    </select>
+                  </label>
                   <label class="autorig-symmetry-row">
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
                   </label>
@@ -317,6 +334,15 @@
                     title="Re-center every marker to the middle of the body along the current view depth.">
                     🧲 Snap all markers to body
                   </button>
+                  <button id="btn-autorig-swap-sides" class="btn-action btn-secondary"
+                    style="margin-top: 6px; width: 100%;"
+                    title="Swap every Left/Right marker without moving them one by one.">
+                    ⇄ Swap Left / Right
+                  </button>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Enable only after placing every finger marker. Disabled keeps the original stable hand weighting.">
+                    <input type="checkbox" id="autorig-skin-fingers"> Skin fingers after manual placement
+                  </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)

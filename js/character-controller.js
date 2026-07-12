@@ -836,11 +836,11 @@ class CharCtrl {
     if (this.usePhysics) {
       // Derive physics capsule size from the collision ellipsoid so a scaled character gets a matching body
       const physScaleY = this.root.ellipsoid ? this.root.ellipsoid.y / 0.96 : 1;
-      const physScaleW = this.root.ellipsoid ? this.root.ellipsoid.x / 0.35 : 1;
+      const physScaleW = this.root.ellipsoid ? this.root.ellipsoid.x / 0.46 : 1;
       const startPoint = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
       const endPoint = new BABYLON.Vector3(0, 0.55 * physScaleY, 0);
-      this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.35 * physScaleW, scene);
-      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.55 * physScaleY, 0), new BABYLON.Vector3(0, -0.15 * physScaleY, 0), 0.35 * physScaleW, scene);
+      this._standShape = new BABYLON.PhysicsShapeCapsule(startPoint, endPoint, 0.46 * physScaleW, scene);
+      this._crouchShape = new BABYLON.PhysicsShapeCapsule(new BABYLON.Vector3(0, -0.55 * physScaleY, 0), new BABYLON.Vector3(0, -0.15 * physScaleY, 0), 0.46 * physScaleW, scene);
 
       this._standShape.material = { friction: 0, restitution: 0 };
       this._crouchShape.material = { friction: 0, restitution: 0 };
@@ -913,12 +913,12 @@ class CharCtrl {
 
     // Capture initial dimensions for automatic crouch scaling
     this._standEllipsoidY = this.root.ellipsoid ? this.root.ellipsoid.y : 0.96;
-    this._standEllipsoidWidth = this.root.ellipsoid ? this.root.ellipsoid.x : 0.35;
+    this._standEllipsoidWidth = this.root.ellipsoid ? this.root.ellipsoid.x : 0.46;
     this._standMeshY = this.visualMesh.position.y;
     this._crouchEllipsoidY = 0.55 * (this._standEllipsoidY / 0.96);
     // Capsule scale factors relative to the default 1.8m capsule — drive scale-aware ray distances
     this._capScaleY = this._standEllipsoidY / 0.96;
-    this._capScaleW = this._standEllipsoidWidth / 0.35;
+    this._capScaleW = this._standEllipsoidWidth / 0.46;
     this._lastY = this.root.position.y;
     this._highestAirborneY = this.root.position.y;
 
@@ -2477,8 +2477,17 @@ class CharCtrl {
       }
 
       // Scale offset based on speed ratio and the safe maximum offset
-      const targetOffsetZ = (this.speed / this.SPD_SPRINT) * safeMaxOffsetZ * localMoveSign;
-      this.localOffsetZ = lerp(this.localOffsetZ || 0, targetOffsetZ, 1 - Math.exp(-4 * dt));
+      // The forward collision offset is useful in follow-lock locomotion, where
+      // facing is stable. In free camera-relative locomotion the character yaw
+      // continuously follows the input direction; rotating an off-center
+      // ellipsoid every frame makes its collision center orbit and the solver
+      // visibly jitters during lateral circles.
+      const targetOffsetZ = this.CAM_FOLLOW_LOCK
+        ? (this.speed / this.SPD_SPRINT) * safeMaxOffsetZ * localMoveSign
+        : 0;
+      this.localOffsetZ = this.CAM_FOLLOW_LOCK
+        ? lerp(this.localOffsetZ || 0, targetOffsetZ, 1 - Math.exp(-4 * dt))
+        : 0;
 
       // Instant safety clamp: ensure the active offset never exceeds the physical space detected in this frame
       this.localOffsetZ = Math.max(-safeMaxOffsetZ, Math.min(safeMaxOffsetZ, this.localOffsetZ));
@@ -2489,8 +2498,8 @@ class CharCtrl {
         this.root.ellipsoidOffset.y = lerp(this.root.ellipsoidOffset.y, targetOffset, 1 - Math.exp(-4 * dt));
 
         // Transform local Z offset to world space based on character rotation (Y-axis)
-        this.root.ellipsoidOffset.x = this.localOffsetZ * Math.sin(this.rotY);
-        this.root.ellipsoidOffset.z = this.localOffsetZ * Math.cos(this.rotY);
+        this.root.ellipsoidOffset.x = this.CAM_FOLLOW_LOCK ? this.localOffsetZ * Math.sin(this.rotY) : 0;
+        this.root.ellipsoidOffset.z = this.CAM_FOLLOW_LOCK ? this.localOffsetZ * Math.cos(this.rotY) : 0;
 
         const newWidth = lerp(this.root.ellipsoid.x, targetEllipsoidWidth, 1 - Math.exp(-4 * dt));
         this.root.ellipsoid.x = newWidth;
@@ -2585,7 +2594,9 @@ class CharCtrl {
       }
 
       // Wall detection: check if there is an obstacle directly in front at an unclimbable height
+      const intendedDir = dir.clone();
       let wallNormal = null;
+      let blockedByWall = false;
       if (hasMove && dir.length() > 0.01) {
         // Ray starts ~0.45 above feet (feet at -0.96 relative to capsule center, so -0.51 relative to center, scaled)
         const rayStart = this.root.position.add(new BABYLON.Vector3(0, -0.51 * this._capScaleY, 0));
@@ -2602,16 +2613,68 @@ class CharCtrl {
       // Project movement direction onto the wall plane if a wall is encountered
       if (wallNormal) {
         wallNormal.y = 0;
-        wallNormal.normalize();
-        const dot = BABYLON.Vector3.Dot(dir, wallNormal);
-        if (dot < 0) { // Moving towards/into the wall
-          dir.subtractInPlace(wallNormal.scale(dot));
-          if (dir.length() > 0.01) {
-            dir.normalize();
-          } else {
-            dir.set(0, 0, 0);
+        if (wallNormal.lengthSquared() > 1e-8) {
+          wallNormal.normalize();
+          const dot = BABYLON.Vector3.Dot(dir, wallNormal);
+          if (dot < 0) { // Moving towards/into the wall
+            dir.subtractInPlace(wallNormal.scale(dot));
+            const slideLength = dir.length();
+            // A mostly head-on impact leaves almost no tangent movement. Side
+            // contact still slides naturally and must not cancel locomotion.
+            blockedByWall = dot < -0.55 && slideLength < 0.22;
+            if (slideLength > 0.01) {
+              dir.normalize();
+            } else {
+              dir.set(0, 0, 0);
+            }
           }
         }
+      }
+
+      blockedByWall = blockedByWall || this._collisionBlocked === true;
+
+      if (this.usePhysics) {
+        // Havok resolves contacts after setLinearVelocity, so currentVelocity is
+        // the previous physics step's real result. Compare only along the
+        // requested direction and arm detection after normal acceleration has
+        // had time to start, preventing false blocks from rest.
+        if (!hasMove || !this.grounded || intendedDir.lengthSquared() < 0.01) {
+          this._physicsMoveCommandTime = 0;
+          this._physicsBlockedTime = 0;
+          this._physicsBlockedDir = null;
+        } else {
+          const intendedNorm = intendedDir.normalizeToNew();
+          const changedDirection = this._physicsBlockedDir &&
+            BABYLON.Vector3.Dot(intendedNorm, this._physicsBlockedDir) < 0.75;
+          if (changedDirection) {
+            this._physicsBlockedTime = 0;
+            this._blockedMoveBlend = Math.min(this._blockedMoveBlend || 0, 0.2);
+            this._physicsBlockedDir = null;
+          }
+          this._physicsMoveCommandTime = (this._physicsMoveCommandTime || 0) + dt;
+          const actualAlong = Math.max(0,
+            currentVelocity.x * intendedNorm.x + currentVelocity.z * intendedNorm.z);
+          const armed = this._physicsMoveCommandTime > 0.18 &&
+            (this.speed > 0.8 || (this._blockedMoveBlend || 0) > 0.25);
+          const stalled = armed && actualAlong < Math.max(0.04, this.speed * 0.18);
+          this._physicsBlockedTime = stalled
+            ? (this._physicsBlockedTime || 0) + dt
+            : Math.max(0, (this._physicsBlockedTime || 0) - dt * 4);
+          if (this._physicsBlockedTime > 0.10) {
+            blockedByWall = true;
+            this._physicsBlockedDir = intendedNorm;
+          }
+        }
+      }
+
+      const blockedTarget = blockedByWall && hasMove && this.grounded ? 1 : 0;
+      const blockedRate = blockedTarget ? 16 : 7;
+      this._blockedMoveBlend = lerp(this._blockedMoveBlend || 0, blockedTarget, 1 - Math.exp(-blockedRate * dt));
+      if (this._blockedMoveBlend > 0.01) {
+        // The input remains held, but locomotion speed must reflect physical
+        // progress. A fast stop feels like bracing against the obstacle; the
+        // slower release lets acceleration resume naturally after clearing it.
+        this.speed = lerp(this.speed, 0.12, 1 - Math.exp(-14 * this._blockedMoveBlend * dt));
       }
 
       if (this.usePhysics) {
@@ -2721,7 +2784,19 @@ class CharCtrl {
         const verticalDisplacement = new BABYLON.Vector3(0, (moveVelocity.y + snapDown) * dt, 0);
         const totalDisplacement = horizontalDisplacement.add(verticalDisplacement);
 
+        const beforeMoveX = this.root.position.x;
+        const beforeMoveZ = this.root.position.z;
         this.root.moveWithCollisions(totalDisplacement);
+        const requestedHorizontal = horizontalDisplacement.length();
+        const actualHorizontal = Math.hypot(
+          this.root.position.x - beforeMoveX,
+          this.root.position.z - beforeMoveZ
+        );
+        // Same-frame collision result: acceleration and camera motion cannot
+        // create false positives. Preserve wall sliding when a meaningful
+        // portion of the requested tangent displacement succeeds.
+        this._collisionBlocked = hasMove && this.grounded && requestedHorizontal > 1e-4 &&
+          actualHorizontal < requestedHorizontal * 0.18;
       }
 
       if (this.speed > 0) {
@@ -2918,7 +2993,8 @@ class CharCtrl {
     const canLoco = !inAction;
     if (canLoco && !this.sitting) {
       const activeLocoMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;
-      this._updateLocoAnim(activeLocoMove, isSprinting, inputZ < -0.2);
+      const physicallyMoving = activeLocoMove && (this._blockedMoveBlend || 0) < 0.82;
+      this._updateLocoAnim(physicallyMoving, isSprinting && (this._blockedMoveBlend || 0) < 0.35, inputZ < -0.2);
     }
 
     // ── UPDATE PROCEDURAL PARTICLES ────────────────────────
@@ -3430,12 +3506,12 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         const capScale = options.capsuleScale || 1;
         const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
         const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
-        const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4 * capW, height: 1.8 * capY }, scene);
+        const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.46 * capW, height: 1.8 * capY }, scene);
         playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
         playerCapsule.visibility = 0;
         playerCapsule.isPickable = false;
         playerCapsule.checkCollisions = !usePhysics;
-        playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35 * capW, 0.96 * capY, 0.35 * capW);
+        playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.46 * capW, 0.96 * capY, 0.46 * capW);
         playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
 
         mergedRoot.setParent(playerCapsule);
@@ -3501,12 +3577,12 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const capScale = options.capsuleScale || 1;
   const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
   const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.4 * capW, height: 1.8 * capY }, scene);
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.46 * capW, height: 1.8 * capY }, scene);
   playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
   playerCapsule.checkCollisions = !usePhysics;
-  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.35 * capW, 0.96 * capY, 0.35 * capW);
+  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.46 * capW, 0.96 * capY, 0.46 * capW);
   playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
 
   setLoad(90, 'Building controllers...');

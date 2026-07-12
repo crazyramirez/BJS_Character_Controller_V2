@@ -73,7 +73,8 @@ app.post('/api/merge', upload.fields([
 
     let options = {};
     if (req.body?.options) {
-      try { options = JSON.parse(req.body.options); } catch (_) { /* ignore */ }
+      try { options = JSON.parse(req.body.options); }
+      catch (_) { return res.status(400).json({ error: 'Invalid JSON in options.' }); }
     }
 
     console.log(`[merge] char=${charFile.originalname} (${(charFile.size / 1024 / 1024).toFixed(2)} MB)`);
@@ -146,7 +147,8 @@ app.post('/api/autorig', upload.single('file'), async (req, res) => {
 
     let options = {};
     if (req.body?.options) {
-      try { options = JSON.parse(req.body.options); } catch (_) { /* ignore */ }
+      try { options = JSON.parse(req.body.options); }
+      catch (_) { return res.status(400).json({ error: 'Invalid JSON in options.' }); }
     }
 
     console.log(`[autorig] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB), custom joints: ${options.joints ? Object.keys(options.joints).length : 0}`);

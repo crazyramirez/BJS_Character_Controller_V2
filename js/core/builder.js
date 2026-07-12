@@ -14,6 +14,7 @@ let detectedAnimations = [];
 // Server-side pipeline state
 let characterGlbBuffer = null; // ArrayBuffer of the loaded character GLB
 let originalCharacterGlbBuffer = null; // Clean original character GLB
+let autoRigSourceGlbBuffer = null; // Pristine skinless source retained across generated-rig reloads
 let animationsGlbBuffer = null; // ArrayBuffer of the preloaded animations GLB
 let isServerAvailable = false;
 let characterFilename = 'character.glb';
@@ -160,7 +161,8 @@ let charTransformConfig = {
   SHOULDER_RAISE_ANGLE: 0.0,
   LEG_SPREAD_ANGLE: 0.0,
   SPINE_STRAIGHTEN_ANGLE: 0.0,
-  HIPS_TILT_ANGLE: 0.0
+  HIPS_TILT_ANGLE: 0.0,
+  HANDS_OPEN_CLOSE: 0.0
 };
 const DEFAULT_CHAR_TRANSFORM = JSON.parse(JSON.stringify(charTransformConfig));
 
@@ -194,10 +196,33 @@ const BONE_ROLE_SETS = {
 
 function boneRole(name) {
   const n = boneRoleNorm(name);
+  if (/(thumb|index|middle|mid|ring|pinky|little)/.test(n)) {
+    // Four-node Mixamo chains use *4 as a terminal/end marker, not a phalanx.
+    if (/(?:thumb|index|middle|mid|ring|pinky|little)4$/.test(n)) return null;
+    // boneRoleNorm removes CC_Base_/Mixamo/etc., leaving CC fingers as
+    // lindex1/rindex1 and canonical fingers as lefthandindex1.
+    if (n.startsWith('left') || /^l(?:thumb|index|middle|mid|ring|pinky|little)/.test(n) || n.endsWith('l')) return 'fingerL';
+    if (n.startsWith('right') || /^r(?:thumb|index|middle|mid|ring|pinky|little)/.test(n) || n.endsWith('r')) return 'fingerR';
+  }
   for (const [role, set] of Object.entries(BONE_ROLE_SETS)) {
     if (set.has(n)) return role;
   }
   return null;
+}
+
+function fingerCurlFactor(name) {
+  const raw = (name || '').toLowerCase().replace(/[:_\-.\s]/g, '');
+  const match = raw.match(/(?:thumb|index|middle|ring|pinky|little)0?([123])/);
+  if (!match) return 1;
+  const isThumb = raw.includes('thumb');
+  if (isThumb) {
+    // Thumb1 is the metacarpal/opposition base. Closing starts at the actual
+    // thumb phalanges (Thumb2/Thumb3), otherwise the whole thumb leaves its socket.
+    return { 1: 0, 2: -0.36, 3: -0.32 }[match[1]] ?? 0;
+  }
+  // Distal correction stays deliberately subtle: enough to release a fist,
+  // without making fingertips hyperextend or visibly detach from the arc.
+  return { 1: 0.28, 2: 0.48, 3: 0.36 }[match[1]] ?? 0.4;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -261,13 +286,13 @@ function applyLiveTransformations() {
 
   // Collision ellipsoid is in absolute units — not affected by mesh scaling, set explicitly
   if (capsule.ellipsoid) {
-    capsule.ellipsoid.set(0.35 * widthScale, 0.96 * sy, 0.35 * widthScale);
+    capsule.ellipsoid.set(0.46 * widthScale, 0.96 * sy, 0.46 * widthScale);
   }
   // Keep controller stand/crouch heights in sync so its per-frame ellipsoid lerp targets the scaled size
   const ctrl = activeCharacter.charCtrl;
   if (ctrl) {
     ctrl._standEllipsoidY = 0.96 * sy;
-    ctrl._standEllipsoidWidth = 0.35 * widthScale;
+    ctrl._standEllipsoidWidth = 0.46 * widthScale;
     ctrl._crouchEllipsoidY = 0.55 * sy;
     ctrl._capScaleY = sy;
     ctrl._capScaleW = widthScale;
@@ -331,11 +356,11 @@ function applyLiveTransformations() {
 
       const standStart = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
       const standEnd = new BABYLON.Vector3(0, 0.55 * physScaleY, 0);
-      ctrl._standShape = new BABYLON.PhysicsShapeCapsule(standStart, standEnd, 0.35 * physScaleW, scene);
+      ctrl._standShape = new BABYLON.PhysicsShapeCapsule(standStart, standEnd, 0.46 * physScaleW, scene);
 
       const crouchStart = new BABYLON.Vector3(0, -0.55 * physScaleY, 0);
       const crouchEnd = new BABYLON.Vector3(0, -0.15 * physScaleY, 0);
-      ctrl._crouchShape = new BABYLON.PhysicsShapeCapsule(crouchStart, crouchEnd, 0.35 * physScaleW, scene);
+      ctrl._crouchShape = new BABYLON.PhysicsShapeCapsule(crouchStart, crouchEnd, 0.46 * physScaleW, scene);
 
       ctrl._standShape.material = { friction: 0, restitution: 0 };
       ctrl._crouchShape.material = { friction: 0, restitution: 0 };
@@ -399,6 +424,7 @@ function syncCharTransformToUI() {
   setSlider('slider-leg-spread', charTransformConfig.LEG_SPREAD_ANGLE, '°');
   setSlider('slider-spine-straighten', charTransformConfig.SPINE_STRAIGHTEN_ANGLE, '°');
   setSlider('slider-hips-tilt', charTransformConfig.HIPS_TILT_ANGLE, '°');
+  setSlider('slider-hands-open-close', charTransformConfig.HANDS_OPEN_CLOSE, '°');
 }
 
 function resetCharacterTransform() {
@@ -427,12 +453,14 @@ function resetCharacterTransform() {
   const legS = document.getElementById('slider-leg-spread');
   const spineS = document.getElementById('slider-spine-straighten');
   const hipsT = document.getElementById('slider-hips-tilt');
+  const handsOC = document.getElementById('slider-hands-open-close');
   if (armS) { armS.min = "-10"; armS.max = "10"; }
   if (armSplay) { armSplay.min = "-30"; armSplay.max = "30"; }
   if (shoulderR) { shoulderR.min = "-15"; shoulderR.max = "15"; }
   if (legS) { legS.min = "-10"; legS.max = "10"; }
   if (spineS) { spineS.min = "-30"; spineS.max = "30"; }
   if (hipsT) { hipsT.min = "-30"; hipsT.max = "30"; }
+  if (handsOC) { handsOC.min = "-10"; handsOC.max = "45"; }
 
   syncCharTransformToUI();
   applyLiveTransformations();
@@ -455,6 +483,7 @@ function setupCharTransformControls() {
   const legSpreadSlider = document.getElementById('slider-leg-spread');
   const spineStraightenSlider = document.getElementById('slider-spine-straighten');
   const hipsTiltSlider = document.getElementById('slider-hips-tilt');
+  const handsOpenCloseSlider = document.getElementById('slider-hands-open-close');
   const resetBtn = document.getElementById('btn-reset-transform');
   const pivotGroundBtn = document.getElementById('btn-pivot-ground');
 
@@ -486,6 +515,7 @@ function setupCharTransformControls() {
     charTransformConfig.LEG_SPREAD_ANGLE = legSpreadSlider ? parseFloat(legSpreadSlider.value) : 0.0;
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = spineStraightenSlider ? parseFloat(spineStraightenSlider.value) : 0.0;
     charTransformConfig.HIPS_TILT_ANGLE = hipsTiltSlider ? parseFloat(hipsTiltSlider.value) : 0.0;
+    charTransformConfig.HANDS_OPEN_CLOSE = handsOpenCloseSlider ? parseFloat(handsOpenCloseSlider.value) : 0.0;
 
     syncCharTransformToUI();
     applyLiveTransformations();
@@ -507,6 +537,7 @@ function setupCharTransformControls() {
   legSpreadSlider?.addEventListener('input', onSliderChange);
   spineStraightenSlider?.addEventListener('input', onSliderChange);
   hipsTiltSlider?.addEventListener('input', onSliderChange);
+  handsOpenCloseSlider?.addEventListener('input', onSliderChange);
 
   resetBtn?.addEventListener('click', () => {
     resetCharacterTransform();
@@ -581,6 +612,7 @@ function getMergeOptions(extra = {}) {
     LEG_SPREAD_ANGLE: charTransformConfig.LEG_SPREAD_ANGLE,
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
+    HANDS_OPEN_CLOSE: charTransformConfig.HANDS_OPEN_CLOSE,
     removeExistingAnimations: true,
     ...extra
   };
@@ -1227,7 +1259,7 @@ async function maybeConvertFbxFile(file) {
 // ═══════════════════════════════════════════════════════════
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
-async function loadCharacterMeshFile(file, preloadedBuffer = null) {
+async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigReload = false) {
   if (!preloadedBuffer && isFbxFile(file)) {
     try {
       file = await maybeConvertFbxFile(file);
@@ -1237,10 +1269,11 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
       return;
     }
   }
-  if (!preloadedBuffer) {
+  if (!internalRigReload) {
     resetCharacterTransform();
     animationsGlbBuffer = null;
     lastAppliedRig = null; // genuine new import → drop any remembered rig
+    autoRigSourceGlbBuffer = null;
   }
   const readStep = document.getElementById('step-read');
   if (readStep && !readStep.classList.contains('completed')) {
@@ -1259,6 +1292,9 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null) {
 
   try {
     await _loadGlbIntoScene(arrayBuffer, file.name);
+    if (!internalRigReload && (!scene.skeletons || scene.skeletons.length === 0)) {
+      autoRigSourceGlbBuffer = arrayBuffer;
+    }
     setLoaderStep('import', 'completed');
     setLoaderStep('analyze', 'active');
 
@@ -1711,12 +1747,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     : newAnimNames;
 
   // Capsule
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsuleBuilder', { radius: 0.4, height: 1.8 }, scene);
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsuleBuilder', { radius: 0.46, height: 1.8 }, scene);
   playerCapsule.position.set(0, 2, 0);
   playerCapsule.visibility = 0;
   playerCapsule.isPickable = false;
   playerCapsule.checkCollisions = true;
-  playerCapsule.ellipsoid = new BABYLON.Vector3(0.35, 0.96, 0.35);
+  playerCapsule.ellipsoid = new BABYLON.Vector3(0.46, 0.96, 0.46);
 
   const charTransformWrapper = new BABYLON.TransformNode('charTransformWrapperBuilder', scene);
   charTransformWrapper.setParent(playerCapsule);
@@ -1782,6 +1818,33 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
         axis.rotateByQuaternionToRef(inv, out);
         return out.normalize();
       };
+      let curlAxis = BABYLON.Axis.Z.clone();
+      if (role === 'fingerL' || role === 'fingerR') {
+        // Character Creator hands use a YZ palm plane, but other rigs may not.
+        // Derive the hinge from the bind-pose finger direction × palm normal.
+        let handNode = node.parent;
+        while (handNode) {
+          const hn = boneRoleNorm(handNode.name || '');
+          if (/^(?:left|right)?hand$/.test(hn) || /^[lr]hand$/.test(hn)) break;
+          handNode = handNode.parent;
+        }
+        const child = node.getChildren?.().find(c => boneRole(c.name || '') === role);
+        if (handNode && child) {
+          handNode.computeWorldMatrix(true);
+          child.computeWorldMatrix(true);
+          const roots = handNode.getChildren?.() || [];
+          const indexRoot = roots.find(c => /index1$/i.test(boneRoleNorm(c.name || '')));
+          const pinkyRoot = roots.find(c => /(?:pinky|little)1$/i.test(boneRoleNorm(c.name || '')));
+          if (indexRoot && pinkyRoot) {
+            indexRoot.computeWorldMatrix(true);
+            pinkyRoot.computeWorldMatrix(true);
+            // The anatomical hinge runs across the knuckles. This works for
+            // XY-palm Mixamo rigs and YZ-palm Character Creator rigs alike.
+            const hingeWorld = pinkyRoot.getAbsolutePosition().subtract(indexRoot.getAbsolutePosition());
+            if (hingeWorld.lengthSquared() > 1e-8) curlAxis = toLocal(hingeWorld.normalize());
+          }
+        }
+      }
       // Spine root (first spine bone above the hips) counters the hips tilt
       let ancestorRole = null;
       for (let p = node.parent; p; p = p.parent) {
@@ -1790,6 +1853,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
       }
       boneOffsetAxes.set(node.uniqueId, {
         role,
+        curlFactor: role === 'fingerL' || role === 'fingerR' ? fingerCurlFactor(bone.name || node.name || '') : 1,
+        curlAxis,
         isSpineRoot: role === 'spine' && ancestorRole === 'hips',
         x: toLocal(BABYLON.Axis.X),
         y: toLocal(BABYLON.Axis.Y),
@@ -1828,6 +1893,7 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     const legAngle = charTransformConfig.LEG_SPREAD_ANGLE || 0;
     const spineAngle = charTransformConfig.SPINE_STRAIGHTEN_ANGLE || 0;
     const hipsTilt = charTransformConfig.HIPS_TILT_ANGLE || 0;
+    const handsOpenClose = charTransformConfig.HANDS_OPEN_CLOSE || 0;
 
     // 2. Loop through character bones and apply offsets about bind-world axes
     scene.skeletons.forEach(skel => {
@@ -1887,6 +1953,12 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
           case 'hips':
             apply(axes.x, hipsTilt);
             break;
+          case 'fingerL':
+            apply(axes.curlAxis, -handsOpenClose * axes.curlFactor);
+            break;
+          case 'fingerR':
+            apply(axes.curlAxis, handsOpenClose * axes.curlFactor);
+            break;
         }
 
         // Pose-source switch (animated ↔ rest) → blend instead of snapping
@@ -1930,7 +2002,8 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
     const deflection = activeCharacter.charCtrl.visualLocalY - activeCharacter.charCtrl.targetLocalY;
     const currentScaleY = activeCharacter.playerCapsule.scaling.y;
     const tgt = activeCharacter.playerCapsule.position.add(new BABYLON.Vector3(0, (0.4 + deflection) * currentScaleY, 0));
-    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 0.1);
+    const cameraDt = Math.min(0.05, scene.getEngine().getDeltaTime() / 1000);
+    camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-8 * cameraDt));
 
     if (activeCharacter.charCtrl.grounded && !hasMadeInitialWalk) {
       hasMadeInitialWalk = true;
@@ -2242,6 +2315,12 @@ const AUTORIG_JOINT_GROUPS = [
   { id: 'shoulder', label: 'Shoulders', color: '#60a5fa', joints: ['LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm'] },
   { id: 'elbow', label: 'Elbows', color: '#fde047', joints: ['LeftForeArm', 'RightForeArm'] },
   { id: 'wrist', label: 'Wrists', color: '#4ade80', joints: ['LeftHand', 'RightHand'] },
+  {
+    id: 'fingers', label: 'Fingers', color: '#2dd4bf', joints: [
+      ...['Left', 'Right'].flatMap(side => ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'].flatMap(finger =>
+        [1, 2, 3].map(n => `${side}Hand${finger}${n}`)))
+    ]
+  },
   { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
   { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
   { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
@@ -2256,6 +2335,16 @@ const AUTORIG_JOINT_LABELS = {
   LeftUpLeg: 'Left Hip (Groin)', LeftLeg: 'Left Knee', LeftFoot: 'Left Ankle', LeftToeBase: 'Left Toes',
   RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
 };
+
+function autoRigJointLabel(name) {
+  if (AUTORIG_JOINT_LABELS[name]) return AUTORIG_JOINT_LABELS[name];
+  const finger = /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)([123])$/.exec(name);
+  if (finger) {
+    const segment = { 1: 'Base knuckle', 2: 'Middle joint', 3: 'Fingertip joint' }[finger[3]];
+    return `${finger[1]} ${finger[2]} · ${segment}`;
+  }
+  return name;
+}
 
 function autoRigGroupOf(jointName) {
   return AUTORIG_JOINT_GROUPS.find(g => g.joints.includes(jointName)) || null;
@@ -2275,7 +2364,7 @@ function renderAutoRigLegend(markers, gizmoManager) {
     AUTORIG_JOINT_GROUPS.map(g => {
       const jointButtons = g.joints.map(j => {
         const activeClass = (j === attachedJoint) ? 'active' : '';
-        const label = AUTORIG_JOINT_LABELS[j] || j;
+        const label = autoRigJointLabel(j);
         return `<button class="autorig-joint-btn ${activeClass}" data-joint="${j}" style="border-color:${g.color};">
           ${label}
         </button>`;
@@ -2324,6 +2413,7 @@ function setupAutoRigControls() {
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
+  document.getElementById('btn-autorig-swap-sides')?.addEventListener('click', swapAutoRigSides);
   document.getElementById('btn-autorig-apply-vp')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel-vp')?.addEventListener('click', cancelAutoRigAdjust);
   document.querySelectorAll('.autorig-view-btn').forEach(btn => {
@@ -2417,13 +2507,27 @@ function enterRigViewportMode() {
   const prevPanningSensibility = camera.panningSensibility;
   const h = autoRigState.sceneHeight || 1.8;
   camera.panningSensibility = Math.max(150, 1000 * (1.8 / h));
+  // Finger placement requires macro-level zoom. ArcRotateCamera's default near
+  // plane and the controller's normal minimum radius clip the hand as the
+  // camera approaches it, so use character-relative precision in rig mode.
+  const prevMinZ = camera.minZ;
+  const prevLowerRadiusLimit = camera.lowerRadiusLimit;
+  const prevWheelPrecision = camera.wheelPrecision;
+  camera.minZ = Math.max(0.0005, h * 0.00025);
+  camera.lowerRadiusLimit = Math.max(0.015, h * 0.008);
+  camera.wheelPrecision = Math.max(80, 180 / Math.max(h, 0.1));
+  const rigWheelInput = camera.inputs?.attached?.mousewheel || camera.inputs?.attached?.mouseWheel;
+  const prevInputWheelPrecision = rigWheelInput?.wheelPrecision;
+  if (rigWheelInput) rigWheelInput.wheelPrecision = camera.wheelPrecision;
 
   // Snapshot charRoot orientation so the rig-mode character spin (Q/E) can be
   // undone exactly — controller facing must survive the rig session.
   const charRoot = activeCharacter.charRoot;
   autoRigState.viewportMode = {
     hiddenMeshes, prevClearColor, hud, prevHudDisplay, ctrlTip, prevCtrlTipDisplay, pointerObserver,
-    prevPanningSensibility, prevTarget: camera.target.clone(),
+    prevPanningSensibility, prevMinZ, prevLowerRadiusLimit, prevWheelPrecision,
+    rigWheelInput, prevInputWheelPrecision,
+    prevTarget: camera.target.clone(),
     prevCharQuat: charRoot?.rotationQuaternion ? charRoot.rotationQuaternion.clone() : null,
     prevCharEuler: charRoot ? charRoot.rotation.clone() : new BABYLON.Vector3(0, 0, 0),
   };
@@ -2456,6 +2560,12 @@ function exitRigViewportMode(state) {
   if (vm.pointerObserver) scene.onPointerObservable.remove(vm.pointerObserver);
   scene.stopAnimation(camera);
   if (vm.prevPanningSensibility !== undefined) camera.panningSensibility = vm.prevPanningSensibility;
+  if (vm.prevMinZ !== undefined) camera.minZ = vm.prevMinZ;
+  if (vm.prevLowerRadiusLimit !== undefined) camera.lowerRadiusLimit = vm.prevLowerRadiusLimit;
+  if (vm.prevWheelPrecision !== undefined) camera.wheelPrecision = vm.prevWheelPrecision;
+  if (vm.rigWheelInput && vm.prevInputWheelPrecision !== undefined) {
+    vm.rigWheelInput.wheelPrecision = vm.prevInputWheelPrecision;
+  }
   if (vm.prevTarget) camera.target.copyFrom(vm.prevTarget); // undo any panning offset
   scene.clearColor = vm.prevClearColor;
   if (vm.hud) vm.hud.style.display = vm.prevHudDisplay || '';
@@ -3036,7 +3146,7 @@ async function startAutoRigAdjust() {
     return;
   }
 
-  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
   showLoading('Analyzing mesh proportions…');
   let guess;
   try {
@@ -3054,6 +3164,14 @@ async function startAutoRigAdjust() {
     return;
   }
   hideLoading();
+
+  const presetSelect = document.getElementById('autorig-skeleton-preset');
+  if (presetSelect) {
+    presetSelect.disabled = !!guess.reRig && !autoRigSourceGlbBuffer;
+    presetSelect.title = guess.reRig && !autoRigSourceGlbBuffer
+      ? 'Imported existing rigs preserve their original hierarchy and bone names.'
+      : 'Naming convention used by the newly generated skeleton.';
+  }
 
   // Restore the user's last applied joints verbatim (P2). The server re-guesses
   // from the post-merge bind, which drifts from what the user placed; if we have
@@ -3146,7 +3264,10 @@ async function startAutoRigAdjust() {
   const mpScale = Math.max(Math.abs(mpScaleV.x), 1e-4);
   const diameter = Math.max(0.03 * guess.height, 0.02) / mpScale;
   const symmetric = document.getElementById('autorig-symmetry')?.checked;
-  if (symmetric && guess.joints) {
+  // Never rewrite an artist-authored bind pose merely because symmetric
+  // editing is enabled. CC/AccuRig hands contain intentional asymmetry and
+  // exact finger spacing; symmetry is only a creation aid for skinless meshes.
+  if (symmetric && guess.joints && !guess.reRig && !guess.restored) {
     Object.keys(guess.joints).forEach(name => {
       if (name.startsWith('Left')) {
         const leftPos = guess.joints[name];
@@ -3169,7 +3290,10 @@ async function startAutoRigAdjust() {
   }
 
   Object.entries(guess.joints).forEach(([name, pos]) => {
-    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter, segments: 10 }, scene);
+    const markerDiameter = name.includes('HandThumb') || name.includes('HandIndex') ||
+      name.includes('HandMiddle') || name.includes('HandRing') || name.includes('HandPinky')
+      ? diameter * 0.20 : diameter;
+    const m = BABYLON.MeshBuilder.CreateSphere(`autorig_${name}`, { diameter: markerDiameter, segments: 10 }, scene);
     m.material = matFor(name);
     m.isPickable = true;
     m.renderingGroupId = 1; // draw on top of the character mesh
@@ -3276,7 +3400,7 @@ async function startAutoRigAdjust() {
   const showTip = (jointName, x, y) => {
     if (!tipEl) return;
     const group = autoRigGroupOf(jointName);
-    tipEl.textContent = AUTORIG_JOINT_LABELS[jointName] || jointName;
+    tipEl.textContent = autoRigJointLabel(jointName);
     tipEl.style.borderColor = group?.color || 'rgba(255,255,255,0.18)';
     tipEl.style.left = `${x}px`;
     tipEl.style.top = `${y}px`;
@@ -3631,6 +3755,10 @@ function cancelAutoRigAdjust() {
 // body depth is solved automatically. Limb markers (hands/feet/toes) are left
 // alone: they sit at the mesh tip, not its mid-thickness.
 const DEPTH_SNAP_SKIP = new Set(['LeftHand', 'RightHand', 'LeftToeBase', 'RightToeBase']);
+function shouldSkipDepthSnap(name) {
+  return DEPTH_SNAP_SKIP.has(name) ||
+    /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[123]$/.test(name || '');
+}
 // Fixed front↔back (sagittal) world axis of the character, derived from its
 // facing yaw — independent of the camera. This is the horizontal direction the
 // FRONT view looks along, so snapping depth along it always means the same thing.
@@ -3647,7 +3775,7 @@ function bodyDepthAxis() {
 function snapMarkerToMeshDepth(marker) {
   if (!activeCharacter?.rawMeshes?.length || !marker) return false;
   const name = marker.metadata?.autorigJoint;
-  if (name && DEPTH_SNAP_SKIP.has(name)) return false;
+  if (name && shouldSkipDepthSnap(name)) return false;
 
   marker.computeWorldMatrix(true);
   const origin = marker.getAbsolutePosition();
@@ -3719,6 +3847,22 @@ function snapAllMarkersToBody() {
   showToast(n > 0 ? `Snapped ${n} markers to body depth.` : 'No depth snap (no mesh hit).');
 }
 
+function swapAutoRigSides() {
+  if (!autoRigState) return;
+  autoRigState.markers.forEach((left, name) => {
+    if (!name.startsWith('Left')) return;
+    const twinName = `Right${name.slice(4)}`;
+    const right = autoRigState.markers.get(twinName);
+    if (!right) return;
+    const p = left.position.clone();
+    left.position.copyFrom(right.position);
+    right.position.copyFrom(p);
+    autoRigState.canonical?.set(name, left.position.clone());
+    autoRigState.canonical?.set(twinName, right.position.clone());
+  });
+  showToast('Left and Right joint markers swapped.');
+}
+
 async function applyAutoRig() {
   if (!autoRigState || !characterGlbBuffer) return;
 
@@ -3764,7 +3908,7 @@ async function applyAutoRig() {
     }
   });
 
-  const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
+  const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
   // Remember exactly what the user applied so re-entering Auto-Rig restores
   // these positions verbatim (the post-Apply animation merge nudges the bind
   // pose, so re-guessing from the merged bones would move the markers). Tied to
@@ -3777,7 +3921,9 @@ async function applyAutoRig() {
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
-    formData.append('options', JSON.stringify({ joints }));
+    const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
+    const skinFingers = document.getElementById('autorig-skin-fingers')?.checked === true;
+    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData });
     if (!res.ok) {
@@ -3796,12 +3942,13 @@ async function applyAutoRig() {
     charTransformConfig.LEG_SPREAD_ANGLE = 0;
     charTransformConfig.SPINE_STRAIGHTEN_ANGLE = 0;
     charTransformConfig.HIPS_TILT_ANGLE = 0;
+    charTransformConfig.HANDS_OPEN_CLOSE = 0;
     syncCharTransformToUI();
 
     // Reload through the normal character pipeline: re-analyze, then merge
     // default/preloaded animations against the freshly rigged skeleton.
     const file = new File([riggedBuffer], 'rigged.glb');
-    await loadCharacterMeshFile(file, riggedBuffer);
+    await loadCharacterMeshFile(file, riggedBuffer, true);
     showToast('✓ Skeleton generated and assigned!');
   } catch (err) {
     completeMergeProgress();
@@ -3850,6 +3997,7 @@ function clearCharacter() {
 
   characterGlbBuffer = null;
   originalCharacterGlbBuffer = null;
+  autoRigSourceGlbBuffer = null;
   animationsGlbBuffer = null;
   detectedAnimations = [];
   skeletonInfo = null;
