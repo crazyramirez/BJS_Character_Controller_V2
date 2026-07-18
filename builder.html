@@ -312,6 +312,25 @@
                     Drag the yellow joint markers in the viewport to match your character's anatomy
                     (click a marker to attach the move gizmo), then apply.
                   </p>
+                  <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
+                    title="Skeleton anatomy. Humanoid uses upright T/A-pose analysis; Animal builds a horizontal spine with four legs and a tail chain.">
+                    Body plan
+                    <select id="autorig-body-plan" style="width:100%; margin-top:4px;">
+                      <option value="humanoid">🧍 Humanoid (biped)</option>
+                      <option value="quadruped">🐾 Animal (quadruped)</option>
+                    </select>
+                  </label>
+                  <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
+                    title="How many finger chains each hand gets. 'No fingers' rigs a solid hand (mittens, hooves, robots).">
+                    Hand fingers
+                    <select id="autorig-finger-count" style="width:100%; margin-top:4px;">
+                      <option value="5">✋ 5 fingers (full hand)</option>
+                      <option value="4">4 fingers (cartoon)</option>
+                      <option value="3">3 fingers</option>
+                      <option value="2">2 fingers (mitten / claw)</option>
+                      <option value="0">No fingers</option>
+                    </select>
+                  </label>
                   <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;">
                     Skeleton target
                     <select id="autorig-skeleton-preset" style="width:100%; margin-top:4px;">
@@ -320,6 +339,10 @@
                       <option value="unreal">Unreal Engine</option>
                       <option value="blender">Blender / Rigify</option>
                     </select>
+                  </label>
+                  <label class="autorig-symmetry-row" id="autorig-rebuild-row" style="display:none;"
+                    title="Discard the imported skeleton and skin weights and generate a brand-new rig using the Body plan / Hand fingers / Skeleton target selected above. Leave off to only adjust the existing bones (preserves artist weights).">
+                    <input type="checkbox" id="autorig-rebuild"> Rebuild skeleton (replace existing rig)
                   </label>
                   <label class="autorig-symmetry-row">
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)

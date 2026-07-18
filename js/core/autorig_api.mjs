@@ -2,9 +2,14 @@
  * autorig_api.mjs
  *
  * Auto-rigging for skinless GLB meshes.
- *  - guessJoints(buffer): analyze mesh bounds and propose Mixamo-style joint positions.
- *  - autoRigGLB(buffer, { joints }): build a Mixamo-named humanoid skeleton at the given
- *    joint positions, compute proximity-based skin weights, and return a rigged GLB.
+ *  - guessJoints(buffer, { bodyPlan, fingerCount }): analyze the mesh and propose
+ *    Mixamo-style joint positions for the requested rig layout.
+ *  - autoRigGLB(buffer, { joints, bodyPlan, fingerCount, skeletonPreset, skinFingers }):
+ *    build the skeleton at the given joint positions, compute proximity-based
+ *    skin weights, and return a rigged GLB.
+ *
+ * Rig layouts: bodyPlan 'humanoid' (default) or 'quadruped' (horizontal spine,
+ * four legs, Tail1-3); fingerCount 0|2|3|4|5 finger chains per hand.
  *
  * The generated bones use plain Mixamo names (Hips, Spine, LeftArm, ...) so the
  * existing merge_api.mjs BONE_MAP retargeting works on the result unchanged.
@@ -1065,7 +1070,7 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
   const armsLR = lrSane(armL, armR, chest);
   if (!legsLR || !armsLR) confidence -= 0.25;
 
-  const segments = {
+  return {
     joints, height: H, bounds, confidence, method: 'topology',
     debug: { extremities: picks.map(worldOf), headTip: worldOf(head.tip) },
   };
@@ -1075,7 +1080,26 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
+function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, bodyPlan = 'humanoid') {
+  // Quadrupeds: the upright-slicing heuristics are humanoid-only. The
+  // pose-independent topology pass classifies four limbs + head naturally
+  // (front limbs merge near the head = arm chain, hind limbs at the pelvis =
+  // leg chain); fall back to a standing-animal bounds layout.
+  if (bodyPlan === 'quadruped') {
+    let topo = null;
+    try {
+      topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
+    } catch (e) {
+      console.warn('[autorig] Topology pass failed:', e.message);
+    }
+    if (topo && topo.confidence >= 0.4) {
+      console.log(`[autorig] Quadruped topology skeleton (confidence ${topo.confidence.toFixed(2)}).`);
+      return topo;
+    }
+    console.log('[autorig] Quadruped topology unresolved — using bounds layout.');
+    return guessQuadrupedFromBounds(bounds, forwardZ);
+  }
+
   const verts = collectWorldVertices(doc, skinXforms, bodyMeshes);
   const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
   sliced.method = 'slicing';
@@ -1147,28 +1171,31 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null) {
 // Aliases per canonical Mixamo joint, in normalized form (lowercase, no prefix,
 // no separators, no trailing _N). Covers Mixamo/Unity/UE5/generic conventions.
 const SEED_ALIASES = {
-  Hips: ['hips', 'pelvis', 'hip'],
+  Hips: ['hips', 'pelvis', 'hip', 'root'],
   Spine: ['spine', 'spine01', 'lowerback', 'waist'],
   Spine1: ['spine1', 'spine02', 'chest'],
   Spine2: ['spine2', 'spine03', 'upperchest'],
   Neck: ['neck', 'neck01', 'necktwist01', 'necktwist'],
   Head: ['head'],
-  LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar', 'lshoulder', 'collarl'],
+  LeftShoulder: ['leftshoulder', 'claviclel', 'shoulderl', 'lclavicle', 'leftcollar', 'lshoulder', 'collarl', 'scapulal'],
   LeftArm: ['leftarm', 'leftupperarm', 'upperarml', 'larm', 'lupperarm', 'arml'],
-  LeftForeArm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'lforearm'],
-  LeftHand: ['lefthand', 'handl', 'lhand'],
-  LeftUpLeg: ['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl'],
-  LeftLeg: ['leftleg', 'leftlowerleg', 'calfl', 'shinl', 'lcalf', 'lowerlegl'],
-  LeftFoot: ['leftfoot', 'footl', 'lfoot'],
-  LeftToeBase: ['lefttoebase', 'toel', 'toebasel', 'lefttoe', 'ltoebase', 'balll', 'lball', 'ltoe0', 'ltoe'],
-  RightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rclavicle', 'rightcollar', 'rshoulder', 'collarr'],
+  LeftForeArm: ['leftforearm', 'leftlowerarm', 'lowerarml', 'forearml', 'lforearm', 'elbowl'],
+  LeftHand: ['lefthand', 'handl', 'lhand', 'wristl'],
+  LeftUpLeg: ['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'hipl'],
+  LeftLeg: ['leftleg', 'leftlowerleg', 'calfl', 'shinl', 'lcalf', 'lowerlegl', 'kneel'],
+  LeftFoot: ['leftfoot', 'footl', 'lfoot', 'anklel'],
+  LeftToeBase: ['lefttoebase', 'toel', 'toebasel', 'lefttoe', 'ltoebase', 'balll', 'lball', 'ltoe0', 'ltoe', 'toes1l', 'toesl'],
+  RightShoulder: ['rightshoulder', 'clavicler', 'shoulderr', 'rclavicle', 'rightcollar', 'rshoulder', 'collarr', 'scapular'],
   RightArm: ['rightarm', 'rightupperarm', 'upperarmr', 'rarm', 'rupperarm', 'armr'],
-  RightForeArm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rforearm'],
-  RightHand: ['righthand', 'handr', 'rhand'],
-  RightUpLeg: ['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr'],
-  RightLeg: ['rightleg', 'rightlowerleg', 'calfr', 'shinr', 'rcalf', 'lowerlegr'],
-  RightFoot: ['rightfoot', 'footr', 'rfoot'],
-  RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe', 'rtoebase', 'ballr', 'rball', 'rtoe0', 'rtoe'],
+  RightForeArm: ['rightforearm', 'rightlowerarm', 'lowerarmr', 'forearmr', 'rforearm', 'elbowr'],
+  RightHand: ['righthand', 'handr', 'rhand', 'wristr'],
+  RightUpLeg: ['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'hipr'],
+  RightLeg: ['rightleg', 'rightlowerleg', 'calfr', 'shinr', 'rcalf', 'lowerlegr', 'kneer'],
+  RightFoot: ['rightfoot', 'footr', 'rfoot', 'ankler'],
+  RightToeBase: ['righttoebase', 'toer', 'toebaser', 'righttoe', 'rtoebase', 'ballr', 'rball', 'rtoe0', 'rtoe', 'toes1r', 'toesr'],
+  Tail1: ['tail1', 'tail01', 'tail', 'taila'],
+  Tail2: ['tail2', 'tail02', 'tailb'],
+  Tail3: ['tail3', 'tail03', 'tailc'],
 };
 
 // Finger aliases are generated to cover Mixamo/Unity canonical names,
@@ -1197,6 +1224,9 @@ function seedNorm(name) {
   if (!name) return '';
   let n = name.toLowerCase();
   if (n.includes(':')) n = n.split(':').pop();
+  // AdvancedSkeleton / Maya center-bone suffix: Root_M, Neck_M, Tail1_M → root…
+  // Stripped BEFORE the prefix pass so root_m → root (not "m" via root_ prefix).
+  n = n.replace(/[_.]m$/, '');
   // VRM: J_Bip_C_Hips → hips, J_Bip_L_UpperArm → l_upperarm
   n = n.replace(/^j_?bip_?c_?/, '');
   n = n.replace(/^j_?bip_?([lr])_?/, '$1_');
@@ -1258,26 +1288,86 @@ function seedJointsFromSkins(doc) {
     seeded.Spine1 = worldByNorm.get('spine01');
     seeded.Spine2 = worldByNorm.get('spine02');
   }
+  // AdvancedSkeleton (Maya): Scapula = clavicle, Shoulder = upper arm. When
+  // both exist the generic pass mapped Shoulder→clavicle — shift the chain.
+  for (const s of ['l', 'r']) {
+    if (worldByNorm.has(`scapula${s}`) && worldByNorm.has(`shoulder${s}`)) {
+      const side = s === 'l' ? 'Left' : 'Right';
+      seeded[`${side}Shoulder`] = worldByNorm.get(`scapula${s}`);
+      seeded[`${side}Arm`] = worldByNorm.get(`shoulder${s}`);
+    }
+  }
+  // 1-indexed spine chain with no plain "spine" (AdvancedSkeleton Spine1..3):
+  // shift down one so Spine gets a real seed instead of a mesh guess.
+  if (!worldByNorm.has('spine') && worldByNorm.has('spine1') &&
+      worldByNorm.has('spine2') && worldByNorm.has('spine3')) {
+    seeded.Spine = worldByNorm.get('spine1');
+    seeded.Spine1 = worldByNorm.get('spine2');
+    seeded.Spine2 = worldByNorm.get('spine3');
+  }
   return seeded;
 }
 
-export async function guessJoints(buffer) {
+export async function guessJoints(buffer, options = {}) {
+  const layout = buildRigLayout(options);
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const skinXf = skinWorldXforms(doc);
   const bodyMeshes = selectBodyMeshes(doc, skinXf);
   const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
   const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
-  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes);
-  addFingerJoints(guess.joints, guess.height, fwd, guess.fingerTips);
+  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, layout.bodyPlan);
+  addFingerJoints(guess.joints, guess.height, fwd, guess.fingerTips, layout.fingers);
+  if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
+    // The rig's own L/R naming is ground truth. If the guessed Left/Right
+    // labels sit on the opposite side of the seeded ones, mirror-swap the
+    // guessed labels BEFORE merging — otherwise seeded joints and guessed
+    // fill-ins land on opposite sides and the marker set comes out crossed.
+    let sideDot = 0;
+    for (const [L, R] of [['LeftShoulder', 'RightShoulder'], ['LeftArm', 'RightArm'],
+      ['LeftUpLeg', 'RightUpLeg'], ['LeftFoot', 'RightFoot'], ['LeftHand', 'RightHand']]) {
+      if (seeded[L] && seeded[R] && guess.joints[L] && guess.joints[R]) {
+        const sv = vec3Subtract(seeded[L], seeded[R]);
+        const gv = vec3Subtract(guess.joints[L], guess.joints[R]);
+        sideDot += sv[0] * gv[0] + sv[1] * gv[1] + sv[2] * gv[2];
+      }
+    }
+    if (sideDot < 0) {
+      for (const name of Object.keys(guess.joints)) {
+        if (!name.startsWith('Left')) continue;
+        const twin = 'Right' + name.slice(4);
+        if (guess.joints[twin]) {
+          const t = guess.joints[name];
+          guess.joints[name] = guess.joints[twin];
+          guess.joints[twin] = t;
+        }
+      }
+      console.log('[autorig] Guessed Left/Right opposed the existing rig’s naming — swapped to match.');
+    }
     guess.joints = { ...guess.joints, ...seeded };
     guess.reRig = true;
   }
-  validateJointLayout(guess.joints, guess.height);
+  // A body clearly longer than it is tall is almost certainly a quadruped —
+  // surface the hint so the UI can nudge the user to the Animal body plan.
+  if (layout.bodyPlan === 'humanoid') {
+    const spanY = bounds.max[1] - bounds.min[1];
+    const spanH = Math.max(bounds.max[0] - bounds.min[0], bounds.max[2] - bounds.min[2]);
+    if (spanH > 1.25 * spanY) guess.suggestedBodyPlan = 'quadruped';
+  }
+  // Drop joints the requested layout doesn't include (e.g. fingers beyond the
+  // selected count seeded from an existing rig).
+  for (const name of Object.keys(guess.joints)) {
+    if (!layout.order.includes(name)) delete guess.joints[name];
+  }
+  validateJointLayout(guess.joints, guess.height, { layout });
+  guess.bodyPlan = layout.bodyPlan;
+  guess.fingerCount = resolveFingerCount(options.fingerCount);
   guess.supportedSkeletonPresets = Object.entries(SKELETON_PRESETS).map(([id, preset]) => ({ id, label: preset.label }));
+  guess.supportedBodyPlans = Object.entries(BODY_PLANS).map(([id, plan]) => ({ id, label: plan.label }));
+  guess.supportedFingerCounts = Object.keys(FINGER_SETS).map(Number);
   return guess;
 }
 
@@ -1482,6 +1572,23 @@ function adjustExistingRig(doc, targetJoints = {}) {
       if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
     }
   }
+  // AdvancedSkeleton: Scapula = clavicle, Shoulder = upper arm — mirror the
+  // seed-time chain shift so markers drive the right bones.
+  for (const s of ['l', 'r']) {
+    if (normToNode.has(`scapula${s}`) && normToNode.has(`shoulder${s}`)) {
+      const side = s === 'l' ? 'Left' : 'Right';
+      for (const [canon, alias] of [[`${side}Shoulder`, `scapula${s}`], [`${side}Arm`, `shoulder${s}`]]) {
+        if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
+      }
+    }
+  }
+  // 1-indexed spine chain (no plain "spine"): same shift as seed time.
+  if (!normToNode.has('spine') && normToNode.has('spine1') &&
+      normToNode.has('spine2') && normToNode.has('spine3')) {
+    for (const [canon, alias] of [['Spine', 'spine1'], ['Spine1', 'spine2'], ['Spine2', 'spine3']]) {
+      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
+    }
+  }
 
   // New world positions: markers win; others keep their offset to the parent (for ALL nodes in the scene)
   const newWorldPos = new Map();
@@ -1521,6 +1628,19 @@ function adjustExistingRig(doc, targetJoints = {}) {
     canonToNode.set('Spine', normToNode.get('waist'));
     canonToNode.set('Spine1', normToNode.get('spine01'));
     canonToNode.set('Spine2', normToNode.get('spine02'));
+  }
+  for (const s of ['l', 'r']) {
+    if (normToNode.has(`scapula${s}`) && normToNode.has(`shoulder${s}`)) {
+      const side = s === 'l' ? 'Left' : 'Right';
+      canonToNode.set(`${side}Shoulder`, normToNode.get(`scapula${s}`));
+      canonToNode.set(`${side}Arm`, normToNode.get(`shoulder${s}`));
+    }
+  }
+  if (!normToNode.has('spine') && normToNode.has('spine1') &&
+      normToNode.has('spine2') && normToNode.has('spine3')) {
+    canonToNode.set('Spine', normToNode.get('spine1'));
+    canonToNode.set('Spine1', normToNode.get('spine2'));
+    canonToNode.set('Spine2', normToNode.get('spine3'));
   }
 
   function applyRotationCorrection(node, qCorr) {
@@ -1668,25 +1788,87 @@ function stripExistingRig(doc) {
 }
 
 // ── Skeleton hierarchy definition ────────────────────────────────────────────
-const HIERARCHY = {
+// The 22-joint body core is shared by every body plan; tails and finger chains
+// are layered on per rig layout (body plan + finger count selectors).
+const BODY_HIERARCHY = {
   Hips: null,
   Spine: 'Hips', Spine1: 'Spine', Spine2: 'Spine1', Neck: 'Spine2', Head: 'Neck',
   LeftShoulder: 'Spine2', LeftArm: 'LeftShoulder', LeftForeArm: 'LeftArm', LeftHand: 'LeftForeArm',
   RightShoulder: 'Spine2', RightArm: 'RightShoulder', RightForeArm: 'RightArm', RightHand: 'RightForeArm',
   LeftUpLeg: 'Hips', LeftLeg: 'LeftUpLeg', LeftFoot: 'LeftLeg', LeftToeBase: 'LeftFoot',
   RightUpLeg: 'Hips', RightLeg: 'RightUpLeg', RightFoot: 'RightLeg', RightToeBase: 'RightFoot',
-  LeftHandThumb1: 'LeftHand', LeftHandThumb2: 'LeftHandThumb1', LeftHandThumb3: 'LeftHandThumb2',
-  LeftHandIndex1: 'LeftHand', LeftHandIndex2: 'LeftHandIndex1', LeftHandIndex3: 'LeftHandIndex2',
-  LeftHandMiddle1: 'LeftHand', LeftHandMiddle2: 'LeftHandMiddle1', LeftHandMiddle3: 'LeftHandMiddle2',
-  LeftHandRing1: 'LeftHand', LeftHandRing2: 'LeftHandRing1', LeftHandRing3: 'LeftHandRing2',
-  LeftHandPinky1: 'LeftHand', LeftHandPinky2: 'LeftHandPinky1', LeftHandPinky3: 'LeftHandPinky2',
-  RightHandThumb1: 'RightHand', RightHandThumb2: 'RightHandThumb1', RightHandThumb3: 'RightHandThumb2',
-  RightHandIndex1: 'RightHand', RightHandIndex2: 'RightHandIndex1', RightHandIndex3: 'RightHandIndex2',
-  RightHandMiddle1: 'RightHand', RightHandMiddle2: 'RightHandMiddle1', RightHandMiddle3: 'RightHandMiddle2',
-  RightHandRing1: 'RightHand', RightHandRing2: 'RightHandRing1', RightHandRing3: 'RightHandRing2',
-  RightHandPinky1: 'RightHand', RightHandPinky2: 'RightHandPinky1', RightHandPinky3: 'RightHandPinky2',
 };
-const JOINT_ORDER = Object.keys(HIERARCHY);
+const TAIL_HIERARCHY = { Tail1: 'Hips', Tail2: 'Tail1', Tail3: 'Tail2' };
+
+const ALL_FINGER_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
+// Finger-count selector: which anatomical fingers each hand gets.
+const FINGER_SETS = Object.freeze({
+  0: [],
+  2: ['Thumb', 'Index'],                       // mitten / claw
+  3: ['Thumb', 'Index', 'Middle'],             // cartoon hand
+  4: ['Thumb', 'Index', 'Middle', 'Ring'],
+  5: ALL_FINGER_NAMES,
+});
+function resolveFingerCount(v) {
+  if (v === undefined || v === null || v === '') return 5;
+  const n = Number(v);
+  if (!Object.hasOwn(FINGER_SETS, n)) {
+    throw new Error(`Unsupported finger count "${String(v)}". Supported: ${Object.keys(FINGER_SETS).join(', ')}.`);
+  }
+  return n;
+}
+
+export const BODY_PLANS = Object.freeze({
+  humanoid: Object.freeze({ label: 'Humanoid (biped)' }),
+  quadruped: Object.freeze({ label: 'Animal (quadruped)' }),
+});
+function resolveBodyPlan(id = 'humanoid') {
+  if (typeof id !== 'string' || !Object.hasOwn(BODY_PLANS, id)) {
+    throw new Error(`Unknown body plan "${String(id)}". Supported: ${Object.keys(BODY_PLANS).join(', ')}.`);
+  }
+  return id;
+}
+
+function fingerHierarchy(fingers) {
+  const h = {};
+  for (const side of ['Left', 'Right']) {
+    for (const finger of fingers) {
+      h[`${side}Hand${finger}1`] = `${side}Hand`;
+      h[`${side}Hand${finger}2`] = `${side}Hand${finger}1`;
+      h[`${side}Hand${finger}3`] = `${side}Hand${finger}2`;
+    }
+  }
+  return h;
+}
+
+/** Rig layout for a body plan + finger count: hierarchy, joint order, and which
+ *  joints are body (always skin-weighted) vs fingers (opt-in weighting). */
+export function buildRigLayout({ bodyPlan = 'humanoid', fingerCount = 5 } = {}) {
+  const plan = resolveBodyPlan(bodyPlan);
+  const fingers = FINGER_SETS[resolveFingerCount(fingerCount)];
+  const hierarchy = {
+    ...BODY_HIERARCHY,
+    ...(plan === 'quadruped' ? TAIL_HIERARCHY : {}),
+    ...fingerHierarchy(fingers),
+  };
+  const order = Object.keys(hierarchy);
+  const isFinger = (n) => /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[123]$/.test(n);
+  return {
+    bodyPlan: plan,
+    fingers,
+    hierarchy,
+    order,
+    bodyOrder: order.filter(n => !isFinger(n)),
+  };
+}
+
+// Every joint name any layout can produce (for unknown-name validation).
+const FULL_HIERARCHY = {
+  ...BODY_HIERARCHY,
+  ...TAIL_HIERARCHY,
+  ...fingerHierarchy(ALL_FINGER_NAMES),
+};
+const DEFAULT_LAYOUT = buildRigLayout();
 
 // Canonical anatomy is deliberately independent from exported bone names. This
 // keeps detection and weighting stable while allowing the generated rig to plug
@@ -1722,7 +1904,7 @@ function resolveSkeletonPreset(id = 'mixamo') {
   return SKELETON_PRESETS[id];
 }
 
-const FINGER_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
+const FINGER_NAMES = ALL_FINGER_NAMES;
 
 function detectFingerTipsFromVertices(verts, wrist, silhouetteTip, H, forwardZ) {
   const outward = vec3Normalize(vec3Subtract(silhouetteTip, wrist));
@@ -1777,7 +1959,15 @@ function detectFingerTipsFromVertices(verts, wrist, silhouetteTip, H, forwardZ) 
   return result;
 }
 
-function addFingerJoints(joints, H, forwardZ = 1, fingerTips = null) {
+function addFingerJoints(joints, H, forwardZ = 1, fingerTips = null, fingers = FINGER_NAMES) {
+  if (!fingers.length) return;
+  // Non-thumb knuckles spread evenly across the palm regardless of how many
+  // fingers the hand has (2-finger claws get one wide digit, 5 the full fan).
+  const nonThumb = fingers.filter(f => f !== 'Thumb');
+  const lateral = {};
+  nonThumb.forEach((f, i) => {
+    lateral[f] = nonThumb.length === 1 ? 0 : -0.36 + (0.72 * i) / (nonThumb.length - 1);
+  });
   for (const side of ['Left', 'Right']) {
     const hand = joints[`${side}Hand`], fore = joints[`${side}ForeArm`];
     if (!hand || !fore) continue;
@@ -1794,9 +1984,7 @@ function addFingerJoints(joints, H, forwardZ = 1, fingerTips = null) {
       forward[0] * outward[1] - forward[1] * outward[0],
     ]);
     if (vec3Length(across) < 1e-4) across = [0, sideSign, 0];
-    // Four knuckles distributed across the palm; thumb has its own side root.
-    const lateral = { Index: -0.36, Middle: -0.12, Ring: 0.12, Pinky: 0.36 };
-    for (const finger of FINGER_NAMES) {
+    for (const finger of fingers) {
       const detectedTip = !Array.isArray(guide) ? guide?.[finger] : null;
       if (detectedTip) {
         // Hand is the wrist. Finger joints begin at the knuckle, not midway
@@ -1837,8 +2025,64 @@ function addFingerJoints(joints, H, forwardZ = 1, fingerTips = null) {
   }
 }
 
+// Tail chain for quadrupeds: extends from the hips away from the chest, with a
+// gentle droop. Pure seed — the user refines the markers.
+function addTailJoints(joints, H) {
+  const away = vec3Normalize(vec3Subtract(joints.Hips, joints.Spine2));
+  if (vec3Length(away) < 1e-4) return;
+  for (let i = 1; i <= 3; i++) {
+    const t = 0.16 * i * H;
+    joints[`Tail${i}`] = [
+      joints.Hips[0] + away[0] * t,
+      joints.Hips[1] + away[1] * t - 0.03 * i * H,
+      joints.Hips[2] + away[2] * t,
+    ];
+  }
+}
+
+// Quadruped fallback when the topology pass can't resolve the mesh: a standing
+// animal seen from the bounds. Spine runs horizontally along the facing axis;
+// front limbs use the arm chain, hind limbs the leg chain.
+function guessQuadrupedFromBounds({ min, max }, forwardZ = 1) {
+  const H = max[1] - min[1];
+  const cx = (min[0] + max[0]) / 2;
+  const halfW = Math.max((max[0] - min[0]) / 2, 0.05 * H);
+  const zAt = f => forwardZ > 0 ? min[2] + f * (max[2] - min[2]) : max[2] - f * (max[2] - min[2]);
+  const y = f => min[1] + f * H;
+  const legX = 0.55 * halfW;
+  const frontZ = zAt(0.74), hindZ = zAt(0.24);
+  const spineY = y(0.68);
+
+  const joints = {
+    Hips: [cx, spineY, hindZ],
+    Spine: [cx, spineY + 0.01 * H, zAt(0.38)],
+    Spine1: [cx, spineY + 0.02 * H, zAt(0.52)],
+    Spine2: [cx, spineY + 0.02 * H, zAt(0.66)],
+    Neck: [cx, y(0.78), zAt(0.84)],
+    Head: [cx, y(0.88), zAt(0.95)],
+  };
+  for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+    const x = cx + sgn * forwardZ * legX;
+    joints[side + 'Shoulder'] = [cx + sgn * forwardZ * 0.3 * legX, spineY, frontZ];
+    joints[side + 'Arm'] = [x, y(0.55), frontZ];
+    joints[side + 'ForeArm'] = [x, y(0.30), frontZ];
+    joints[side + 'Hand'] = [x, y(0.06), frontZ];
+    joints[side + 'UpLeg'] = [x, y(0.55), hindZ];
+    joints[side + 'Leg'] = [x, y(0.30), hindZ];
+    joints[side + 'Foot'] = [x, y(0.06), hindZ];
+    joints[side + 'ToeBase'] = [x, y(0.02), hindZ + forwardZ * 0.05 * H];
+  }
+  return { joints, height: H, bounds: { min, max }, method: 'quadruped-bounds' };
+}
+
 function exportedJointName(presetId, preset, canonical) {
   if (preset.names[canonical]) return preset.names[canonical];
+  const tail = /^Tail([123])$/.exec(canonical);
+  if (tail) {
+    if (presetId === 'unreal') return `tail_0${tail[1]}`;
+    if (presetId === 'blender') return `tail.00${tail[1]}`;
+    return canonical;
+  }
   const m = /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)([123])$/.exec(canonical);
   if (!m) return canonical;
   const [, side, finger, segment] = m;
@@ -1847,19 +2091,19 @@ function exportedJointName(presetId, preset, canonical) {
   return canonical;
 }
 
-export function validateJointLayout(joints, height, { partial = false } = {}) {
+export function validateJointLayout(joints, height, { partial = false, layout = DEFAULT_LAYOUT } = {}) {
   if (!joints || typeof joints !== 'object' || Array.isArray(joints)) throw new Error('joints must be an object.');
   if (!Number.isFinite(height) || height <= 1e-6) throw new Error('Character bounds have zero or invalid height.');
   for (const [name, value] of Object.entries(joints)) {
-    if (!JOINT_ORDER.includes(name)) throw new Error(`Unknown autorig joint "${name}".`);
+    if (!Object.hasOwn(FULL_HIERARCHY, name)) throw new Error(`Unknown autorig joint "${name}".`);
     if (!Array.isArray(value) || value.length !== 3 || value.some(v => !Number.isFinite(v))) {
       throw new Error(`Joint "${name}" must be an array of 3 finite numbers.`);
     }
   }
   if (partial) return true;
-  for (const name of JOINT_ORDER) if (!joints[name]) throw new Error(`Missing required joint "${name}".`);
+  for (const name of layout.order) if (!joints[name]) throw new Error(`Missing required joint "${name}".`);
   const minLength = height * 1e-4;
-  for (const [name, parent] of Object.entries(HIERARCHY)) {
+  for (const [name, parent] of Object.entries(layout.hierarchy)) {
     if (!parent) continue;
     if (vec3Length(vec3Subtract(joints[name], joints[parent])) < minLength) {
       throw new Error(`Joint "${name}" overlaps its parent "${parent}".`);
@@ -1877,13 +2121,20 @@ function boneSegments(joints, H) {
     const l = Math.hypot(...d) || 1;
     return [d[0] / l * 0.10 * H, d[1] / l * 0.10 * H, d[2] / l * 0.10 * H];
   };
+  // Head continues along the neck→head axis (up for bipeds, forward for
+  // quadrupeds and hunched characters) instead of a hardcoded vertical.
+  const headDir = (() => {
+    const d = vec3Subtract(joints.Head, joints.Neck);
+    const l = vec3Length(d) || 1;
+    return [d[0] / l * 0.11 * H, d[1] / l * 0.11 * H, d[2] / l * 0.11 * H];
+  })();
   const segments = {
     Hips: seg('Hips', 'Spine'),
     Spine: seg('Spine', 'Spine1'),
     Spine1: seg('Spine1', 'Spine2'),
     Spine2: seg('Spine2', 'Neck'),
     Neck: seg('Neck', 'Head'),
-    Head: ext('Head', [0, 0.11 * H, 0]),
+    Head: ext('Head', headDir),
     LeftShoulder: seg('LeftShoulder', 'LeftArm'),
     LeftArm: seg('LeftArm', 'LeftForeArm'),
     LeftForeArm: seg('LeftForeArm', 'LeftHand'),
@@ -1901,8 +2152,15 @@ function boneSegments(joints, H) {
     RightFoot: seg('RightFoot', 'RightToeBase'),
     RightToeBase: ext('RightToeBase', [0, 0, 0.05 * H * Math.sign(joints.RightToeBase[2] - joints.RightFoot[2] || 1)]),
   };
+  // Tail chain (quadrupeds): only when the layout includes it.
+  if (joints.Tail1) {
+    segments.Tail1 = seg('Tail1', 'Tail2');
+    segments.Tail2 = seg('Tail2', 'Tail3');
+    segments.Tail3 = ext('Tail3', vec3Subtract(joints.Tail3, joints.Tail2));
+  }
   for (const side of ['Left', 'Right']) {
     for (const finger of FINGER_NAMES) {
+      if (!joints[`${side}Hand${finger}1`]) continue; // finger not in this layout
       for (let n = 1; n <= 3; n++) {
         const name = `${side}Hand${finger}${n}`;
         const next = n < 3 ? `${side}Hand${finger}${n + 1}` : null;
@@ -2024,27 +2282,40 @@ export async function autoRigGLB(buffer, options = {}) {
   const root = doc.getRoot();
   const presetId = options.skeletonPreset || 'mixamo';
   const preset = resolveSkeletonPreset(presetId);
+  const layout = buildRigLayout(options);
 
   // Already rigged → ADJUST the existing skeleton instead of rebuilding it.
   // Keeps hierarchy, bind orientations, extra bones (fingers/twist) and the
   // original artist skin weights; only joint positions move to the markers.
+  // With options.rebuild the old rig is stripped (destructive) and a brand-new
+  // skeleton with the requested layout is generated instead.
+  let previouslySkinned = new Map(); // mesh → skin-space→world xform (rebuilt rigs)
   if (root.listSkins().length > 0) {
-    validateJointLayout(options.joints || {}, 1, { partial: true });
-    adjustExistingRig(doc, options.joints || {});
-    await doc.transform(prune({ keepLeaves: true }));
-    return io.writeBinary(doc);
+    if (options.rebuild === true) {
+      previouslySkinned = skinWorldXforms(doc);
+      stripExistingRig(doc);
+      console.log('[autorig] Existing rig stripped — rebuilding skeleton with the requested layout.');
+    } else {
+      validateJointLayout(options.joints || {}, 1, { partial: true });
+      adjustExistingRig(doc, options.joints || {});
+      await doc.transform(prune({ keepLeaves: true }));
+      return io.writeBinary(doc);
+    }
   }
-  const previouslySkinned = new Map(); // mesh → skin-space xform (none: file is unskinned here)
 
   const bodyMeshes = selectBodyMeshes(doc, previouslySkinned);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
-  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes);
-  addFingerJoints(guess.joints, guess.height, forwardZ, guess.fingerTips);
+  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes, layout.bodyPlan);
+  addFingerJoints(guess.joints, guess.height, forwardZ, guess.fingerTips, layout.fingers);
+  if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
   validateJointLayout(options.joints || {}, guess.height, { partial: true });
   const joints = { ...guess.joints, ...(options.joints || {}) };
+  for (const name of Object.keys(joints)) {
+    if (!layout.order.includes(name)) delete joints[name];
+  }
   const H = guess.height;
-  validateJointLayout(joints, H);
+  validateJointLayout(joints, H, { layout });
 
   // ── Left/Right label correction ────────────────────────────────────────────
   // Anatomical left = up × forward. Facing +Z → left at +X; facing -Z → left at
@@ -2058,7 +2329,8 @@ export async function autoRigGLB(buffer, options = {}) {
   const leftSide = Math.sign(joints.LeftArm[0] - joints.RightArm[0]) || 1;
   // Topology guesses assign Left/Right from the detected body frame — the
   // toe-direction heuristic is meaningless in arbitrary poses, skip the swap.
-  if (guess.method !== 'topology' && leftSide !== fwdSign) {
+  // Quadruped bounds layouts already place Left/Right from forwardZ.
+  if (guess.method !== 'topology' && guess.method !== 'quadruped-bounds' && leftSide !== fwdSign) {
     for (const name of Object.keys(joints)) {
       if (!name.startsWith('Left')) continue;
       const twin = 'Right' + name.slice(4);
@@ -2087,8 +2359,10 @@ export async function autoRigGLB(buffer, options = {}) {
     meshNodes.push(node);
     if (bakedMeshes.has(mesh)) continue; // shared mesh: bake once with first node's matrix
     bakedMeshes.add(mesh);
-    if (previouslySkinned.has(mesh)) continue; // already in skin/world space
-    const world = worldMatrixOf(node, parentMap, matCache);
+    // Previously-skinned meshes (rebuild) live in skin space: bake S (skin →
+    // render world). Identity for glTF-native rigs, a real rotation/scale for
+    // FBX-sourced exports that keep vertices Z-up under an armature fix.
+    const world = previouslySkinned.get(mesh) || worldMatrixOf(node, parentMap, matCache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION');
       if (pos) {
@@ -2126,8 +2400,8 @@ export async function autoRigGLB(buffer, options = {}) {
   const flip = fwdSign === -1;
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
-  for (const name of JOINT_ORDER) {
-    const parentName = HIERARCHY[name];
+  for (const name of layout.order) {
+    const parentName = layout.hierarchy[name];
     const world = joints[name];
     let localT;
     if (parentName) {
@@ -2148,8 +2422,8 @@ export async function autoRigGLB(buffer, options = {}) {
 
   // ── 3. Inverse bind matrices ───────────────────────────────────────────────
   // W_bind = T(p)·R, with R = identity or R180y. IBM = inv(W_bind) = R⁻¹·T(-p).
-  const ibmData = new Float32Array(JOINT_ORDER.length * 16);
-  JOINT_ORDER.forEach((name, i) => {
+  const ibmData = new Float32Array(layout.order.length * 16);
+  layout.order.forEach((name, i) => {
     const [px, py, pz] = joints[name];
     const m = MAT4_IDENTITY.slice();
     if (flip) {
@@ -2166,7 +2440,7 @@ export async function autoRigGLB(buffer, options = {}) {
     .setBuffer(glbBuffer);
 
   const skin = doc.createSkin(`AutoRigSkin_${options.skeletonPreset || 'mixamo'}`).setInverseBindMatrices(ibmAcc);
-  JOINT_ORDER.forEach(name => skin.addJoint(jointNodes.get(name)));
+  layout.order.forEach(name => skin.addJoint(jointNodes.get(name)));
   skin.setSkeleton(jointNodes.get('Hips'));
 
   // ── 4. Proximity skin weights ──────────────────────────────────────────────
@@ -2181,7 +2455,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // Finger markers/bones are always available, but guessed finger chains must
   // never deform a hand automatically. Finger weighting is explicit opt-in
   // after the user has verified their placement.
-  const weightedJointOrder = options.skinFingers === true ? JOINT_ORDER : JOINT_ORDER.slice(0, 22);
+  const weightedJointOrder = options.skinFingers === true ? layout.order : layout.bodyOrder;
   const segList = weightedJointOrder.map(name => {
     if (!segments[name]) throw new Error(`Missing weight segment for joint "${name}".`);
     return segments[name];
@@ -2326,5 +2600,13 @@ export async function autoRigGLB(buffer, options = {}) {
   for (const node of meshNodes) node.setSkin(skin);
 
   await doc.transform(prune({ keepLeaves: true }));
+  // Draco-compressed sources (rebuild path): re-encoding on write quantizes the
+  // fresh JOINTS/WEIGHTS accessors and drifts the weight normalization. Drop
+  // the extension — output is written uncompressed, exactly like merge_api.
+  const dracoExt = root.listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression');
+  if (dracoExt) {
+    console.log('[autorig] Disposing KHR_draco_mesh_compression extension (uncompressed output).');
+    dracoExt.dispose();
+  }
   return io.writeBinary(doc);
 }

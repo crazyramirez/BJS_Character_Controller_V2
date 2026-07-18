@@ -2146,17 +2146,10 @@ class CharCtrl {
     this.stateT += dt;
     this._timeSinceSpawn += dt;
 
-    // Freeze camera vectors during mouse orbit dragging under standard camera mode
-    // to allow the character to keep their world direction and let the user look at their face.
-    if (this._pointerDragging && !this.CAM_FOLLOW_LOCK) {
-      if (!this._frozenCamFwd) {
-        this._frozenCamFwd = this._camForward();
-        this._frozenCamRgt = this._camRight(this._frozenCamFwd);
-      }
-    } else {
-      this._frozenCamFwd = null;
-      this._frozenCamRgt = null;
-    }
+    // Camera vectors are no longer frozen during drag under standard camera mode
+    // so the character turns progressively as the camera rotates, instead of snapping on release.
+    this._frozenCamFwd = null;
+    this._frozenCamRgt = null;
 
     const currentVelocity = this.usePhysics ? this.physicsBody.getLinearVelocity() : null;
 

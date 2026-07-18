@@ -2324,6 +2324,7 @@ const AUTORIG_JOINT_GROUPS = [
   { id: 'groin', label: 'Hips / Groin', color: '#f472b6', joints: ['Hips', 'LeftUpLeg', 'RightUpLeg'] },
   { id: 'knee', label: 'Knees', color: '#fb923c', joints: ['LeftLeg', 'RightLeg'] },
   { id: 'foot', label: 'Feet / Toes', color: '#f87171', joints: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] },
+  { id: 'tail', label: 'Tail', color: '#c084fc', joints: ['Tail1', 'Tail2', 'Tail3'] },
 ];
 
 // Friendly anatomical names shown in the hover tooltip
@@ -2334,6 +2335,7 @@ const AUTORIG_JOINT_LABELS = {
   RightShoulder: 'Right Clavicle', RightArm: 'Right Shoulder', RightForeArm: 'Right Elbow', RightHand: 'Right Wrist',
   LeftUpLeg: 'Left Hip (Groin)', LeftLeg: 'Left Knee', LeftFoot: 'Left Ankle', LeftToeBase: 'Left Toes',
   RightUpLeg: 'Right Hip (Groin)', RightLeg: 'Right Knee', RightFoot: 'Right Ankle', RightToeBase: 'Right Toes',
+  Tail1: 'Tail Base', Tail2: 'Tail Middle', Tail3: 'Tail Tip',
 };
 
 function autoRigJointLabel(name) {
@@ -2362,7 +2364,10 @@ function renderAutoRigLegend(markers, gizmoManager) {
 
   el.innerHTML = `<div class="autorig-legend-title" style="margin-bottom: 8px;">Joint Markers<br>(Ctrl+Click Mesh to Place)</div>` +
     AUTORIG_JOINT_GROUPS.map(g => {
-      const jointButtons = g.joints.map(j => {
+      // Only joints present in the active layout (finger count / body plan)
+      const present = g.joints.filter(j => activeMarkers.has(j));
+      if (!present.length) return '';
+      const jointButtons = present.map(j => {
         const activeClass = (j === attachedJoint) ? 'active' : '';
         const label = autoRigJointLabel(j);
         return `<button class="autorig-joint-btn ${activeClass}" data-joint="${j}" style="border-color:${g.color};">
@@ -2408,8 +2413,47 @@ function showAutoRigControls(show, hasExistingSkin = false) {
   if (!show) cancelAutoRigAdjust();
 }
 
+// Body plan + finger count selected in the panel (sent to the server for both
+// the joint guess and the final rig — they define the generated hierarchy).
+function getAutoRigLayoutOptions() {
+  return {
+    bodyPlan: document.getElementById('autorig-body-plan')?.value || 'humanoid',
+    fingerCount: Number(document.getElementById('autorig-finger-count')?.value ?? 5),
+  };
+}
+
+function syncAutoRigFingerUI() {
+  const { fingerCount, bodyPlan } = getAutoRigLayoutOptions();
+  const skinFingers = document.getElementById('autorig-skin-fingers');
+  if (skinFingers) {
+    const noFingers = fingerCount === 0;
+    if (noFingers) skinFingers.checked = false;
+    skinFingers.disabled = noFingers;
+    skinFingers.closest('label')?.classList.toggle('btn-disabled-offline', noFingers);
+  }
+  // Symmetric editing defaults stay; posture pose buttons are humanoid-only.
+  document.querySelectorAll('.autorig-pose-btn').forEach(b => {
+    b.disabled = bodyPlan === 'quadruped' && (b.dataset.pose === 't' || b.dataset.pose === 'a');
+  });
+}
+
 function setupAutoRigControls() {
   document.getElementById('btn-autorig-start')?.addEventListener('click', startAutoRigAdjust);
+  // Restore last-used layout selections
+  const planSel = document.getElementById('autorig-body-plan');
+  const fingerSel = document.getElementById('autorig-finger-count');
+  if (planSel) planSel.value = localStorage.getItem('builder_autorig_body_plan') || 'humanoid';
+  if (fingerSel) fingerSel.value = localStorage.getItem('builder_autorig_finger_count') || '5';
+  syncAutoRigFingerUI();
+  const onLayoutChange = () => {
+    localStorage.setItem('builder_autorig_body_plan', planSel?.value || 'humanoid');
+    localStorage.setItem('builder_autorig_finger_count', fingerSel?.value || '5');
+    syncAutoRigFingerUI();
+    // Live marker session: re-analyze with the new layout so markers match it
+    if (autoRigState) startAutoRigAdjust();
+  };
+  planSel?.addEventListener('change', onLayoutChange);
+  fingerSel?.addEventListener('change', onLayoutChange);
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
@@ -3147,11 +3191,13 @@ async function startAutoRigAdjust() {
   }
 
   const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  const layoutOptions = getAutoRigLayoutOptions();
   showLoading('Analyzing mesh proportions…');
   let guess;
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
+    formData.append('options', JSON.stringify(layoutOptions));
     const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -3165,19 +3211,45 @@ async function startAutoRigAdjust() {
   }
   hideLoading();
 
-  const presetSelect = document.getElementById('autorig-skeleton-preset');
-  if (presetSelect) {
-    presetSelect.disabled = !!guess.reRig && !autoRigSourceGlbBuffer;
-    presetSelect.title = guess.reRig && !autoRigSourceGlbBuffer
-      ? 'Imported existing rigs preserve their original hierarchy and bone names.'
-      : 'Naming convention used by the newly generated skeleton.';
+  if (guess.suggestedBodyPlan === 'quadruped' && layoutOptions.bodyPlan !== 'quadruped') {
+    showToast('🐾 This mesh looks like a quadruped — set Body plan: Animal for better markers.');
   }
+
+  // Existing-rig sessions: the layout selectors (body plan / fingers / bone
+  // naming) only apply to a GENERATED skeleton. Adjust mode keeps the imported
+  // hierarchy, so they lock — the "Rebuild skeleton" checkbox unlocks them and
+  // switches Apply to a destructive strip + regenerate.
+  const hasExistingRig = !!guess.reRig && !autoRigSourceGlbBuffer;
+  const rebuildRow = document.getElementById('autorig-rebuild-row');
+  const rebuildCb = document.getElementById('autorig-rebuild');
+  if (rebuildRow) rebuildRow.style.display = hasExistingRig ? '' : 'none';
+  if (!hasExistingRig && rebuildCb) rebuildCb.checked = false;
+  const syncLayoutLocks = () => {
+    const locked = hasExistingRig && !(rebuildCb?.checked);
+    for (const id of ['autorig-skeleton-preset', 'autorig-body-plan', 'autorig-finger-count']) {
+      const sel = document.getElementById(id);
+      if (!sel) continue;
+      sel.disabled = locked;
+      if (sel._defaultTitle === undefined) sel._defaultTitle = sel.closest('label')?.title || '';
+      const label = sel.closest('label');
+      if (label) label.title = locked
+        ? 'Imported existing rigs preserve their original hierarchy. Enable "Rebuild skeleton" to change the layout.'
+        : sel._defaultTitle;
+    }
+  };
+  if (rebuildCb) rebuildCb.onchange = syncLayoutLocks;
+  syncLayoutLocks();
 
   // Restore the user's last applied joints verbatim (P2). The server re-guesses
   // from the post-merge bind, which drifts from what the user placed; if we have
   // an exact memory for this character, use it and skip the bone-snap re-fit so
-  // markers land precisely where they were applied.
-  if (lastAppliedRig?.joints) {
+  // markers land precisely where they were applied. Only when the body plan +
+  // finger layout still match — a changed layout needs fresh guessed joints.
+  const sameLayout = lastAppliedRig?.layoutOptions
+    ? lastAppliedRig.layoutOptions.bodyPlan === layoutOptions.bodyPlan &&
+      lastAppliedRig.layoutOptions.fingerCount === layoutOptions.fingerCount
+    : true;
+  if (lastAppliedRig?.joints && sameLayout) {
     guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
     guess.restored = true;
     showToast('Restored your last joint positions.');
@@ -3909,11 +3981,12 @@ async function applyAutoRig() {
   });
 
   const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  const layoutOptions = getAutoRigLayoutOptions();
   // Remember exactly what the user applied so re-entering Auto-Rig restores
   // these positions verbatim (the post-Apply animation merge nudges the bind
   // pose, so re-guessing from the merged bones would move the markers). Tied to
-  // the base buffer it was rigged from.
-  lastAppliedRig = { joints: JSON.parse(JSON.stringify(joints)), forBuffer: baseBuffer };
+  // the base buffer it was rigged from and the layout it was rigged with.
+  lastAppliedRig = { joints: JSON.parse(JSON.stringify(joints)), forBuffer: baseBuffer, layoutOptions };
   cancelAutoRigAdjust();
 
   showLoading('Generating skeleton & skin weights…');
@@ -3923,7 +3996,8 @@ async function applyAutoRig() {
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
     const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
     const skinFingers = document.getElementById('autorig-skin-fingers')?.checked === true;
-    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers }));
+    const rebuild = document.getElementById('autorig-rebuild')?.checked === true;
+    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, ...layoutOptions }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData });
     if (!res.ok) {

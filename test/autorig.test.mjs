@@ -68,3 +68,51 @@ test('re-rig preserves an existing extended skeleton instead of replacing it', a
   const afterNames = after.getRoot().listSkins()[0].listJoints().map(j => j.getName());
   assert.deepEqual(afterNames, beforeNames);
 });
+
+test('finger-count selector builds matching hierarchies and rigs', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  for (const fingerCount of [0, 2, 3, 5]) {
+    const guess = await guessJoints(source, { fingerCount });
+    const expected = 22 + fingerCount * 6;
+    assert.equal(Object.keys(guess.joints).length, expected, `guess fingers=${fingerCount}`);
+    assert.equal(guess.fingerCount, fingerCount);
+    const output = await autoRigGLB(source, { joints: guess.joints, fingerCount });
+    const doc = await io.readBinary(output);
+    assert.equal(doc.getRoot().listSkins()[0].listJoints().length, expected, `rig fingers=${fingerCount}`);
+  }
+  await assert.rejects(guessJoints(source, { fingerCount: 7 }), /finger count/);
+});
+
+test('quadruped body plan rigs four legs plus a tail chain', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const guess = await guessJoints(source, { bodyPlan: 'quadruped', fingerCount: 0 });
+  assert.equal(guess.bodyPlan, 'quadruped');
+  for (const t of ['Tail1', 'Tail2', 'Tail3']) assert.ok(guess.joints[t], t);
+  assert.equal(Object.keys(guess.joints).length, 25);
+  const output = await autoRigGLB(source, { joints: guess.joints, bodyPlan: 'quadruped', fingerCount: 0 });
+  const names = new Set((await io.readBinary(output)).getRoot().listSkins()[0].listJoints().map(j => j.getName()));
+  assert.equal(names.size, 25);
+  assert.ok(names.has('Tail3') && names.has('LeftHand') && names.has('RightFoot'));
+  await assert.rejects(guessJoints(source, { bodyPlan: 'insect' }), /body plan/);
+});
+
+test('rebuild strips an existing rig and generates the requested layout', async () => {
+  const source = await fs.readFile(new URL('../assets/low_poly.glb', import.meta.url));
+  const io = await createIO();
+  const guess = await guessJoints(source, { fingerCount: 2 });
+  assert.equal(guess.reRig, true);
+  const output = await autoRigGLB(source, { joints: guess.joints, fingerCount: 2, rebuild: true });
+  const doc = await io.readBinary(output);
+  const names = doc.getRoot().listSkins()[0].listJoints().map(j => j.getName());
+  assert.equal(names.length, 34); // 22 body + 2 fingers × 3 segments × 2 hands
+  assert.ok(names.includes('LeftHandIndex3') && !names.includes('LeftHandMiddle1'));
+  // Weights valid on the rebuilt skin
+  const prim = doc.getRoot().listNodes().find(n => n.getSkin())?.getMesh()?.listPrimitives()[0];
+  const weights = prim.getAttribute('WEIGHTS_0').getArray();
+  for (let i = 0; i < weights.length; i += 4) {
+    const sum = weights[i] + weights[i + 1] + weights[i + 2] + weights[i + 3];
+    assert.ok(Math.abs(sum - 1) < 1e-5, `normalized weight ${i / 4}`);
+  }
+});

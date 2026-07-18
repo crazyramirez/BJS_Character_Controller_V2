@@ -123,12 +123,18 @@ app.post('/api/convert-fbx', upload.single('file'), async (req, res) => {
 // ── Auto-rig: propose default joint positions ───────────────────────────────
 // POST /api/autorig-joints
 // Body: multipart with field "file" (skinless GLB)
-// Response: JSON { joints: {Hips:[x,y,z], ...}, height, bounds }
+// Optional "options" (JSON string): { bodyPlan: 'humanoid'|'quadruped', fingerCount: 0|2|3|4|5 }
+// Response: JSON { joints: {Hips:[x,y,z], ...}, height, bounds, bodyPlan, fingerCount }
 app.post('/api/autorig-joints', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
-    console.log(`[autorig-joints] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB)`);
-    const result = await guessJoints(req.file.buffer);
+    let options = {};
+    if (req.body?.options) {
+      try { options = JSON.parse(req.body.options); }
+      catch (_) { return res.status(400).json({ error: 'Invalid JSON in options.' }); }
+    }
+    console.log(`[autorig-joints] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB) plan=${options.bodyPlan || 'humanoid'} fingers=${options.fingerCount ?? 5}`);
+    const result = await guessJoints(req.file.buffer, options);
     res.json(result);
   } catch (err) {
     console.error('[autorig-joints] Error:', err);
