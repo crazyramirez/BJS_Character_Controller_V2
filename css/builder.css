@@ -3219,3 +3219,49 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-primary);
   box-shadow: 0 0 14px rgba(239, 68, 68, 0.25);
 }
+/* ── Animation events timeline ─────────────────────────────────────────── */
+.event-timeline {
+  position: relative;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  margin: 6px 0;
+  cursor: crosshair;
+}
+
+.event-timeline::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.event-timeline-dot {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #ffb300;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  cursor: grab;
+  touch-action: none;
+}
+
+.event-timeline-dot:hover {
+  box-shadow: 0 0 0 3px rgba(255, 179, 0, 0.25);
+}
+
+.event-timeline-dot.dragging {
+  cursor: grabbing;
+  box-shadow: 0 0 0 4px rgba(255, 179, 0, 0.35);
+  z-index: 2;
+}

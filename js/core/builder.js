@@ -2118,6 +2118,29 @@ function renderSkeletonHealth(health) {
   if (!m.animationCount) actions.push({ action: 'animations', label: 'Map Animations' });
   actions.push({ action: 'physics', label: 'Tune Controller' });
 
+  // Server skinning report from the last Apply Rig (X-Autorig-Report header)
+  let rigReportHtml = '';
+  if (lastAutoRigReport && Number.isFinite(lastAutoRigReport.score)) {
+    const r = lastAutoRigReport;
+    const sev = r.score >= 85 ? 'pass' : r.score >= 60 ? 'warn' : 'error';
+    const tags = [
+      r.geodesicWeights ? 'geodesic weights' : 'euclidean weights',
+      r.twistBones ? 'twist bones' : null,
+      r.symmetrized ? 'symmetrized' : null,
+      r.propsAttached ? `${r.propsAttached} prop(s) attached` : null,
+      r.guessMethod ? `guess: ${r.guessMethod}` : null,
+    ].filter(Boolean).join(' · ');
+    const notes = (r.notes || []).join(' ');
+    rigReportHtml = `
+      <div class="health-check ${sev}">
+        <span class="health-dot"></span>
+        <div>
+          <strong>Auto-Rig skin quality: ${Math.round(r.score)}/100</strong>
+          <p>${escapeHtml(tags)}${notes ? ' — ' + escapeHtml(notes) : ''}</p>
+        </div>
+      </div>`;
+  }
+
   el.innerHTML = `
     <div class="health-head">
       <div class="health-score ${escapeHtml(health.status)}">${Math.round(health.score || 0)}</div>
@@ -2145,6 +2168,7 @@ function renderSkeletonHealth(health) {
           </div>
         </div>
       `).join('')}
+      ${rigReportHtml}
     </div>
     <div class="health-actions">
       ${actions.map(item => `<button class="health-action" data-health-action="${escapeHtml(item.action)}">${escapeHtml(item.label)}</button>`).join('')}
@@ -2300,6 +2324,105 @@ function renderSkeletonSectionFromBJS() {
 // AUTO-RIG (skeleton generation for skinless meshes)
 // ═══════════════════════════════════════════════════════════
 let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
+
+// ── Marker undo/redo (Ctrl+Z / Ctrl+Y while in rig mode) ─────────────────────
+// Snapshots hold the FULL marker set (position + rotation), captured right
+// before any mutating action: gizmo drag, tap-to-place, snap-to-body, side
+// swap or preset load. Restoring also re-derives the rest-space canonicals.
+const markerHistory = { undo: [], redo: [] };
+let lastAutoRigReport = null; // server skin-quality report from the last Apply Rig
+
+function snapshotMarkers() {
+  const st = autoRigState;
+  if (!st) return null;
+  const snap = [];
+  st.markers.forEach((m, name) => snap.push({
+    name,
+    pos: m.position.asArray(),
+    rot: m.rotationQuaternion ? m.rotationQuaternion.asArray() : null,
+  }));
+  return snap;
+}
+
+function pushMarkerUndo() {
+  const snap = snapshotMarkers();
+  if (!snap) return;
+  markerHistory.undo.push(snap);
+  if (markerHistory.undo.length > 60) markerHistory.undo.shift();
+  markerHistory.redo.length = 0;
+}
+
+function restoreMarkerSnapshot(snap) {
+  const st = autoRigState;
+  if (!st || !snap) return;
+  for (const e of snap) {
+    const m = st.markers.get(e.name);
+    if (!m) continue;
+    m.position.fromArray(e.pos);
+    if (e.rot) {
+      if (!m.rotationQuaternion) m.rotationQuaternion = BABYLON.Quaternion.Identity();
+      BABYLON.Quaternion.FromArrayToRef(e.rot, 0, m.rotationQuaternion);
+    }
+    st.updateCanonicalFromMarker?.(m);
+  }
+}
+
+function undoMarkerEdit() {
+  if (!autoRigState || !markerHistory.undo.length) return;
+  markerHistory.redo.push(snapshotMarkers());
+  restoreMarkerSnapshot(markerHistory.undo.pop());
+  showToast('↶ Marker undo');
+}
+
+function redoMarkerEdit() {
+  if (!autoRigState || !markerHistory.redo.length) return;
+  markerHistory.undo.push(snapshotMarkers());
+  restoreMarkerSnapshot(markerHistory.redo.pop());
+  showToast('↷ Marker redo');
+}
+
+// ── Marker layout presets (save/load JSON) ───────────────────────────────────
+// Positions are stored normalized by character height, so a layout saved on
+// one character can seed a similarly-proportioned one at a different scale.
+function saveMarkerLayoutPreset() {
+  const st = autoRigState;
+  if (!st) { showToast('Enter Auto-Rig mode first.', true); return; }
+  const data = { version: 1, height: st.height, joints: {} };
+  st.markers.forEach((m, name) => {
+    const p = st.canonical?.get(name) || m.position;
+    data.joints[name] = [p.x, p.y, p.z];
+  });
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'marker_layout.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  showToast('Marker layout saved.');
+}
+
+async function loadMarkerLayoutPreset(file) {
+  const st = autoRigState;
+  if (!st || !file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || typeof data.joints !== 'object') throw new Error('Not a marker layout file.');
+    pushMarkerUndo();
+    const scale = (Number(data.height) > 1e-6 && st.height > 1e-6) ? st.height / Number(data.height) : 1;
+    let applied = 0;
+    for (const [name, p] of Object.entries(data.joints)) {
+      const m = st.markers.get(name);
+      if (!m || !Array.isArray(p) || p.length !== 3 || p.some(v => !Number.isFinite(v))) continue;
+      m.position.set(p[0] * scale, p[1] * scale, p[2] * scale);
+      st.updateCanonicalFromMarker?.(m);
+      applied++;
+    }
+    showToast(`Marker layout loaded (${applied} joints${scale !== 1 ? `, ×${scale.toFixed(2)} scaled` : ''}).`);
+  } catch (err) {
+    console.error('[autorig] layout preset load failed:', err);
+    showToast('Invalid marker layout file: ' + err.message, true);
+  }
+}
 // Exact joint world coords the user last applied (server render-world space).
 // Re-entering Auto-Rig restores THESE verbatim instead of re-guessing from the
 // post-merge bind pose — the default-animation merge after Apply nudges the
@@ -2458,6 +2581,21 @@ function setupAutoRigControls() {
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
   document.getElementById('btn-autorig-swap-sides')?.addEventListener('click', swapAutoRigSides);
+  document.getElementById('btn-autorig-save-layout')?.addEventListener('click', saveMarkerLayoutPreset);
+  document.getElementById('btn-autorig-load-layout')?.addEventListener('click', () =>
+    document.getElementById('autorig-layout-file')?.click());
+  document.getElementById('autorig-layout-file')?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) loadMarkerLayoutPreset(file);
+    e.target.value = '';
+  });
+  document.getElementById('btn-autorig-batch')?.addEventListener('click', () =>
+    document.getElementById('autorig-batch-files')?.click());
+  document.getElementById('autorig-batch-files')?.addEventListener('change', (e) => {
+    const files = [...(e.target.files || [])];
+    if (files.length) runBatchAutoRig(files);
+    e.target.value = '';
+  });
   document.getElementById('btn-autorig-apply-vp')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel-vp')?.addEventListener('click', cancelAutoRigAdjust);
   document.querySelectorAll('.autorig-view-btn').forEach(btn => {
@@ -2481,6 +2619,12 @@ function setupAutoRigControls() {
     if (!autoRigState) return;
     const activeEl = document.activeElement;
     if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+      e.preventDefault();
+      if (e.shiftKey) redoMarkerEdit(); else undoMarkerEdit();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redoMarkerEdit(); return; }
     if (e.code === 'Digit1') setRigView('front');
     else if (e.code === 'Digit2') setRigView('side');
     else if (e.code === 'Digit3') setRigView('top');
@@ -3549,6 +3693,7 @@ async function startAutoRigAdjust() {
         pi.event.preventDefault();
       }
 
+      pushMarkerUndo();
       const localPos = BABYLON.Vector3.TransformCoordinates(pickInfo.pickedPoint, mpWorldInv);
       activeMarker.position.copyFrom(localPos);
 
@@ -3583,7 +3728,7 @@ async function startAutoRigAdjust() {
   if (posGizmo) {
     [posGizmo.xGizmo, posGizmo.yGizmo, posGizmo.zGizmo].forEach(g => {
       if (g && g.dragBehavior) {
-        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
+        g.dragBehavior.onDragStartObservable.add(() => { pushMarkerUndo(); isDraggingMarker = true; });
         g.dragBehavior.onDragEndObservable.add(() => {
           isDraggingMarker = false;
           // Auto-solve depth after a screen-plane drag so the user never has to
@@ -3627,7 +3772,7 @@ async function startAutoRigAdjust() {
   if (rotGizmo) {
     [rotGizmo.xGizmo, rotGizmo.yGizmo, rotGizmo.zGizmo].forEach(g => {
       if (g && g.dragBehavior) {
-        g.dragBehavior.onDragStartObservable.add(() => { isDraggingMarker = true; });
+        g.dragBehavior.onDragStartObservable.add(() => { pushMarkerUndo(); isDraggingMarker = true; });
         g.dragBehavior.onDragEndObservable.add(() => { isDraggingMarker = false; });
       }
     });
@@ -3732,10 +3877,13 @@ async function startAutoRigAdjust() {
     }
   });
 
+  markerHistory.undo.length = 0;
+  markerHistory.redo.length = 0;
   autoRigState = {
     markers, gizmoManager, height: guess.height, sceneHeight,
     groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
+    updateCanonicalFromMarker,
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
     serverGuess: { ...guess.joints },
@@ -3911,6 +4059,7 @@ function markerParentInvRot(marker) {
 // Snap every (eligible) marker to the body mid-depth in one click.
 function snapAllMarkersToBody() {
   if (!autoRigState) return;
+  pushMarkerUndo();
   let n = 0;
   autoRigState.markers.forEach((m) => { if (snapMarkerToMeshDepth(m)) n++; });
   autoRigState.markers.forEach((m, name) => {
@@ -3921,6 +4070,7 @@ function snapAllMarkersToBody() {
 
 function swapAutoRigSides() {
   if (!autoRigState) return;
+  pushMarkerUndo();
   autoRigState.markers.forEach((left, name) => {
     if (!name.startsWith('Left')) return;
     const twinName = `Right${name.slice(4)}`;
@@ -3933,6 +4083,60 @@ function swapAutoRigSides() {
     autoRigState.canonical?.set(twinName, right.position.clone());
   });
   showToast('Left and Right joint markers swapped.');
+}
+
+// ── Batch auto-rig queue ─────────────────────────────────────────────────────
+// Rig several GLB files sequentially with the panel's current layout options
+// (no marker adjustment — pure server guess) and download each rigged result.
+// Useful for asset pipelines: same settings, N characters, one click.
+async function runBatchAutoRig(files) {
+  const glbs = files.filter(f => /\.glb$/i.test(f.name));
+  const skipped = files.length - glbs.length;
+  if (skipped > 0) showToast(`${skipped} non-GLB file(s) skipped (batch mode rigs .glb only).`, true);
+  if (!glbs.length) return;
+
+  const layoutOptions = getAutoRigLayoutOptions();
+  const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
+  const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
+  const results = [];
+  showMergeProgress(true, `Batch auto-rig: 0/${glbs.length}…`);
+  for (let i = 0; i < glbs.length; i++) {
+    const file = glbs[i];
+    showMergeProgress(true, `Batch auto-rig: ${i + 1}/${glbs.length} — ${file.name}`);
+    try {
+      const formData = new FormData();
+      formData.append('file', new Blob([await file.arrayBuffer()], { type: 'model/gltf-binary' }), file.name);
+      formData.append('options', JSON.stringify({ skeletonPreset, twistBones, ...layoutOptions }));
+      const res = await fetch('/api/autorig', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || 'Auto-rig failed');
+      }
+      const report = (() => {
+        try { return JSON.parse(res.headers.get('X-Autorig-Report') || 'null'); } catch (_) { return null; }
+      })();
+      const buf = await res.arrayBuffer();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
+      a.download = file.name.replace(/\.glb$/i, '') + '_rigged.glb';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      results.push({ name: file.name, ok: true, score: report?.score });
+    } catch (err) {
+      console.error('[autorig-batch]', file.name, err);
+      results.push({ name: file.name, ok: false, error: err.message });
+    }
+  }
+  completeMergeProgress();
+  const ok = results.filter(r => r.ok);
+  const failed = results.filter(r => !r.ok);
+  const scores = ok.filter(r => Number.isFinite(r.score)).map(r => `${r.name}: ${r.score}`);
+  showToast(
+    `Batch done: ${ok.length}/${results.length} rigged` +
+    (scores.length ? ` (quality ${scores.join(', ')})` : '') +
+    (failed.length ? ` — failed: ${failed.map(f => f.name).join(', ')}` : ''),
+    failed.length > 0
+  );
 }
 
 async function applyAutoRig() {
@@ -3997,13 +4201,19 @@ async function applyAutoRig() {
     const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
     const skinFingers = document.getElementById('autorig-skin-fingers')?.checked === true;
     const rebuild = document.getElementById('autorig-rebuild')?.checked === true;
-    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, ...layoutOptions }));
+    const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
+    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, twistBones, ...layoutOptions }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || 'Auto-rig failed');
     }
+    // Server-side skinning quality report (X-Autorig-Report header): shown in
+    // the Rig Health panel after the character reloads.
+    try {
+      lastAutoRigReport = JSON.parse(res.headers.get('X-Autorig-Report') || 'null');
+    } catch (_) { lastAutoRigReport = null; }
     const riggedBuffer = await res.arrayBuffer();
     completeMergeProgress();
 
@@ -4047,6 +4257,7 @@ function updateCharStatusBar(filename) {
 
 function clearCharacter() {
   cancelAutoRigAdjust();
+  lastAutoRigReport = null;
 
   const bar = document.getElementById('char-status');
   if (bar) bar.style.display = 'none';
@@ -4472,6 +4683,16 @@ function renderAnimationEventsTab() {
               <strong>${escapeHtml(target.label)}</strong>
               <span>${escapeHtml(target.from)}-${escapeHtml(target.to)}f</span>
             </div>
+            <div class="event-timeline" data-key="${escapeHtml(target.key)}"
+              data-from="${escapeHtml(target.from)}" data-to="${escapeHtml(target.to)}"
+              title="Click: pick frame · Double-click: add marker here · Drag dots to retime">
+              ${events.map((evt, index) => {
+      const span = Math.max(1, target.to - target.from);
+      const pct = Math.max(0, Math.min(100, ((Number(evt.frame) - target.from) / span) * 100));
+      return `<span class="event-timeline-dot" data-key="${escapeHtml(target.key)}" data-index="${index}"
+                style="left:${pct}%" title="${escapeHtml(evt.type)} f${escapeHtml(evt.frame)}${evt.label ? ' · ' + escapeHtml(evt.label) : ''}"></span>`;
+    }).join('')}
+            </div>
             ${events.length ? `
               <div class="event-marker-list">
                 ${events.map((evt, index) => `
@@ -4500,6 +4721,69 @@ function renderAnimationEventsTab() {
   document.getElementById('btn-clear-animation-events')?.addEventListener('click', clearAllAnimationEvents);
   container.querySelectorAll('.btn-event-delete').forEach(btn => {
     btn.addEventListener('click', () => deleteAnimationEvent(btn.dataset.eventKey, parseInt(btn.dataset.eventIndex, 10)));
+  });
+
+  // ── Timeline interactions ──────────────────────────────────────────────────
+  // Click on a track picks that frame into the composer; double-click adds a
+  // marker of the composer's selected type right there; dragging a dot retimes
+  // its event (committed + re-sorted on release).
+  const frameAtX = (track, clientX) => {
+    const rect = track.getBoundingClientRect();
+    const from = Number(track.dataset.from) || 0;
+    const to = Number(track.dataset.to) || 100;
+    const t = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    return Math.round(from + t * (to - from));
+  };
+  container.querySelectorAll('.event-timeline').forEach(track => {
+    track.addEventListener('click', (e) => {
+      if (e.target.classList.contains('event-timeline-dot')) return;
+      const frame = frameAtX(track, e.clientX);
+      if (targetSelect) targetSelect.value = track.dataset.key;
+      if (frameInput) frameInput.value = frame;
+    });
+    track.addEventListener('dblclick', (e) => {
+      if (e.target.classList.contains('event-timeline-dot')) return;
+      const frame = frameAtX(track, e.clientX);
+      if (targetSelect) targetSelect.value = track.dataset.key;
+      if (frameInput) frameInput.value = frame;
+      addAnimationEvent();
+    });
+  });
+  container.querySelectorAll('.event-timeline-dot').forEach(dot => {
+    dot.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const track = dot.closest('.event-timeline');
+      if (!track) return;
+      const key = dot.dataset.key;
+      const index = parseInt(dot.dataset.index, 10);
+      const from = Number(track.dataset.from) || 0;
+      const to = Number(track.dataset.to) || 100;
+      const span = Math.max(1, to - from);
+      let frame = animationEvents[key]?.[index]?.frame ?? from;
+      dot.classList.add('dragging');
+      dot.setPointerCapture(e.pointerId);
+      const onMove = (me) => {
+        frame = frameAtX(track, me.clientX);
+        dot.style.left = `${Math.max(0, Math.min(100, ((frame - from) / span) * 100))}%`;
+        dot.title = `f${frame}`;
+      };
+      const onUp = () => {
+        dot.removeEventListener('pointermove', onMove);
+        dot.removeEventListener('pointerup', onUp);
+        dot.classList.remove('dragging');
+        const evt = animationEvents[key]?.[index];
+        if (evt && evt.frame !== frame) {
+          evt.frame = frame;
+          animationEvents[key].sort((a, b) => a.frame - b.frame);
+          savePreferences();
+          updateExportCode();
+        }
+        renderAnimationEventsTab();
+      };
+      dot.addEventListener('pointermove', onMove);
+      dot.addEventListener('pointerup', onUp);
+    });
   });
 }
 

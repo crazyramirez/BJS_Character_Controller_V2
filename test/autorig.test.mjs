@@ -98,6 +98,44 @@ test('quadruped body plan rigs four legs plus a tail chain', async () => {
   await assert.rejects(guessJoints(source, { bodyPlan: 'insect' }), /body plan/);
 });
 
+test('twist bones extend the layout and the quality report is filled', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const guess = await guessJoints(source, { fingerCount: 0 });
+  const reportSink = {};
+  const output = await autoRigGLB(source, { joints: guess.joints, fingerCount: 0, twistBones: true, reportSink });
+  const doc = await io.readBinary(output);
+  const names = doc.getRoot().listSkins()[0].listJoints().map(j => j.getName());
+  assert.equal(names.length, 24); // 22 body + 2 forearm twists
+  assert.ok(names.includes('LeftForeArmTwist') && names.includes('RightForeArmTwist'));
+  // Twist joints sit between elbow and wrist, parented to the forearm
+  const twist = doc.getRoot().listNodes().find(n => n.getName() === 'LeftForeArmTwist');
+  assert.ok(twist);
+  // Report populated with a sane score
+  assert.ok(Number.isFinite(reportSink.score) && reportSink.score >= 0 && reportSink.score <= 100);
+  assert.equal(reportSink.twistBones, true);
+  assert.equal(typeof reportSink.geodesicWeights, 'boolean');
+  assert.ok(Array.isArray(reportSink.notes));
+  // Weights still normalized with the extended bone set
+  const prim = doc.getRoot().listNodes().find(n => n.getSkin())?.getMesh()?.listPrimitives()[0];
+  const weights = prim.getAttribute('WEIGHTS_0').getArray();
+  for (let i = 0; i < weights.length; i += 4) {
+    const sum = weights[i] + weights[i + 1] + weights[i + 2] + weights[i + 3];
+    assert.ok(Math.abs(sum - 1) < 1e-5, `normalized weight ${i / 4}`);
+  }
+});
+
+test('geodesic weighting can be disabled and euclidean output stays valid', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const guess = await guessJoints(source, { fingerCount: 0 });
+  const reportSink = {};
+  const output = await autoRigGLB(source, { joints: guess.joints, fingerCount: 0, geodesicWeights: false, reportSink });
+  const doc = await io.readBinary(output);
+  assert.equal(reportSink.geodesicWeights, false);
+  assert.equal(doc.getRoot().listSkins()[0].listJoints().length, 22);
+});
+
 test('rebuild strips an existing rig and generates the requested layout', async () => {
   const source = await fs.readFile(new URL('../assets/low_poly.glb', import.meta.url));
   const io = await createIO();

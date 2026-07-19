@@ -1862,10 +1862,17 @@ export function buildRigLayout({ bodyPlan = 'humanoid', fingerCount = 5 } = {}) 
   };
 }
 
+// Optional roll-distribution bones between elbow and wrist. Never guessed or
+// marker-driven: positions derive from the final ForeArm/Hand placement, and a
+// runtime driver (character controller) rotates them from the hand's twist.
+const TWIST_HIERARCHY = { LeftForeArmTwist: 'LeftForeArm', RightForeArmTwist: 'RightForeArm' };
+const TWIST_FRACTION = 0.55; // fraction along ForeArm→Hand where the twist joint sits
+
 // Every joint name any layout can produce (for unknown-name validation).
 const FULL_HIERARCHY = {
   ...BODY_HIERARCHY,
   ...TAIL_HIERARCHY,
+  ...TWIST_HIERARCHY,
   ...fingerHierarchy(ALL_FINGER_NAMES),
 };
 const DEFAULT_LAYOUT = buildRigLayout();
@@ -2077,6 +2084,13 @@ function guessQuadrupedFromBounds({ min, max }, forwardZ = 1) {
 
 function exportedJointName(presetId, preset, canonical) {
   if (preset.names[canonical]) return preset.names[canonical];
+  const twist = /^(Left|Right)ForeArmTwist$/.exec(canonical);
+  if (twist) {
+    if (presetId === 'unreal') return `lowerarm_twist_01_${twist[1] === 'Left' ? 'l' : 'r'}`;
+    if (presetId === 'blender') return `forearm_twist.${twist[1] === 'Left' ? 'L' : 'R'}`;
+    if (presetId === 'unity') return `${twist[1]}LowerArmTwist`;
+    return canonical;
+  }
   const tail = /^Tail([123])$/.exec(canonical);
   if (tail) {
     if (presetId === 'unreal') return `tail_0${tail[1]}`;
@@ -2152,6 +2166,14 @@ function boneSegments(joints, H) {
     RightFoot: seg('RightFoot', 'RightToeBase'),
     RightToeBase: ext('RightToeBase', [0, 0, 0.05 * H * Math.sign(joints.RightToeBase[2] - joints.RightFoot[2] || 1)]),
   };
+  // Twist bones: split the forearm span so weights fade elbow→twist→wrist and
+  // the runtime roll driver produces a smooth candy-wrapper-free wrist.
+  for (const side of ['Left', 'Right']) {
+    const twist = `${side}ForeArmTwist`;
+    if (!joints[twist]) continue;
+    segments[`${side}ForeArm`] = seg(`${side}ForeArm`, twist);
+    segments[twist] = seg(twist, `${side}Hand`);
+  }
   // Tail chain (quadrupeds): only when the layout includes it.
   if (joints.Tail1) {
     segments.Tail1 = seg('Tail1', 'Tail2');
@@ -2276,6 +2298,203 @@ function smoothWeightField(W, nBones, adjacency, iters, lambda) {
  *        joints: world-space override for any of the Mixamo joint names.
  * @returns {Promise<Uint8Array>} rigged GLB
  */
+// ── L/R symmetrization of upright guesses ────────────────────────────────────
+// Slicing guesses inherit mesh asymmetries (hair, cloth, a held prop) that
+// leave one shoulder lower or one leg wider than the other. Bind skeletons are
+// symmetric, so mirror-average every Left/Right pair across the body midline.
+// Only valid for upright slicing guesses: topology guesses follow genuinely
+// asymmetric poses (crouch, run) where averaging would be wrong, and
+// user-provided marker positions are never touched.
+function symmetrizeGuess(joints) {
+  const pairs = [];
+  for (const name of Object.keys(joints)) {
+    if (!name.startsWith('Left')) continue;
+    const twin = 'Right' + name.slice(4);
+    if (joints[twin]) pairs.push([name, twin]);
+  }
+  if (!pairs.length) return;
+  let mid = 0;
+  for (const [l, r] of pairs) mid += (joints[l][0] + joints[r][0]) / 2;
+  mid /= pairs.length;
+  for (const [l, r] of pairs) {
+    const L = joints[l], R = joints[r];
+    const span = (L[0] - R[0]) / 2; // signed: preserves which label sits on which side
+    const y = (L[1] + R[1]) / 2, z = (L[2] + R[2]) / 2;
+    L[0] = mid + span; R[0] = mid - span;
+    L[1] = y; R[1] = y;
+    L[2] = z; R[2] = z;
+  }
+}
+
+// ── Optional forearm twist bones ─────────────────────────────────────────────
+// Returns a layout copy with Left/RightForeArmTwist appended (parents are the
+// forearms, so parent-before-child ordering holds) and writes their positions
+// into `joints` at TWIST_FRACTION along the final ForeArm→Hand span.
+function addTwistBones(layout, joints) {
+  const hierarchy = { ...layout.hierarchy, ...TWIST_HIERARCHY };
+  for (const side of ['Left', 'Right']) {
+    const a = joints[`${side}ForeArm`], b = joints[`${side}Hand`];
+    joints[`${side}ForeArmTwist`] = [
+      a[0] + (b[0] - a[0]) * TWIST_FRACTION,
+      a[1] + (b[1] - a[1]) * TWIST_FRACTION,
+      a[2] + (b[2] - a[2]) * TWIST_FRACTION,
+    ];
+  }
+  const order = Object.keys(hierarchy);
+  const isFinger = (n) => /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[123]$/.test(n);
+  return { ...layout, hierarchy, order, bodyOrder: order.filter(n => !isFinger(n)) };
+}
+
+// ── Geodesic bone distances (voxel BFS) ──────────────────────────────────────
+// Euclidean point→segment distance leaks across gaps the surface never
+// bridges: closed thighs pull each other, a relaxed hand pulls the hip, a
+// cross-body arm pulls the chest. Distance measured THROUGH the solid body
+// (BFS from each bone's voxels over the voxelized interior) cannot take those
+// shortcuts. Weighting uses max(euclidean, geodesic): near the bone both
+// agree; across an air gap the geodesic explodes and the influence dies.
+// Returns Map(prim → Float32Array(count·nB)) with 0 = "no data, use euclidean"
+// (vertex outside the voxel shell or in a disconnected component).
+function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
+  let vox = null;
+  try {
+    // Positions are already baked to world and node transforms neutralized,
+    // so voxelize with no extra skin transforms.
+    vox = voxelizeSolid(doc, new Map(), bounds, 96, bodyMeshes);
+  } catch (e) {
+    console.warn('[autorig] Voxelization for geodesic weights failed:', e.message);
+  }
+  if (!vox) return null;
+  const { grid, nx, ny, nz, origin, cell, idxOf } = vox;
+
+  const nearestSolid = (p, maxR) => {
+    const cx = Math.floor((p[0] - origin[0]) / cell);
+    const cy = Math.floor((p[1] - origin[1]) / cell);
+    const cz = Math.floor((p[2] - origin[2]) / cell);
+    for (let r = 0; r <= maxR; r++) {
+      let best = -1, bestD = Infinity;
+      for (let dz = -r; dz <= r; dz++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue; // shell only
+        const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+        const i = idxOf(x, y, z);
+        if (grid[i] !== 1) continue;
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      if (best >= 0) return best;
+    }
+    return -1;
+  };
+
+  // Per-vertex voxel snap (surface verts sit on the shell; r≤2 covers the rest)
+  const prims = [];
+  const geoPerPrim = new Map();
+  let mapped = 0, totalVerts = 0;
+  for (const mesh of bakedMeshes) {
+    for (const prim of mesh.listPrimitives()) {
+      const pos = prim.getAttribute('POSITION');
+      if (!pos) continue;
+      const arr = pos.getArray();
+      const count = arr.length / 3;
+      const vidx = new Int32Array(count).fill(-1);
+      for (let v = 0; v < count; v++) {
+        vidx[v] = nearestSolid([arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]], 2);
+        if (vidx[v] >= 0) mapped++;
+      }
+      totalVerts += count;
+      prims.push({ prim, count, vidx });
+      geoPerPrim.set(prim, new Float32Array(count * segList.length)); // 0 = no data
+    }
+  }
+  if (totalVerts === 0 || mapped / totalVerts < 0.5) {
+    console.warn('[autorig] Geodesic weights disabled: voxel coverage too low.');
+    return null;
+  }
+
+  const segmentSeeds = ([a, b]) => {
+    const seeds = new Set();
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const steps = Math.max(1, Math.ceil(len / (cell * 0.5)));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const i = nearestSolid([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], 3);
+      if (i >= 0) seeds.add(i);
+    }
+    return [...seeds];
+  };
+
+  const nB = segList.length;
+  for (let b = 0; b < nB; b++) {
+    const seeds = segmentSeeds(segList[b]);
+    if (!seeds.length) continue;
+    const { dist } = voxelBFS(vox, seeds);
+    for (const { prim, count, vidx } of prims) {
+      const geo = geoPerPrim.get(prim);
+      for (let v = 0; v < count; v++) {
+        const gi = vidx[v];
+        if (gi >= 0 && dist[gi] >= 0) geo[v * nB + b] = dist[gi] * cell;
+      }
+    }
+  }
+  console.log(`[autorig] Geodesic weight fields ready (${(100 * mapped / totalVerts).toFixed(0)}% voxel coverage).`);
+  return geoPerPrim;
+}
+
+// ── Rigid props (glasses, weapons, hats, backpacks) ──────────────────────────
+// Non-body meshes are excluded from skinning, which used to leave them frozen
+// in world space while the body animates away. Small props close to a bone are
+// re-parented under that joint node (world transform preserved via
+// local' = inv(jointBindWorld)·world), so they follow the skeleton rigidly.
+// Large or distant meshes (ground, backdrop, light gizmos) stay untouched.
+function attachRigidProps(doc, bodyMeshes, jointNodes, segNames, segList, joints, H, flip) {
+  if (!bodyMeshes) return 0; // single-mesh character: nothing was excluded
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  const jointNodeSet = new Set(jointNodes.values());
+  const hasBodyDescendant = (n) => n.listChildren().some(c =>
+    (c.getMesh() && bodyMeshes.has(c.getMesh())) || hasBodyDescendant(c));
+  let attached = 0;
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh || bodyMeshes.has(mesh) || jointNodeSet.has(node)) continue;
+    if (hasBodyDescendant(node)) continue; // don't drag body geometry along
+    const world = worldMatrixOf(node, parentMap, cache);
+    const min = [1 / 0, 1 / 0, 1 / 0], max = [-1 / 0, -1 / 0, -1 / 0];
+    for (const prim of mesh.listPrimitives()) {
+      const arr = prim.getAttribute('POSITION')?.getArray();
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i += 3) {
+        const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
+        for (let k = 0; k < 3; k++) {
+          if (p[k] < min[k]) min[k] = p[k];
+          if (p[k] > max[k]) max[k] = p[k];
+        }
+      }
+    }
+    if (!Number.isFinite(min[0])) continue;
+    const diag = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+    if (diag > 0.6 * H) continue; // too big to be a wearable prop
+    const center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+    let bestName = null, bestD = Infinity;
+    for (let b = 0; b < segList.length; b++) {
+      const d = distPointSegment(center, segList[b][0], segList[b][1]);
+      if (d < bestD) { bestD = d; bestName = segNames[b]; }
+    }
+    if (!bestName || bestD > 0.35 * H) continue; // detached scenery
+    const jointNode = jointNodes.get(bestName);
+    if (!jointNode) continue;
+    const [px, py, pz] = joints[bestName];
+    const bind = MAT4_IDENTITY.slice();
+    if (flip) { bind[0] = -1; bind[10] = -1; }
+    bind[12] = px; bind[13] = py; bind[14] = pz;
+    jointNode.addChild(node);
+    node.setMatrix(Array.from(mat4Mul(invertRigidMat4(bind), world)));
+    attached++;
+    console.log(`[autorig] Rigid prop "${mesh.getName() || node.getName() || 'mesh'}" attached to ${bestName} (d=${(bestD / H).toFixed(2)}·H).`);
+  }
+  return attached;
+}
+
 export async function autoRigGLB(buffer, options = {}) {
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
@@ -2307,6 +2526,9 @@ export async function autoRigGLB(buffer, options = {}) {
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
   const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes, layout.bodyPlan);
+  // Upright slicing guesses get mirror-averaged L/R (mesh asymmetries like hair
+  // or a held prop must not skew the bind skeleton). User markers override later.
+  if (guess.method === 'slicing' && options.symmetrize !== false) symmetrizeGuess(guess.joints);
   addFingerJoints(guess.joints, guess.height, forwardZ, guess.fingerTips, layout.fingers);
   if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
   validateJointLayout(options.joints || {}, guess.height, { partial: true });
@@ -2315,7 +2537,12 @@ export async function autoRigGLB(buffer, options = {}) {
     if (!layout.order.includes(name)) delete joints[name];
   }
   const H = guess.height;
-  validateJointLayout(joints, H, { layout });
+  // Optional forearm twist bones (humanoid only): positions derive from the
+  // FINAL forearm/hand placement (markers included), never from raw guesses.
+  const rigLayout = (options.twistBones === true && layout.bodyPlan === 'humanoid')
+    ? addTwistBones(layout, joints)
+    : layout;
+  validateJointLayout(joints, H, { layout: rigLayout });
 
   // ── Left/Right label correction ────────────────────────────────────────────
   // Anatomical left = up × forward. Facing +Z → left at +X; facing -Z → left at
@@ -2400,8 +2627,8 @@ export async function autoRigGLB(buffer, options = {}) {
   const flip = fwdSign === -1;
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
-  for (const name of layout.order) {
-    const parentName = layout.hierarchy[name];
+  for (const name of rigLayout.order) {
+    const parentName = rigLayout.hierarchy[name];
     const world = joints[name];
     let localT;
     if (parentName) {
@@ -2422,8 +2649,8 @@ export async function autoRigGLB(buffer, options = {}) {
 
   // ── 3. Inverse bind matrices ───────────────────────────────────────────────
   // W_bind = T(p)·R, with R = identity or R180y. IBM = inv(W_bind) = R⁻¹·T(-p).
-  const ibmData = new Float32Array(layout.order.length * 16);
-  layout.order.forEach((name, i) => {
+  const ibmData = new Float32Array(rigLayout.order.length * 16);
+  rigLayout.order.forEach((name, i) => {
     const [px, py, pz] = joints[name];
     const m = MAT4_IDENTITY.slice();
     if (flip) {
@@ -2440,7 +2667,7 @@ export async function autoRigGLB(buffer, options = {}) {
     .setBuffer(glbBuffer);
 
   const skin = doc.createSkin(`AutoRigSkin_${options.skeletonPreset || 'mixamo'}`).setInverseBindMatrices(ibmAcc);
-  layout.order.forEach(name => skin.addJoint(jointNodes.get(name)));
+  rigLayout.order.forEach(name => skin.addJoint(jointNodes.get(name)));
   skin.setSkeleton(jointNodes.get('Hips'));
 
   // ── 4. Proximity skin weights ──────────────────────────────────────────────
@@ -2455,7 +2682,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // Finger markers/bones are always available, but guessed finger chains must
   // never deform a hand automatically. Finger weighting is explicit opt-in
   // after the user has verified their placement.
-  const weightedJointOrder = options.skinFingers === true ? layout.order : layout.bodyOrder;
+  const weightedJointOrder = options.skinFingers === true ? rigLayout.order : rigLayout.bodyOrder;
   const segList = weightedJointOrder.map(name => {
     if (!segments[name]) throw new Error(`Missing weight segment for joint "${name}".`);
     return segments[name];
@@ -2504,6 +2731,16 @@ export async function autoRigGLB(buffer, options = {}) {
   const CUTOFF = 2.2;
   const nB = segList.length;
 
+  // Geodesic distance fields: kill influences that would have to jump through
+  // air (closed thighs, hand-near-hip, cross-body arms). 0 entries fall back
+  // to plain euclidean distance.
+  const geoPerPrim = options.geodesicWeights !== false
+    ? buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList)
+    : null;
+
+  // Quality report accumulators (see reportSink below)
+  let qaVerts = 0, qaCross = 0, qaDistant = 0;
+
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION');
@@ -2517,6 +2754,7 @@ export async function autoRigGLB(buffer, options = {}) {
       // reduced to the glTF 4-influence limit.
       const field = new Float32Array(count * nB);
       const dists = new Float32Array(nB);
+      const geoArr = geoPerPrim ? geoPerPrim.get(prim) : null;
 
       for (let v = 0; v < count; v++) {
         const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
@@ -2528,7 +2766,15 @@ export async function autoRigGLB(buffer, options = {}) {
 
         let dMin = Infinity;
         for (let b = 0; b < nB; b++) {
-          const d = distPointSegment(p, segList[b][0], segList[b][1]);
+          let d = distPointSegment(p, segList[b][0], segList[b][1]);
+          // max(euclid, geodesic): near the bone the two agree; across an air
+          // gap the geodesic explodes and the influence dies. 26-conn BFS
+          // underestimates true length, so it can only ever REMOVE bad
+          // influences, never starve a legitimate nearby bone.
+          if (geoArr) {
+            const g = geoArr[v * nB + b];
+            if (g > d) d = g;
+          }
           dists[b] = d;
           if (d < dMin) dMin = d;
         }
@@ -2588,6 +2834,27 @@ export async function autoRigGLB(buffer, options = {}) {
           jointsOut[v * 4 + k] = b >= 0 ? b : 0;
           weightsOut[v * 4 + k] = total > 0 && b >= 0 ? w / total : (k === 0 ? 1 : 0);
         }
+
+        // ── Quality metrics on the FINAL influences ──────────────────────────
+        // cross-side: meaningful weight from an opposite-side limb bone while
+        // the vertex is clearly off the midline (smoothing can reintroduce it).
+        // distant: meaningful weight from a bone far away in euclidean terms —
+        // the classic "hip vertex follows the hand" defect.
+        qaVerts++;
+        const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
+        const ctr = centerAtY(p[1]);
+        const sd = leftAxisValid
+          ? (p[0] - ctr[0]) * leftAxis[0] + (p[1] - ctr[1]) * leftAxis[1] + (p[2] - ctr[2]) * leftAxis[2]
+          : p[0] - ctr[0];
+        let wrongSide = 0, distant = false;
+        for (let k = 0; k < 4; k++) {
+          const b = jointsOut[v * 4 + k], w = weightsOut[v * 4 + k];
+          if (w <= 0.05) continue;
+          if (Math.abs(sd) > 0.06 * H && boneSide[b] !== 0 && boneSide[b] * sd < 0) wrongSide += w;
+          if (w > 0.15 && distPointSegment(p, segList[b][0], segList[b][1]) > 0.35 * H) distant = true;
+        }
+        if (wrongSide > 0.10) qaCross++;
+        if (distant) qaDistant++;
       }
 
       prim.setAttribute('JOINTS_0', doc.createAccessor()
@@ -2598,6 +2865,40 @@ export async function autoRigGLB(buffer, options = {}) {
   }
 
   for (const node of meshNodes) node.setSkin(skin);
+
+  // Re-parent small nearby props (glasses, weapons, hats) under their nearest
+  // joint so they follow the animation instead of freezing in world space.
+  const propsAttached = options.attachProps !== false
+    ? attachRigidProps(doc, bodyMeshes, jointNodes, weightedJointOrder, segList, joints, H, flip)
+    : 0;
+
+  // ── Skinning quality report ────────────────────────────────────────────────
+  // Heuristic score from the final influences; surfaced by the server as the
+  // X-Autorig-Report header and rendered in the builder's skeleton health panel.
+  {
+    const crossPct = qaVerts ? qaCross / qaVerts : 0;
+    const distantPct = qaVerts ? qaDistant / qaVerts : 0;
+    const score = Math.max(0, Math.round(100 * (1 - Math.min(1, 3 * crossPct + 4 * distantPct))));
+    const notes = [];
+    if (crossPct > 0.01) notes.push(`${(crossPct * 100).toFixed(1)}% of vertices carry cross-side limb weight.`);
+    if (distantPct > 0.01) notes.push(`${(distantPct * 100).toFixed(1)}% of vertices are influenced by a distant bone.`);
+    if (!geoPerPrim && options.geodesicWeights !== false) notes.push('Geodesic weighting unavailable (voxelization failed) — euclidean fallback used.');
+    if (propsAttached > 0) notes.push(`${propsAttached} prop mesh(es) rigidly attached to the skeleton.`);
+    const report = {
+      score,
+      vertices: qaVerts,
+      crossSidePct: +(crossPct * 100).toFixed(2),
+      distantInfluencePct: +(distantPct * 100).toFixed(2),
+      geodesicWeights: !!geoPerPrim,
+      symmetrized: guess.method === 'slicing' && options.symmetrize !== false,
+      twistBones: rigLayout !== layout,
+      propsAttached,
+      guessMethod: guess.method,
+      notes,
+    };
+    console.log(`[autorig] Skin quality score: ${score}/100` + (notes.length ? ` — ${notes.join(' ')}` : ''));
+    if (options.reportSink && typeof options.reportSink === 'object') Object.assign(options.reportSink, report);
+  }
 
   await doc.transform(prune({ keepLeaves: true }));
   // Draco-compressed sources (rebuild path): re-encoding on write quantizes the

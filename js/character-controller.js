@@ -63,7 +63,12 @@ const DEFAULT_CHAR_CONFIG = {
     JOYSTICK_LOCK_X: false,  // If true, joystick input is locked to vertical axis only (no strafing/turning)
     DOUBLE_JUMP_ENABLED: true, // If true, the character can perform a double jump in mid-air
     SPEED_MULTIPLIER: 1.0,     // Speed multiplier for walking and running
-    PLAY_PARTICLES: true      // Play particles/dust under the character's feet
+    PLAY_PARTICLES: true,      // Play particles/dust under the character's feet
+    MOVING_PLATFORMS: true,    // Inherit motion (position + yaw) from animated platforms under the feet
+    HEAD_LOOK: true,           // Head softly tracks the camera direction during idle/locomotion
+    FOOT_PLANTING: true,       // Pelvis drop on slopes/steps so the downhill foot doesn't float
+    TWIST_DRIVER: true,        // Drive *ForeArmTwist bones from hand roll (rigs built with twist bones)
+    MANTLE_ENABLED: true       // Jump near a chest-high ledge boosts exactly enough to mantle onto it
   },
 
   // Mobile / Touch controls configuration
@@ -819,6 +824,18 @@ class CharCtrl {
     const savedPlayParticles = localStorage.getItem('play-particles');
     this.PLAY_PARTICLES = savedPlayParticles !== null ? (savedPlayParticles === 'true') : (config.PLAY_PARTICLES !== undefined ? config.PLAY_PARTICLES : true);
 
+    this.MOVING_PLATFORMS = config.MOVING_PLATFORMS !== undefined ? config.MOVING_PLATFORMS : true;
+    this.HEAD_LOOK = config.HEAD_LOOK !== undefined ? config.HEAD_LOOK : true;
+    this.FOOT_PLANTING = config.FOOT_PLANTING !== undefined ? config.FOOT_PLANTING : true;
+    this.TWIST_DRIVER = config.TWIST_DRIVER !== undefined ? config.TWIST_DRIVER : true;
+    this.MANTLE_ENABLED = config.MANTLE_ENABLED !== undefined ? config.MANTLE_ENABLED : true;
+    this._platformState = null;   // moving-platform ride state (mesh + local anchor)
+    this._boneDriversInit = false; // lazy skeleton-node lookup for head/twist/foot drivers
+    this._headLookYaw = 0;
+    this._headLookPitch = 0;
+    this._headLookWeight = 0;
+    this._pelvisDrop = 0;
+
     this._originalSensibilityX = this.camera ? this.camera.angularSensibilityX : 1000;
     this._originalSensibilityY = this.camera ? this.camera.angularSensibilityY : 1000;
     this._originalRadius = this.camera ? this.camera.radius : 8.0;
@@ -1572,6 +1589,9 @@ class CharCtrl {
   // ── ACTIONS ────────────────────────────────────────────
   _jump() {
     this.jumpVel = this.JUMP_PWR;
+    // Mantle assist: jumping into a chest-high ledge boosts exactly enough to
+    // land on top (probes wall, ledge height and headroom before boosting).
+    if (this.MANTLE_ENABLED && !this.crouching && this.grounded) this._tryMantle();
     this.grounded = false;
     this._setState(S.JUMP_START);
     // Dynamic takeoff squash
@@ -2085,6 +2105,7 @@ class CharCtrl {
       if (pick && pick.hit) {
         hitAny = true;
         this._groundNormal = pick.getNormal(true);
+        this._groundMesh = pick.pickedMesh;
         const name = pick.pickedMesh.name || "";
         this.onStairs = /step|stair/i.test(name);
         // Check if mesh is marked, matches step/stair naming patterns, or has sloped surface normals
@@ -2103,6 +2124,7 @@ class CharCtrl {
 
     if (!hitAny) {
       this._groundNormal = null;
+      this._groundMesh = null;
     }
 
     this._wasOnScalable = this.onScalable;
@@ -2139,10 +2161,237 @@ class CharCtrl {
     return !this._isCeilingBlocked();
   }
 
+  // ── MOVING PLATFORMS ───────────────────────────────────
+  // Ride animated platforms: the character's position is anchored in the
+  // platform's local space at the end of each frame; at the start of the next
+  // frame the anchor is re-projected through the platform's NEW world matrix
+  // and the resulting delta (translation + yaw) is applied to the capsule.
+  // Works for translating, rotating and orbiting platforms in both physics and
+  // kinematic modes without any parenting (collisions stay intact).
+  _applyMovingPlatform() {
+    const st = this._platformState;
+    if (!st || !this.MOVING_PLATFORMS) return;
+    const mesh = st.mesh;
+    if (!mesh || mesh.isDisposed()) { this._platformState = null; return; }
+    const m = mesh.computeWorldMatrix(true);
+    const ridePos = BABYLON.Vector3.TransformCoordinates(st.localPos, m);
+    const delta = ridePos.subtract(st.worldPos);
+    const mm = m.m;
+    const newYaw = Math.atan2(mm[8], mm[10]);
+    let dYaw = newYaw - st.yaw;
+    while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+    while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+    // Teleport guard: a platform jumping more than ~1.5 capsule heights or
+    // snapping its yaw is being repositioned by gameplay code — don't follow.
+    if (delta.length() > 1.5 * this._capScaleY || Math.abs(dYaw) > 0.5) return;
+    if (delta.lengthSquared() > 1e-10) this.root.position.addInPlace(delta);
+    if (Math.abs(dYaw) > 1e-6) {
+      this.rotY += dYaw;
+      if (this.usePhysics) {
+        this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+      } else {
+        this.root.rotation.y = this.rotY;
+      }
+    }
+  }
+
+  _recordPlatformState() {
+    const mesh = this.grounded && this.MOVING_PLATFORMS ? this._groundMesh : null;
+    if (!mesh) { this._platformState = null; return; }
+    const inv = BABYLON.Matrix.Invert(mesh.computeWorldMatrix(true));
+    const mm = mesh.getWorldMatrix().m;
+    this._platformState = {
+      mesh,
+      localPos: BABYLON.Vector3.TransformCoordinates(this.root.position, inv),
+      worldPos: this.root.position.clone(),
+      yaw: Math.atan2(mm[8], mm[10]),
+    };
+  }
+
+  // ── MANTLE ASSIST ──────────────────────────────────────
+  // Jumping while facing a chest-high ledge boosts the jump to exactly clear
+  // it and seeds forward momentum, so the character lands on top instead of
+  // bouncing off the wall. Probes: obstacle at chest height → ledge top via a
+  // downward ray ahead → headroom above the ledge. Returns true when boosted.
+  _tryMantle() {
+    const sy = this._capScaleY, sw = this._capScaleW;
+    const dir = new BABYLON.Vector3(Math.sin(this.rotY), 0, Math.cos(this.rotY));
+    const notMe = (mesh) => mesh.checkCollisions && !this._isMeshCharacter(mesh);
+    // 1. Wall at chest height directly ahead
+    const chestStart = this.root.position.add(new BABYLON.Vector3(0, -0.30 * sy, 0));
+    const wallPick = this.scene.pickWithRay(
+      new BABYLON.Ray(chestStart, dir, this._standEllipsoidWidth + 0.35 * sw), notMe);
+    if (!wallPick || !wallPick.hit) return false;
+    // 2. Ledge top: cast down from above, slightly past the wall face
+    const ahead = wallPick.distance + 0.25 * sw;
+    const topStart = this.root.position.add(dir.scale(ahead)).add(new BABYLON.Vector3(0, 1.2 * sy, 0));
+    const topPick = this.scene.pickWithRay(
+      new BABYLON.Ray(topStart, new BABYLON.Vector3(0, -1, 0), 2.2 * sy), notMe);
+    if (!topPick || !topPick.hit || !topPick.pickedPoint) return false;
+    const bottomY = this.root.position.y - 0.9 * sy;
+    const rise = topPick.pickedPoint.y - bottomY;
+    if (rise < 0.45 * sy || rise > 1.35 * sy) return false;
+    // 3. Headroom above the landing spot for a standing capsule
+    const clearStart = topPick.pickedPoint.add(new BABYLON.Vector3(0, 0.15 * sy, 0));
+    const clearPick = this.scene.pickWithRay(
+      new BABYLON.Ray(clearStart, new BABYLON.Vector3(0, 1, 0), 1.8 * sy), notMe);
+    if (clearPick && clearPick.hit) return false;
+    // Boost: clear the ledge with a small margin + forward momentum
+    this.jumpVel = Math.max(this.jumpVel, Math.sqrt(2 * this.GRAV * (rise + 0.35 * sy)));
+    this.moveDir.copyFrom(dir);
+    this.speed = Math.max(this.speed, this.SPD_WALK * 1.2);
+    return true;
+  }
+
+  // ── SKELETON-NODE DRIVERS ──────────────────────────────
+  // Post-animation layers written on top of the evaluated pose each frame
+  // (onBeforeRender fires after animation evaluation): head look-at, forearm
+  // twist distribution and slope foot planting. All are lazy, name-driven and
+  // silently inactive when the rig lacks the needed nodes.
+  _updateBoneDrivers(dt) {
+    if (!this._boneDriversInit) this._initBoneDrivers();
+    this._updateFootPlanting(dt);
+    this._updateHeadLook(dt);
+    this._updateTwistDrivers(dt);
+  }
+
+  /** Re-scan the skeleton nodes (call after swapping the character mesh). */
+  refreshBoneDrivers() {
+    this._boneDriversInit = false;
+  }
+
+  _initBoneDrivers() {
+    this._boneDriversInit = true;
+    this._headNode = null;
+    this._twistDrivers = [];
+    this._footNodes = [];
+    const byNorm = new Map();
+    for (const n of this.visualMesh.getDescendants(false)) {
+      if (!n.getClassName || (n.getClassName() !== 'TransformNode' && n.getClassName() !== 'Mesh')) continue;
+      const key = normBone(n.name);
+      if (key && !byNorm.has(key)) byNorm.set(key, n);
+    }
+    this._headNode = byNorm.get('head') || null;
+    for (const side of ['left', 'right']) {
+      const foot = byNorm.get(side + 'foot');
+      if (foot) this._footNodes.push(foot);
+      const twist = byNorm.get(side + 'forearmtwist');
+      const hand = byNorm.get(side); // normBone('LeftHand') → 'left'
+      if (twist && hand && hand.parent === twist.parent) {
+        // Twist axis: bone direction (hand local translation in forearm space).
+        // Autorig twist rigs bind with identity local rotations, so the same
+        // axis is valid in the rest frames used by the decomposition below.
+        const axis = hand.position.clone();
+        if (axis.lengthSquared() > 1e-10) {
+          axis.normalize();
+          this._twistDrivers.push({ twist, hand, axis, rest: null, twistRest: null });
+        }
+      }
+    }
+  }
+
+  _updateHeadLook(dt) {
+    const node = this._headNode;
+    if (!node || !this.HEAD_LOOK || !this.camera) return;
+    const inLoco = !this._isInAction() && !this.sitting && this.state !== S.ROLL;
+    this._headLookWeight = lerp(this._headLookWeight, inLoco ? 1 : 0, 1 - Math.exp(-6 * dt));
+    const camFwd = this._camForward();
+    const camYaw = Math.atan2(camFwd.x, camFwd.z);
+    let dYaw = camYaw - this.rotY;
+    while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+    while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+    // Camera looking at the face (over-shoulder threshold): relax to neutral
+    const yawTgt = Math.abs(dYaw) > 2.2 ? 0 : Math.max(-0.9, Math.min(0.9, dYaw));
+    const pitchTgt = Math.max(-0.5, Math.min(0.5, (Math.PI / 2 - this.camera.beta) * 0.6));
+    this._headLookYaw = lerpAngle(this._headLookYaw, yawTgt, 1 - Math.exp(-8 * dt));
+    this._headLookPitch = lerp(this._headLookPitch, pitchTgt, 1 - Math.exp(-8 * dt));
+    const w = this._headLookWeight;
+    const yaw = this._headLookYaw * w, pitch = this._headLookPitch * w;
+    if (Math.abs(yaw) < 0.005 && Math.abs(pitch) < 0.005) return;
+    const parent = node.parent;
+    if (!parent || !node.rotationQuaternion) return;
+    parent.computeWorldMatrix(true);
+    const pRot = new BABYLON.Quaternion();
+    parent.getWorldMatrix().decompose(undefined, pRot, undefined);
+    // World-space delta: yaw about world up, pitch about the head's right axis
+    const rightAxis = new BABYLON.Vector3(Math.cos(this.rotY + yaw), 0, -Math.sin(this.rotY + yaw));
+    const worldDelta = BABYLON.Quaternion.RotationAxis(BABYLON.Vector3.Up(), yaw)
+      .multiply(BABYLON.Quaternion.RotationAxis(rightAxis, pitch));
+    // local' = inv(parentWorld) · delta · parentWorld · localAnim
+    const pInv = pRot.conjugate();
+    node.rotationQuaternion = pInv.multiply(worldDelta).multiply(pRot).multiply(node.rotationQuaternion);
+  }
+
+  _updateTwistDrivers() {
+    if (!this.TWIST_DRIVER) return;
+    for (const d of this._twistDrivers) {
+      const q = d.hand.rotationQuaternion;
+      if (!q) continue;
+      if (!d.rest) {
+        d.rest = q.clone();
+        d.twistRest = d.twist.rotationQuaternion ? d.twist.rotationQuaternion.clone() : BABYLON.Quaternion.Identity();
+      }
+      // Rotation since rest, then swing-twist decomposition about the bone axis
+      const rel = d.rest.conjugate().multiply(q);
+      const a = d.axis;
+      const dot = rel.x * a.x + rel.y * a.y + rel.z * a.z;
+      let tx = a.x * dot, ty = a.y * dot, tz = a.z * dot, tw = rel.w;
+      const len = Math.sqrt(tx * tx + ty * ty + tz * tz + tw * tw);
+      if (len < 1e-6) continue;
+      let twq = new BABYLON.Quaternion(tx / len, ty / len, tz / len, tw / len);
+      if (twq.w < 0) twq.scaleInPlace(-1); // shortest arc
+      // The twist bone takes half of the hand's roll → smooth wrist deformation
+      const half = BABYLON.Quaternion.Slerp(BABYLON.Quaternion.Identity(), twq, 0.5);
+      d.twist.rotationQuaternion = d.twistRest.multiply(half);
+    }
+  }
+
+  // Pelvis drop on slopes/steps while standing: lowers the visual mesh so the
+  // downhill foot reaches the ground instead of floating. Purely visual (the
+  // capsule is untouched) and fades out while moving or acting.
+  _updateFootPlanting(dt) {
+    let target = 0;
+    if (this.FOOT_PLANTING && this.grounded && this.speed < 0.5 && !this.crouching &&
+      this._footNodes.length === 2 && !this._isInAction()) {
+      const baseY = this.visualMesh.getAbsolutePosition().y;
+      const down = new BABYLON.Vector3(0, -1, 0);
+      let minDelta = 0;
+      for (const f of this._footNodes) {
+        f.computeWorldMatrix(true);
+        const wp = f.getAbsolutePosition();
+        const pick = this.scene.pickWithRay(
+          new BABYLON.Ray(new BABYLON.Vector3(wp.x, this.root.position.y, wp.z), down, 2.2 * this._capScaleY),
+          (mesh) => mesh.checkCollisions && !this._isMeshCharacter(mesh));
+        if (pick && pick.hit && pick.pickedPoint) {
+          const delta = pick.pickedPoint.y - baseY; // negative → ground below the feet plane here
+          if (delta < minDelta) minDelta = delta;
+        }
+      }
+      target = Math.max(minDelta, -0.22 * this._capScaleY);
+    }
+    this._pelvisDrop = lerp(this._pelvisDrop, target, 1 - Math.exp(-10 * dt));
+    if (Math.abs(this._pelvisDrop) > 0.001) this.visualMesh.position.y += this._pelvisDrop;
+  }
+
   // ── UPDATE ─────────────────────────────────────────────
+  // Frame hitches used to be dropped entirely (dt > 0.1 → no simulation), which
+  // froze the character while wall-clock time kept running. Long frames are now
+  // split into up to 3 equal substeps of ≤50ms each: raycasts and collisions
+  // run per substep (less tunneling on hitches) and every exponential smoothing
+  // term (1-exp(-k·dt)) composes exactly, so behavior at normal framerates is
+  // bit-identical to the single-step path.
   _update() {
-    const dt = this.scene.getEngine().getDeltaTime() / 1000;
+    let dt = this.scene.getEngine().getDeltaTime() / 1000;
+    if (dt <= 0) return;
+    if (dt > 0.25) dt = 0.25; // tab switch / debugger pause: cap the catch-up
+    const steps = Math.min(3, Math.max(1, Math.ceil(dt / 0.05)));
+    const subDt = dt / steps;
+    for (let i = 0; i < steps; i++) this._simulate(subDt);
+  }
+
+  _simulate(dt) {
     if (dt <= 0 || dt > 0.1) return;
+    this._applyMovingPlatform(dt);
     this.stateT += dt;
     this._timeSinceSpawn += dt;
 
@@ -3256,6 +3505,12 @@ class CharCtrl {
         else btnSprint.classList.remove('active');
       }
     }
+
+    // ── SKELETON-NODE DRIVERS (head look, forearm twist, foot planting) ────
+    this._updateBoneDrivers(dt);
+
+    // Anchor the moving-platform ride point AFTER this frame's own movement
+    this._recordPlatformState();
 
     // Save current Y position for vertical stairs stabilization in the next frame
     this._lastY = this.root.position.y;

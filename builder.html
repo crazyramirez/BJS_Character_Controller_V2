@@ -307,6 +307,11 @@
               </div>
               <div id="autorig-controls" style="display:none;">
                 <button id="btn-autorig-start" class="btn-action">💀 Generate Skeleton (Auto-Rig)</button>
+                <button id="btn-autorig-batch" class="btn-action btn-secondary" style="margin-top: 6px;"
+                  title="Auto-rig several .glb files in a row with the current layout options (server guess, no marker editing) and download each rigged result.">
+                  📦 Batch auto-rig GLBs…
+                </button>
+                <input type="file" id="autorig-batch-files" accept=".glb" multiple style="display:none;">
                 <div id="autorig-adjust" style="display:none;">
                   <p id="autorig-adjust-hint">
                     Drag the yellow joint markers in the viewport to match your character's anatomy
@@ -370,6 +375,17 @@
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">
                     <input type="checkbox" id="autorig-pose-profiling"> Pose Profiling Mode (deform mesh)
                   </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Add Left/RightForeArmTwist bones between elbow and wrist. The controller drives them from hand roll at runtime, removing the candy-wrapper wrist pinch.">
+                    <input type="checkbox" id="autorig-twist-bones"> Forearm twist bones (smoother wrists)
+                  </label>
+                  <div class="autorig-btn-row" style="margin-top: 6px;">
+                    <button id="btn-autorig-save-layout" class="btn-action btn-secondary"
+                      title="Download the current marker positions as a reusable JSON layout preset.">💾 Save layout</button>
+                    <button id="btn-autorig-load-layout" class="btn-action btn-secondary"
+                      title="Load a saved marker layout preset (scaled to this character's height).">📂 Load layout</button>
+                  </div>
+                  <input type="file" id="autorig-layout-file" accept=".json" style="display:none;">
                   <div class="autorig-btn-row">
                     <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>
                     <button id="btn-autorig-cancel" class="btn-action btn-secondary">✕ Cancel</button>

@@ -158,8 +158,10 @@ app.post('/api/autorig', upload.single('file'), async (req, res) => {
     }
 
     console.log(`[autorig] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB), custom joints: ${options.joints ? Object.keys(options.joints).length : 0}`);
-    const rigged = await autoRigGLB(req.file.buffer, options);
+    const reportSink = {};
+    const rigged = await autoRigGLB(req.file.buffer, { ...options, reportSink });
 
+    if (reportSink.score !== undefined) res.setHeader('X-Autorig-Report', JSON.stringify(reportSink));
     res.setHeader('Content-Type', 'model/gltf-binary');
     res.setHeader('Content-Disposition', 'attachment; filename="rigged.glb"');
     res.setHeader('Content-Length', rigged.length);
