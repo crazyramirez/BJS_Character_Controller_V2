@@ -68,7 +68,12 @@ const DEFAULT_CHAR_CONFIG = {
     HEAD_LOOK: true,           // Head softly tracks the camera direction during idle/locomotion
     FOOT_PLANTING: true,       // Pelvis drop on slopes/steps so the downhill foot doesn't float
     TWIST_DRIVER: true,        // Drive *ForeArmTwist bones from hand roll (rigs built with twist bones)
-    MANTLE_ENABLED: true       // Jump near a chest-high ledge boosts exactly enough to mantle onto it
+    MANTLE_ENABLED: true,      // Jump near a chest-high ledge boosts exactly enough to mantle onto it
+    COYOTE_TIME: 0.12,         // Seconds after walking off a ledge where JUMP still counts as grounded
+    JUMP_BUFFER: 0.15,         // Seconds a JUMP press taken in mid-air is remembered and fired on landing
+    JUMP_CUT: true,            // Releasing JUMP while ascending shortens the jump (variable height)
+    JUMP_CUT_MULT: 2.5,        // Extra downward acceleration multiplier applied on jump-cut (higher = snappier cut)
+    ACCEL_CURVE: true          // Apex-based acceleration: fast launch off rest, precise control near top speed
   },
 
   // Mobile / Touch controls configuration
@@ -123,6 +128,16 @@ function lerpAngle(a, b, t) {
   while (d > Math.PI) d -= 2 * Math.PI;
   while (d < -Math.PI) d += 2 * Math.PI;
   return a + d * Math.min(1, t);
+}
+
+// Apex-based acceleration: launches fast off rest (snappy start) and eases
+// toward the configured base rate near top speed (precise control at the
+// cap), the curve used by Celeste/Mario-style platformers instead of a flat
+// exponential blend. `ratio` = current speed / target top speed, 0..1+.
+// At ratio=0 the rate is scaled up to 2.2×; it decays to 1× by ratio=1.
+function apexAccelRate(baseRate, ratio) {
+  const r = Math.max(0, Math.min(1, ratio));
+  return baseRate * (1 + 1.2 * (1 - r) * (1 - r));
 }
 
 function normBone(name) {
@@ -829,6 +844,14 @@ class CharCtrl {
     this.FOOT_PLANTING = config.FOOT_PLANTING !== undefined ? config.FOOT_PLANTING : true;
     this.TWIST_DRIVER = config.TWIST_DRIVER !== undefined ? config.TWIST_DRIVER : true;
     this.MANTLE_ENABLED = config.MANTLE_ENABLED !== undefined ? config.MANTLE_ENABLED : true;
+    this.COYOTE_TIME = config.COYOTE_TIME !== undefined ? config.COYOTE_TIME : 0.12;
+    this.JUMP_BUFFER = config.JUMP_BUFFER !== undefined ? config.JUMP_BUFFER : 0.15;
+    this.JUMP_CUT = config.JUMP_CUT !== undefined ? config.JUMP_CUT : true;
+    this.JUMP_CUT_MULT = config.JUMP_CUT_MULT !== undefined ? config.JUMP_CUT_MULT : 2.5;
+    this.ACCEL_CURVE = config.ACCEL_CURVE !== undefined ? config.ACCEL_CURVE : true;
+    this._coyoteTimer = 0;        // seconds since last grounded (jump still valid while < COYOTE_TIME)
+    this._jumpBufferTimer = -1;   // seconds since last JUMP press (<0 = no buffered press); consumed on landing
+    this._jumpCutApplied = false; // whether the current ascent has already been shortened by a release
     this._platformState = null;   // moving-platform ride state (mesh + local anchor)
     this._boneDriversInit = false; // lazy skeleton-node lookup for head/twist/foot drivers
     this._headLookYaw = 0;
@@ -1214,7 +1237,10 @@ class CharCtrl {
       this.keys[e.code] = true;
       if (!e.repeat) this._keyDown(e.code);
     };
-    this._boundKeyUp = e => { this.keys[e.code] = false; };
+    this._boundKeyUp = e => {
+      this.keys[e.code] = false;
+      if (this._matchesAction(e.code, 'JUMP')) this._releaseJump();
+    };
     this._boundReset = () => this._resetInputState();
 
     window.addEventListener('keydown', this._boundKeyDown);
@@ -1266,6 +1292,7 @@ class CharCtrl {
   _resetInputState() {
     this.keys = {};
     this.touchVector = { x: 0, y: 0 };
+    this._jumpBufferTimer = -1; // discard any pending buffered jump on focus loss
     if (this.joystickKnob) {
       this.joystickKnob.style.transform = 'translate(0px, 0px)';
     }
@@ -1364,6 +1391,7 @@ class CharCtrl {
         const onBtnUp = (e) => {
           e.preventDefault();
           this.keys[keyCode] = false;
+          if (this._matchesAction(keyCode, 'JUMP')) this._releaseJump();
         };
 
         addListener(btn, 'pointerdown', onBtnDown);
@@ -1526,7 +1554,11 @@ class CharCtrl {
         }
       }
     } else if (this._matchesAction(code, 'JUMP')) {
-      if (this.grounded && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
+      // Coyote time: a few frames after walking off a ledge still count as
+      // grounded for jump purposes — forgives the "stepped off 1 frame too
+      // late" case that feels unfair with an exact-grounded check.
+      const coyoteEligible = this.grounded || (this._coyoteTimer < this.COYOTE_TIME && !this._hasDoubleJumped);
+      if (coyoteEligible && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
         if (this._isCeilingBlocked()) {
           this._showCombo('CEILING BLOCKED');
           setTimeout(() => this._hideCombo(), 1200);
@@ -1543,10 +1575,17 @@ class CharCtrl {
         if (this.DOUBLE_JUMP_ENABLED && !this._hasDoubleJumped) {
           this._doubleJump();
         } else {
+          // Jump buffer: remember this press so it fires the instant we land,
+          // instead of requiring a frame-perfect press right on touchdown.
+          this._jumpBufferTimer = 0;
           this._rollOnLand = true;
           this._showCombo('ROLL QUEUED');
           setTimeout(() => this._hideCombo(), 1200);
         }
+      } else if (!coyoteEligible && inAction && this.state !== S.ROLL) {
+        // Pressed jump a moment too early (e.g. tail end of a landing/attack
+        // animation) — buffer it instead of dropping the input on the floor.
+        this._jumpBufferTimer = 0;
       }
     } else if (this._matchesAction(code, 'ROLL')) {
       const now = performance.now();
@@ -1587,8 +1626,22 @@ class CharCtrl {
   }
 
   // ── ACTIONS ────────────────────────────────────────────
+  // Variable jump height: called on JUMP key/button release. Shortens the
+  // ascent instead of always reaching JUMP_PWR's full arc, the same feel as
+  // Mario/Celeste-style platformers. No-ops once already falling or already
+  // cut this ascent (idempotent — safe from stray key-up events).
+  _releaseJump() {
+    if (!this.JUMP_CUT || this._jumpCutApplied) return;
+    if (this.jumpVel > 0.5) {
+      this.jumpVel *= 0.45;
+      this._jumpCutApplied = true;
+    }
+  }
+
   _jump() {
     this.jumpVel = this.JUMP_PWR;
+    this._jumpCutApplied = false;
+    this._coyoteTimer = this.COYOTE_TIME; // consume the coyote window
     // Mantle assist: jumping into a chest-high ledge boosts exactly enough to
     // land on top (probes wall, ledge height and headroom before boosting).
     if (this.MANTLE_ENABLED && !this.crouching && this.grounded) this._tryMantle();
@@ -1612,6 +1665,7 @@ class CharCtrl {
   _doubleJump() {
     this._hasDoubleJumped = true;
     this.jumpVel = this.JUMP_PWR * 1.0;
+    this._jumpCutApplied = false;
     this._setState(S.JUMP_START);
 
     // Update takeoff momentum (moveDir) at the moment of double jump to respect new input direction!
@@ -2458,9 +2512,25 @@ class CharCtrl {
       }
     }
 
+    // Coyote timer: resets while grounded, counts up in the air. Read by the
+    // JUMP handler so a press shortly after leaving a ledge still succeeds.
+    this._coyoteTimer = this.grounded ? 0 : this._coyoteTimer + dt;
+
     // Landing / roll recovery
     let landingTriggered = false;
     let _snapVelY = 0;
+    // Buffered jump: a JUMP press taken while airborne (too early to act on)
+    // fires the instant landing is detected, instead of being dropped.
+    if (this._jumpBufferTimer >= 0) {
+      if (this.grounded && !inAction) {
+        this._jump();
+        this._jumpBufferTimer = -1;
+      } else if (this._jumpBufferTimer > this.JUMP_BUFFER) {
+        this._jumpBufferTimer = -1; // window expired, discard
+      } else {
+        this._jumpBufferTimer += dt;
+      }
+    }
     if (this.grounded && !wasGrounded) {
       landingTriggered = true;
       this._hasDoubleJumped = false; // Reset double jump!
@@ -2766,7 +2836,8 @@ class CharCtrl {
             tgt *= Math.abs(inputZ) * this.SPEED_MULTIPLIER;
           }
 
-          const rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
+          let rate = inputZ !== 0 ? this.ACCEL : this.DECEL;
+          if (inputZ !== 0 && this.ACCEL_CURVE && tgt > 0.01) rate = apexAccelRate(rate, this.speed / tgt);
           this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
           if (this.speed < 0.05) this.speed = 0;
         }
@@ -2779,7 +2850,9 @@ class CharCtrl {
             if (hasMove) {
               let idealTgt = (isSprinting ? this.SPD_SPRINT : this.SPD_WALK) * this.SPEED_MULTIPLIER;
               idealTgt *= inputMag;
-              tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-this.ACCEL * dt));
+              let rate = this.ACCEL;
+              if (this.ACCEL_CURVE && idealTgt > 0.01) rate = apexAccelRate(rate, this.speed / idealTgt);
+              tgtSpeed = lerp(this.speed, idealTgt, 1 - Math.exp(-rate * dt));
             } else {
               tgtSpeed = lerp(this.speed, 0, 1 - Math.exp(-this.DECEL * dt));
             }
@@ -2813,7 +2886,8 @@ class CharCtrl {
             }
           }
 
-          const rate = hasMove ? this.ACCEL : this.DECEL;
+          let rate = hasMove ? this.ACCEL : this.DECEL;
+          if (hasMove && this.ACCEL_CURVE && tgt > 0.01) rate = apexAccelRate(rate, this.speed / tgt);
           this.speed = lerp(this.speed, tgt, 1 - Math.exp(-rate * dt));
           if (this.speed < 0.05) this.speed = 0;
         }
