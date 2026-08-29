@@ -7,34 +7,16 @@
 
 const { app, BrowserWindow, shell, dialog } = require('electron');
 const path = require('path');
-const net = require('net');
 const { pathToFileURL } = require('url');
+const { getFreePort } = require('./ports.cjs');
 
 let mainWindow = null;
 
-/** Find a free TCP port, preferring 3000. */
-function getFreePort(preferred = 3000) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once('error', () => {
-      // Preferred port busy → let OS pick one
-      const srv2 = net.createServer();
-      srv2.listen(0, () => {
-        const port = srv2.address().port;
-        srv2.close(() => resolve(port));
-      });
-    });
-    srv.listen(preferred, () => {
-      srv.close(() => resolve(preferred));
-    });
-  });
-}
-
 async function startServer(port) {
   process.env.PORT = String(port);
-  // server.mjs calls app.listen() on import
   const serverPath = path.join(__dirname, '..', 'server.mjs');
-  await import(pathToFileURL(serverPath).href);
+  const serverModule = await import(pathToFileURL(serverPath).href);
+  return serverModule.startServer({ port, host: '127.0.0.1' });
 }
 
 function createWindow(port) {
@@ -50,16 +32,26 @@ function createWindow(port) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
   // External links (Mixamo, Buy Me a Coffee…) open in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:') shell.openExternal(parsed.toString());
+    } catch (_) { /* deny malformed external URLs */ }
     return { action: 'deny' };
   });
 
-  mainWindow.loadURL(`http://localhost:${port}/builder.html`);
+  const localOrigin = `http://127.0.0.1:${port}`;
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(`${localOrigin}/`)) event.preventDefault();
+  });
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+
+  mainWindow.loadURL(`${localOrigin}/builder.html`);
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -80,6 +72,7 @@ if (!app.requestSingleInstanceLock()) {
       await startServer(port);
       createWindow(port);
     } catch (err) {
+      console.error('[electron] Startup error:', err && err.stack || err);
       dialog.showErrorBox('Startup error', String(err && err.stack || err));
       app.quit();
     }

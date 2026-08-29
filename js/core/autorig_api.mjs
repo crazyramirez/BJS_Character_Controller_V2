@@ -53,12 +53,22 @@ function transformPoint(m, [x, y, z]) {
     m[2] * x + m[6] * y + m[10] * z + m[14],
   ];
 }
-function transformDirection(m, [x, y, z]) {
-  const v = [
+function transformVector(m, [x, y, z]) {
+  return [
     m[0] * x + m[4] * y + m[8] * z,
     m[1] * x + m[5] * y + m[9] * z,
     m[2] * x + m[6] * y + m[10] * z,
   ];
+}
+function transformNormal(m, [x, y, z], normalize = true) {
+  const inv = invertRigidMat4(m);
+  // transpose(inverse(linear(m))) * normal
+  const v = [
+    inv[0] * x + inv[1] * y + inv[2] * z,
+    inv[4] * x + inv[5] * y + inv[6] * z,
+    inv[8] * x + inv[9] * y + inv[10] * z,
+  ];
+  if (!normalize) return v;
   const len = Math.hypot(v[0], v[1], v[2]);
   return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : v;
 }
@@ -101,6 +111,44 @@ function worldMatrixOf(node, parentMap, cache) {
   const world = parent ? mat4Mul(worldMatrixOf(parent, parentMap, cache), local) : local;
   cache.set(node, world);
   return world;
+}
+
+function cloneAccessorForBake(doc, accessor) {
+  if (!accessor) return null;
+  const clone = doc.createAccessor(accessor.getName()).copy(accessor);
+  const array = accessor.getArray();
+  if (array) clone.setArray(array.slice());
+  return clone;
+}
+
+// A mesh may be instanced by nodes with different transforms. Baking the first
+// transform into shared accessors corrupts every other instance, so create a
+// geometry-deep copy before baking. Materials and index buffers remain shared.
+function cloneMeshForBake(doc, mesh, suffix) {
+  const clone = doc.createMesh(`${mesh.getName() || 'Mesh'}_${suffix}`).copy(mesh);
+  for (const primitive of [...clone.listPrimitives()]) clone.removePrimitive(primitive);
+  for (const sourcePrimitive of mesh.listPrimitives()) {
+    const primitive = doc.createPrimitive().copy(sourcePrimitive);
+    for (const semantic of sourcePrimitive.listSemantics()) {
+      primitive.setAttribute(semantic, cloneAccessorForBake(doc, sourcePrimitive.getAttribute(semantic)));
+    }
+    for (const target of [...primitive.listTargets()]) primitive.removeTarget(target);
+    for (const sourceTarget of sourcePrimitive.listTargets()) {
+      const target = doc.createPrimitiveTarget(sourceTarget.getName()).copy(sourceTarget);
+      for (const semantic of sourceTarget.listSemantics()) {
+        target.setAttribute(semantic, cloneAccessorForBake(doc, sourceTarget.getAttribute(semantic)));
+      }
+      primitive.addTarget(target);
+    }
+    clone.addPrimitive(primitive);
+  }
+  return clone;
+}
+
+function linearDeterminant(m) {
+  return m[0] * (m[5] * m[10] - m[9] * m[6])
+    - m[4] * (m[1] * m[10] - m[9] * m[2])
+    + m[8] * (m[1] * m[6] - m[5] * m[2]);
 }
 
 // ── Skin space → render world ────────────────────────────────────────────────
@@ -164,7 +212,7 @@ function computeWorldBounds(doc, skinXforms = new Map(), bodyMeshes = null) {
 // plane, props and light gizmos. Rigging/measuring against ALL meshes ruins
 // the joint guess and skins the floor to the skeleton. Pick the "body": the
 // densest tall mesh plus everything contained in (or near) its bounding box.
-function selectBodyMeshes(doc, skinXforms = new Map()) {
+function selectBodyMeshes(doc, skinXforms = new Map(), options = {}, reportSink = null) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
   const entries = [];
@@ -190,44 +238,70 @@ function selectBodyMeshes(doc, skinXforms = new Map()) {
     }
     if (count === 0 || !Number.isFinite(min[0])) continue;
     entries.push({
+      id: `mesh-${entries.length + 1}`,
+      name: mesh.getName() || node.getName() || `Mesh ${entries.length + 1}`,
       mesh, min, max, count,
       height: max[1] - min[1],
       footprint: Math.max(1e-6, (max[0] - min[0]) * (max[2] - min[2])),
     });
   }
-  if (entries.length <= 1) return null; // single mesh → no filtering needed
-
-  // Main body = densest tall mesh
-  let main = entries[0];
-  for (const e of entries) {
-    if (e.count * e.height > main.count * main.height) main = e;
-  }
-  const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
-  // Fraction of [a,b] overlapping [c,d].
-  const overlap1D = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
   const keep = new Set();
-  for (const e of entries) {
-    if (e === main) { keep.add(e.mesh); continue; }
-    const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
-    const inside =
-      cx > main.min[0] - m && cx < main.max[0] + m &&
-      cy > main.min[1] - m && cy < main.max[1] + m &&
-      cz > main.min[2] - m && cz < main.max[2] + m;
-    if (!inside) continue; // far prop / light gizmo
+  const requestedIds = Array.isArray(options.bodyMeshIds)
+    ? new Set(options.bodyMeshIds.filter(id => typeof id === 'string'))
+    : null;
 
-    // A ground plane / pedestal is a FLAT SLAB: tiny vertical extent but a large
-    // footprint. Clothing (capes, coats, robes, armor) is tall and overlaps the
-    // body's vertical span heavily, so it must be kept even with a big footprint.
-    const flat = e.height < 0.12 * main.height;
-    const wide = e.footprint > 1.5 * main.footprint;
-    const vOverlap = overlap1D(e.min[1], e.max[1], main.min[1], main.max[1]) / Math.max(e.height, 1e-6);
-    const isGround = flat && wide;                       // floor / base disc
-    const tooDetached = vOverlap < 0.25 && e.footprint > main.footprint; // big & barely shares the body's height
-    if (!isGround && !tooDetached) keep.add(e.mesh);
+  if (requestedIds) {
+    const knownIds = new Set(entries.map(e => e.id));
+    const unknown = [...requestedIds].filter(id => !knownIds.has(id));
+    if (unknown.length) throw new Error(`Unknown body mesh selection: ${unknown.join(', ')}.`);
+    if (!requestedIds.size) throw new Error('Select at least one body mesh for auto-rigging.');
+    for (const e of entries) if (requestedIds.has(e.id)) keep.add(e.mesh);
+  } else if (entries.length <= 1) {
+    for (const e of entries) keep.add(e.mesh);
+  } else {
+    // Main body = densest tall mesh
+    let main = entries[0];
+    for (const e of entries) {
+      if (e.count * e.height > main.count * main.height) main = e;
+    }
+    const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
+    // Fraction of [a,b] overlapping [c,d].
+    const overlap1D = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
+    for (const e of entries) {
+      if (e === main) { keep.add(e.mesh); continue; }
+      const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
+      const inside =
+        cx > main.min[0] - m && cx < main.max[0] + m &&
+        cy > main.min[1] - m && cy < main.max[1] + m &&
+        cz > main.min[2] - m && cz < main.max[2] + m;
+      if (!inside) continue; // far prop / light gizmo
+
+      // A ground plane / pedestal is a FLAT SLAB: tiny vertical extent but a large
+      // footprint. Clothing (capes, coats, robes, armor) is tall and overlaps the
+      // body's vertical span heavily, so it must be kept even with a big footprint.
+      const flat = e.height < 0.12 * main.height;
+      const wide = e.footprint > 1.5 * main.footprint;
+      const vOverlap = overlap1D(e.min[1], e.max[1], main.min[1], main.max[1]) / Math.max(e.height, 1e-6);
+      const isGround = flat && wide;                       // floor / base disc
+      const tooDetached = vOverlap < 0.25 && e.footprint > main.footprint; // big & barely shares the body's height
+      if (!isGround && !tooDetached) keep.add(e.mesh);
+    }
   }
+
+  const selection = {
+    mode: requestedIds ? 'manual' : 'automatic',
+    meshes: entries.map(e => ({
+      id: e.id,
+      name: e.name,
+      vertices: e.count,
+      height: +e.height.toFixed(5),
+      selected: keep.has(e.mesh),
+    })),
+  };
+  if (reportSink && typeof reportSink === 'object') reportSink.meshSelection = selection;
   if (keep.size === entries.length) return null;
   const dropped = entries.filter(e => !keep.has(e.mesh)).length;
-  console.log(`[autorig] Ignoring ${dropped} non-body mesh(es) (ground/props/lights) for rigging.`);
+  console.log(`[autorig] Ignoring ${dropped} non-body mesh(es) (${selection.mode} selection).`);
   return keep;
 }
 
@@ -1245,7 +1319,10 @@ function seedNorm(name) {
 function seedNormVariants(name) {
   if (!name) return [];
   const stripped = seedNorm(name);
-  const kept = seedNorm(name.replace(/_(\d+)$/, ' $1')).replace(/ /g, '');
+  const numericSuffix = String(name).match(/_(\d+)$/);
+  const kept = numericSuffix
+    ? seedNorm(String(name).slice(0, -numericSuffix[0].length)) + numericSuffix[1]
+    : stripped;
   return stripped === kept ? [stripped] : [stripped, kept];
 }
 
@@ -1313,7 +1390,8 @@ export async function guessJoints(buffer, options = {}) {
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const skinXf = skinWorldXforms(doc);
-  const bodyMeshes = selectBodyMeshes(doc, skinXf);
+  const selectionReport = {};
+  const bodyMeshes = selectBodyMeshes(doc, skinXf, options, selectionReport);
   const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
   const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
   const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, layout.bodyPlan);
@@ -1365,9 +1443,14 @@ export async function guessJoints(buffer, options = {}) {
   validateJointLayout(guess.joints, guess.height, { layout });
   guess.bodyPlan = layout.bodyPlan;
   guess.fingerCount = resolveFingerCount(options.fingerCount);
-  guess.supportedSkeletonPresets = Object.entries(SKELETON_PRESETS).map(([id, preset]) => ({ id, label: preset.label }));
+  guess.supportedSkeletonPresets = Object.entries(SKELETON_PRESETS).map(([id, preset]) => ({
+    id,
+    label: preset.label,
+    compatibility: preset.compatibility,
+  }));
   guess.supportedBodyPlans = Object.entries(BODY_PLANS).map(([id, plan]) => ({ id, label: plan.label }));
   guess.supportedFingerCounts = Object.keys(FINGER_SETS).map(Number);
+  guess.meshSelection = selectionReport.meshSelection;
   return guess;
 }
 
@@ -1881,21 +1964,21 @@ const DEFAULT_LAYOUT = buildRigLayout();
 // keeps detection and weighting stable while allowing the generated rig to plug
 // directly into the naming conventions used by common engines/DCC pipelines.
 export const SKELETON_PRESETS = Object.freeze({
-  mixamo: Object.freeze({ label: 'Mixamo / Babylon.js', names: Object.freeze({}) }),
-  unity: Object.freeze({ label: 'Unity Humanoid', names: Object.freeze({
+  mixamo: Object.freeze({ label: 'Mixamo / Babylon.js', compatibility: 'runtime-ready', names: Object.freeze({}) }),
+  unity: Object.freeze({ label: 'Unity Humanoid naming', compatibility: 'naming-convention', names: Object.freeze({
     Hips: 'Hips', Spine: 'Spine', Spine1: 'Chest', Spine2: 'UpperChest',
     LeftArm: 'LeftUpperArm', LeftForeArm: 'LeftLowerArm', LeftUpLeg: 'LeftUpperLeg', LeftLeg: 'LeftLowerLeg',
     RightArm: 'RightUpperArm', RightForeArm: 'RightLowerArm', RightUpLeg: 'RightUpperLeg', RightLeg: 'RightLowerLeg',
     LeftToeBase: 'LeftToes', RightToeBase: 'RightToes',
   }) }),
-  unreal: Object.freeze({ label: 'Unreal Engine', names: Object.freeze({
+  unreal: Object.freeze({ label: 'Unreal Engine naming', compatibility: 'naming-convention', names: Object.freeze({
     Hips: 'pelvis', Spine: 'spine_01', Spine1: 'spine_02', Spine2: 'spine_03', Neck: 'neck_01', Head: 'head',
     LeftShoulder: 'clavicle_l', LeftArm: 'upperarm_l', LeftForeArm: 'lowerarm_l', LeftHand: 'hand_l',
     RightShoulder: 'clavicle_r', RightArm: 'upperarm_r', RightForeArm: 'lowerarm_r', RightHand: 'hand_r',
     LeftUpLeg: 'thigh_l', LeftLeg: 'calf_l', LeftFoot: 'foot_l', LeftToeBase: 'ball_l',
     RightUpLeg: 'thigh_r', RightLeg: 'calf_r', RightFoot: 'foot_r', RightToeBase: 'ball_r',
   }) }),
-  blender: Object.freeze({ label: 'Blender / Rigify', names: Object.freeze({
+  blender: Object.freeze({ label: 'Blender deform-bone naming', compatibility: 'naming-convention', names: Object.freeze({
     Hips: 'hips', Spine: 'spine', Spine1: 'spine.001', Spine2: 'spine.002', Neck: 'neck', Head: 'head',
     LeftShoulder: 'shoulder.L', LeftArm: 'upper_arm.L', LeftForeArm: 'forearm.L', LeftHand: 'hand.L',
     RightShoulder: 'shoulder.R', RightArm: 'upper_arm.R', RightForeArm: 'forearm.R', RightHand: 'hand.R',
@@ -2355,6 +2438,14 @@ function addTwistBones(layout, joints) {
 // Returns Map(prim → Float32Array(count·nB)) with 0 = "no data, use euclidean"
 // (vertex outside the voxel shell or in a disconnected component).
 function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
+  let requestedElements = 0;
+  for (const mesh of bakedMeshes) {
+    for (const prim of mesh.listPrimitives()) requestedElements += (prim.getAttribute('POSITION')?.getCount() || 0) * segList.length;
+  }
+  if (requestedElements > 12_000_000) {
+    console.warn('[autorig] Geodesic weights disabled for this high-density mesh to stay within the memory budget.');
+    return null;
+  }
   let vox = null;
   try {
     // Positions are already baked to world and node transforms neutralized,
@@ -2522,7 +2613,8 @@ export async function autoRigGLB(buffer, options = {}) {
     }
   }
 
-  const bodyMeshes = selectBodyMeshes(doc, previouslySkinned);
+  const selectionReport = {};
+  const bodyMeshes = selectBodyMeshes(doc, previouslySkinned, options, selectionReport);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
   const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes, layout.bodyPlan);
@@ -2576,6 +2668,21 @@ export async function autoRigGLB(buffer, options = {}) {
   // joints before weights are assigned.
   const parentMap = buildParentMap(doc);
   const matCache = new Map();
+  const instancesByMesh = new Map();
+  for (const node of root.listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh || (bodyMeshes && !bodyMeshes.has(mesh))) continue;
+    if (!instancesByMesh.has(mesh)) instancesByMesh.set(mesh, []);
+    instancesByMesh.get(mesh).push(node);
+  }
+  for (const [mesh, instances] of instancesByMesh) {
+    for (let i = 1; i < instances.length; i++) {
+      const clone = cloneMeshForBake(doc, mesh, `instance_${i + 1}`);
+      instances[i].setMesh(clone);
+      if (bodyMeshes) bodyMeshes.add(clone);
+      if (previouslySkinned.has(mesh)) previouslySkinned.set(clone, previouslySkinned.get(mesh));
+    }
+  }
   const bakedMeshes = new Set();
   const meshNodes = [];
   for (const node of root.listNodes()) {
@@ -2584,7 +2691,7 @@ export async function autoRigGLB(buffer, options = {}) {
     // Non-body meshes (ground, props, lights) stay static: no bake, no skin
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     meshNodes.push(node);
-    if (bakedMeshes.has(mesh)) continue; // shared mesh: bake once with first node's matrix
+    if (bakedMeshes.has(mesh)) continue;
     bakedMeshes.add(mesh);
     // Previously-skinned meshes (rebuild) live in skin space: bake S (skin →
     // render world). Identity for glTF-native rigs, a real rotation/scale for
@@ -2604,10 +2711,51 @@ export async function autoRigGLB(buffer, options = {}) {
       if (nrm) {
         const arr = nrm.getArray().slice();
         for (let i = 0; i < arr.length; i += 3) {
-          const d = transformDirection(world, [arr[i], arr[i + 1], arr[i + 2]]);
+          const d = transformNormal(world, [arr[i], arr[i + 1], arr[i + 2]]);
           arr[i] = d[0]; arr[i + 1] = d[1]; arr[i + 2] = d[2];
         }
         nrm.setArray(arr);
+      }
+      const tangent = prim.getAttribute('TANGENT');
+      if (tangent) {
+        const arr = tangent.getArray().slice();
+        const handedness = linearDeterminant(world) < 0 ? -1 : 1;
+        for (let i = 0; i < arr.length; i += 4) {
+          const d = transformVector(world, [arr[i], arr[i + 1], arr[i + 2]]);
+          const len = Math.hypot(...d) || 1;
+          arr[i] = d[0] / len; arr[i + 1] = d[1] / len; arr[i + 2] = d[2] / len;
+          arr[i + 3] *= handedness;
+        }
+        tangent.setArray(arr);
+      }
+      for (const target of prim.listTargets()) {
+        const targetPosition = target.getAttribute('POSITION');
+        if (targetPosition) {
+          const arr = targetPosition.getArray().slice();
+          for (let i = 0; i < arr.length; i += 3) {
+            const d = transformVector(world, [arr[i], arr[i + 1], arr[i + 2]]);
+            arr[i] = d[0]; arr[i + 1] = d[1]; arr[i + 2] = d[2];
+          }
+          targetPosition.setArray(arr);
+        }
+        const targetNormal = target.getAttribute('NORMAL');
+        if (targetNormal) {
+          const arr = targetNormal.getArray().slice();
+          for (let i = 0; i < arr.length; i += 3) {
+            const d = transformNormal(world, [arr[i], arr[i + 1], arr[i + 2]], false);
+            arr[i] = d[0]; arr[i + 1] = d[1]; arr[i + 2] = d[2];
+          }
+          targetNormal.setArray(arr);
+        }
+        const targetTangent = target.getAttribute('TANGENT');
+        if (targetTangent) {
+          const arr = targetTangent.getArray().slice();
+          for (let i = 0; i < arr.length; i += 3) {
+            const d = transformVector(world, [arr[i], arr[i + 1], arr[i + 2]]);
+            arr[i] = d[0]; arr[i + 1] = d[1]; arr[i + 2] = d[2];
+          }
+          targetTangent.setArray(arr);
+        }
       }
     }
   }
@@ -2749,6 +2897,10 @@ export async function autoRigGLB(buffer, options = {}) {
       const count = arr.length / 3;
       const indices = prim.getIndices()?.getArray() || null;
 
+      if (count * nB > 24_000_000) {
+        throw new Error(`Auto-Rig memory budget exceeded for a ${count.toLocaleString('en-US')}-vertex primitive and ${nB} deform bones. Split or decimate the mesh, or reduce fingers/twist bones.`);
+      }
+
       // Dense per-vertex weight field (count × nB), built from proximity with a
       // SOFT side gate, then Laplacian-smoothed across the mesh graph, then
       // reduced to the glTF 4-influence limit.
@@ -2884,6 +3036,9 @@ export async function autoRigGLB(buffer, options = {}) {
     if (distantPct > 0.01) notes.push(`${(distantPct * 100).toFixed(1)}% of vertices are influenced by a distant bone.`);
     if (!geoPerPrim && options.geodesicWeights !== false) notes.push('Geodesic weighting unavailable (voxelization failed) — euclidean fallback used.');
     if (propsAttached > 0) notes.push(`${propsAttached} prop mesh(es) rigidly attached to the skeleton.`);
+    if (preset.compatibility === 'naming-convention') {
+      notes.push(`${preset.label} changes deform-bone names only; engine avatar/control-rig validation is still required.`);
+    }
     const report = {
       score,
       vertices: qaVerts,
@@ -2894,6 +3049,9 @@ export async function autoRigGLB(buffer, options = {}) {
       twistBones: rigLayout !== layout,
       propsAttached,
       guessMethod: guess.method,
+      skeletonPreset: presetId,
+      presetCompatibility: preset.compatibility,
+      meshSelection: selectionReport.meshSelection,
       notes,
     };
     console.log(`[autorig] Skin quality score: ${score}/100` + (notes.length ? ` — ${notes.join(' ')}` : ''));

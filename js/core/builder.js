@@ -22,6 +22,8 @@ let animationsFilename = 'animations.glb';
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
+let boneMapOverrides = {}; // canonical role -> exact character node name
+let preserveBoneOverridesOnNextImport = false;
 
 const STANDARD_ANIM_KEYS = [
   { key: 'Idle_Loop', label: 'Idle Loop', defaultKeyword: /^(?!.*crouch).*idle/i },
@@ -613,6 +615,7 @@ function getMergeOptions(extra = {}) {
     SPINE_STRAIGHTEN_ANGLE: charTransformConfig.SPINE_STRAIGHTEN_ANGLE,
     HIPS_TILT_ANGLE: charTransformConfig.HIPS_TILT_ANGLE,
     HANDS_OPEN_CLOSE: charTransformConfig.HANDS_OPEN_CLOSE,
+    ...(Object.keys(boneMapOverrides).length ? { boneMapOverrides: { ...boneMapOverrides } } : {}),
     removeExistingAnimations: true,
     ...extra
   };
@@ -624,6 +627,7 @@ function getMergeOptions(extra = {}) {
 window.addEventListener('DOMContentLoaded', async () => {
   loadPreferences();
   setupTabs();
+  setupAccessibility();
   setupCollapsibles();
 
   // Show initial loader status
@@ -666,19 +670,6 @@ window.addEventListener('DOMContentLoaded', async () => {
       // Rig adjust mode: ignore all controller keys — skeleton must stay in T-pose
       if (isTyping || activeCatcherAction !== null || autoRigState) { this.keys = {}; return; }
 
-      const inAction = window.ACTION_STATES && window.ACTION_STATES.has(this.state);
-      if (!inAction && !this.sitting) {
-        for (let cust of customAnimations) {
-          if (cust.name && cust.animName !== 'None' && this._matchesAction && this._matchesAction(code, cust.name)) {
-            this._setState(cust.name);
-            this.anim.play(cust.name, false, 0.25, () => {
-              this._setState(window.S ? window.S.IDLE : 'IDLE');
-              this._returnToLoco && this._returnToLoco();
-            }, 1.0);
-            return;
-          }
-        }
-      }
       originalKeyDown.call(this, code);
     };
 
@@ -709,17 +700,87 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 // ── Tab management ────────────────────────────────────────
 function setupTabs() {
-  const tabs = document.querySelectorAll('.tab-btn');
-  const panels = document.querySelectorAll('.tab-panel');
+  const nav = document.querySelector('.tabs-nav');
+  const tabs = [...document.querySelectorAll('.tab-btn')];
+  const panels = [...document.querySelectorAll('.tab-panel')];
+  nav?.setAttribute('role', 'tablist');
+  nav?.setAttribute('aria-label', 'Builder workflow');
+  const activate = (tab, focus = false) => {
+    tabs.forEach(t => {
+      const active = t === tab;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', String(active));
+      t.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach(p => p.classList.remove('active'));
+    const target = document.getElementById(`panel-${tab.dataset.tab}`);
+    if (target) target.classList.add('active');
+    tab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    if (focus) tab.focus();
+  };
   tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      panels.forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      const target = document.getElementById(`panel-${tab.dataset.tab}`);
-      if (target) target.classList.add('active');
+    const panel = document.getElementById(`panel-${tab.dataset.tab}`);
+    tab.setAttribute('role', 'tab');
+    tab.id = tab.id || `tab-${tab.dataset.tab}`;
+    tab.setAttribute('aria-controls', panel?.id || '');
+    tab.setAttribute('aria-selected', String(tab.classList.contains('active')));
+    tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
+    if (panel) {
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', tab.id);
+    }
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = tabs.indexOf(tab);
+      const next = event.key === 'Home' ? 0
+        : event.key === 'End' ? tabs.length - 1
+          : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      activate(tabs[next], true);
     });
   });
+}
+
+function setupAccessibility() {
+  const humanize = value => String(value || 'control')
+    .replace(/^(slider|toggle|input|select|btn)-/, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase());
+  const labelControls = root => {
+    const controls = root.matches?.('input, select, textarea, button') ? [root] : [...root.querySelectorAll?.('input, select, textarea, button') || []];
+    controls.forEach(control => {
+      if (control.getAttribute('aria-label') || control.getAttribute('aria-labelledby') || control.closest('label')) return;
+      const explicit = control.id && document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+      if (explicit) return;
+      const group = control.closest('.control-group, .setting-row, .mapping-row, .slider-row, .field-row, .settings-section');
+      const nearby = group?.querySelector('.control-label, .setting-label, .mapping-label, h4, h5, label');
+      const label = nearby?.textContent?.trim() || control.title || control.placeholder || humanize(control.id || control.name || control.type);
+      control.setAttribute('aria-label', label.slice(0, 160));
+    });
+    const ranges = root.matches?.('input[type="range"]') ? [root] : [...root.querySelectorAll?.('input[type="range"]') || []];
+    ranges.forEach(range => {
+      const update = () => range.setAttribute('aria-valuetext', String(range.value));
+      if (!range.dataset.a11yBound) {
+        range.dataset.a11yBound = 'true';
+        range.addEventListener('input', update);
+      }
+      update();
+    });
+  };
+  labelControls(document.body);
+  new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
+    if (node.nodeType === Node.ELEMENT_NODE) labelControls(node);
+  }))).observe(document.body, { childList: true, subtree: true });
+
+  const toast = document.getElementById('toast');
+  if (toast) { toast.setAttribute('role', 'status'); toast.setAttribute('aria-live', 'polite'); }
+  const loading = document.getElementById('loading-status-text');
+  if (loading) { loading.setAttribute('role', 'status'); loading.setAttribute('aria-live', 'polite'); }
+  const overlay = document.getElementById('loading-overlay');
+  if (overlay) overlay.setAttribute('aria-busy', 'false');
+  const canvas = document.getElementById('c');
+  if (canvas) canvas.setAttribute('aria-label', 'Interactive 3D character preview');
 }
 
 // ── Collapsible sections ──────────────────────────────────
@@ -727,6 +788,10 @@ function setupCollapsibles() {
   document.querySelectorAll('.collapsible-header').forEach(header => {
     if (header._hasCollapsibleListener) return;
     header._hasCollapsibleListener = true;
+    const initialContent = document.getElementById(header.dataset.target);
+    header.setAttribute('aria-expanded', String(!initialContent?.classList.contains('collapsed')));
+    header.setAttribute('role', 'button');
+    header.tabIndex = 0;
     header.addEventListener('click', () => {
       const targetId = header.dataset.target;
       const content = document.getElementById(targetId);
@@ -734,6 +799,10 @@ function setupCollapsibles() {
       if (!content) return;
       const isOpen = content.classList.toggle('collapsed');
       if (chevron) chevron.textContent = isOpen ? '▸' : '▾';
+      header.setAttribute('aria-expanded', String(!isOpen));
+    });
+    header.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); header.click(); }
     });
   });
 }
@@ -1148,10 +1217,13 @@ function showLoading(msg) {
   const el = document.getElementById('loading-overlay');
   const txt = document.getElementById('loading-status-text');
   if (txt) txt.textContent = msg;
+  el.setAttribute('aria-busy', 'true');
   el.classList.add('visible');
 }
 function hideLoading() {
-  document.getElementById('loading-overlay').classList.remove('visible');
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.remove('visible');
+  overlay.setAttribute('aria-busy', 'false');
   setTimeout(resetLoaderSteps, 400);
 }
 function setLoaderStep(stepId, status) {
@@ -1188,6 +1260,23 @@ function showToast(msg, isError = false) {
   if (isError) toast.classList.add('error');
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), 3500);
+}
+
+function readAutoRigReport(response) {
+  const raw = response.headers.get('X-Autorig-Report');
+  if (!raw) return null;
+  try {
+    if (response.headers.get('X-Autorig-Report-Encoding') === 'base64url') {
+      const base64 = raw.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(raw.length / 4) * 4, '=');
+      const bytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+      return JSON.parse(new TextDecoder().decode(bytes));
+    }
+    // Backward compatibility with servers from before v2.4.1.
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn('[autorig] Ignoring malformed quality report header:', error);
+    return null;
+  }
 }
 
 function showMergeProgress(show, label = 'Merging on server…') {
@@ -1274,6 +1363,8 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigRe
     animationsGlbBuffer = null;
     lastAppliedRig = null; // genuine new import → drop any remembered rig
     autoRigSourceGlbBuffer = null;
+    if (preserveBoneOverridesOnNextImport) preserveBoneOverridesOnNextImport = false;
+    else boneMapOverrides = {};
   }
   const readStep = document.getElementById('step-read');
   if (readStep && !readStep.classList.contains('completed')) {
@@ -2141,6 +2232,31 @@ function renderSkeletonHealth(health) {
       </div>`;
   }
 
+  const mapping = skeletonInfo?.mapping;
+  let mappingHtml = '';
+  if (mapping?.entries?.length) {
+    const mappedCount = mapping.entries.filter(entry => entry.node).length;
+    const duplicateCount = mapping.duplicates?.length || 0;
+    const candidates = Array.isArray(mapping.candidateNodes) ? mapping.candidateNodes : [];
+    mappingHtml = `
+      <details class="bone-mapping-audit">
+        <summary>Canonical bone assignment: ${mappedCount}/${mapping.entries.length}${duplicateCount ? ` · ${duplicateCount} duplicate role(s)` : ''}</summary>
+        <p class="bone-mapping-help">Auto-detected assignments are used by default. Select an exact node only to correct an ambiguous or wrong role.</p>
+        <div class="bone-mapping-table" role="table" aria-label="Canonical bone assignment confidence">
+          ${mapping.entries.map(entry => `
+            <div class="bone-mapping-row ${entry.node ? '' : 'unresolved'}" role="row">
+              <code role="cell">${escapeHtml(entry.canonical)}</code>
+              <select class="bone-mapping-select" data-canonical="${escapeHtml(entry.canonical)}" aria-label="Node assigned to ${escapeHtml(entry.canonical)}">
+                <option value="">Auto: ${escapeHtml(entry.node || 'Unresolved')}</option>
+                ${candidates.map(name => `<option value="${escapeHtml(name)}" ${boneMapOverrides[entry.canonical] === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+              </select>
+              <strong role="cell">${Math.round((entry.confidence || 0) * 100)}%</strong>
+              <small role="cell">${escapeHtml(entry.reason || '')}</small>
+            </div>`).join('')}
+        </div>
+      </details>`;
+  }
+
   el.innerHTML = `
     <div class="health-head">
       <div class="health-score ${escapeHtml(health.status)}">${Math.round(health.score || 0)}</div>
@@ -2149,7 +2265,7 @@ function renderSkeletonHealth(health) {
           <strong>Rig Health Check</strong>
           <span class="health-status">${escapeHtml(labels[health.status] || health.status || 'Unknown')}</span>
         </div>
-        <div class="health-summary">${escapeHtml(summary)} Humanoid coverage: ${Math.round(health.coverage || 0)}%.</div>
+        <div class="health-summary">${escapeHtml(summary)} ${health.bodyPlan === 'quadruped' ? 'Quadruped' : 'Humanoid'} coverage: ${Math.round(health.coverage || 0)}%.</div>
       </div>
     </div>
     <div class="health-metrics">
@@ -2170,11 +2286,23 @@ function renderSkeletonHealth(health) {
       `).join('')}
       ${rigReportHtml}
     </div>
+    ${mappingHtml}
     <div class="health-actions">
       ${actions.map(item => `<button class="health-action" data-health-action="${escapeHtml(item.action)}">${escapeHtml(item.label)}</button>`).join('')}
     </div>
   `;
   el.style.display = 'block';
+  el.querySelectorAll('.bone-mapping-select').forEach(select => {
+    select.addEventListener('change', () => {
+      const canonical = select.dataset.canonical;
+      if (select.value) boneMapOverrides[canonical] = select.value;
+      else delete boneMapOverrides[canonical];
+      updateExportCode();
+      showToast(select.value
+        ? `Bone override saved: ${canonical} → ${select.value}. Re-merge animations to apply it.`
+        : `Bone override cleared: ${canonical}.`);
+    });
+  });
 }
 
 function expandCollapsible(targetId) {
@@ -2183,7 +2311,7 @@ function expandCollapsible(targetId) {
   content.classList.remove('collapsed');
   const header = document.querySelector(`[data-target="${targetId}"]`);
   const chevron = header?.querySelector('.chevron');
-  if (chevron) chevron.textContent = 'â–¾';
+  if (chevron) chevron.textContent = '▾';
 }
 
 function renderSkeletonSection(info) {
@@ -2324,6 +2452,7 @@ function renderSkeletonSectionFromBJS() {
 // AUTO-RIG (skeleton generation for skinless meshes)
 // ═══════════════════════════════════════════════════════════
 let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
+let autoRigBodyMeshIds = null; // null = server heuristic; array = explicit user selection
 
 // ── Marker undo/redo (Ctrl+Z / Ctrl+Y while in rig mode) ─────────────────────
 // Snapshots hold the FULL marker set (position + rotation), captured right
@@ -2539,10 +2668,62 @@ function showAutoRigControls(show, hasExistingSkin = false) {
 // Body plan + finger count selected in the panel (sent to the server for both
 // the joint guess and the final rig — they define the generated hierarchy).
 function getAutoRigLayoutOptions() {
-  return {
+  const options = {
     bodyPlan: document.getElementById('autorig-body-plan')?.value || 'humanoid',
     fingerCount: Number(document.getElementById('autorig-finger-count')?.value ?? 5),
   };
+  if (Array.isArray(autoRigBodyMeshIds)) options.bodyMeshIds = [...autoRigBodyMeshIds];
+  return options;
+}
+
+function renderAutoRigMeshSelection(selection) {
+  const fieldset = document.getElementById('autorig-mesh-selection');
+  const list = document.getElementById('autorig-mesh-list');
+  if (!fieldset || !list) return;
+  const meshes = Array.isArray(selection?.meshes) ? selection.meshes : [];
+  fieldset.style.display = meshes.length > 1 ? '' : 'none';
+  list.replaceChildren();
+  if (meshes.length <= 1) return;
+
+  // Reconcile a manual selection with the freshly analyzed file. IDs are
+  // deterministic per GLB, but never let stale IDs silently select nothing.
+  const known = new Set(meshes.map(mesh => mesh.id));
+  if (Array.isArray(autoRigBodyMeshIds) && !autoRigBodyMeshIds.some(id => known.has(id))) {
+    autoRigBodyMeshIds = null;
+  }
+  for (const mesh of meshes) {
+    const label = document.createElement('label');
+    label.className = 'autorig-mesh-option';
+    label.title = `${mesh.name} — ${Number(mesh.vertices).toLocaleString()} vertices`;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = Array.isArray(autoRigBodyMeshIds)
+      ? autoRigBodyMeshIds.includes(mesh.id)
+      : mesh.selected;
+    checkbox.dataset.meshId = mesh.id;
+    const name = document.createElement('span');
+    name.textContent = mesh.name;
+    const stats = document.createElement('small');
+    stats.textContent = `${Number(mesh.vertices).toLocaleString()} vtx`;
+    label.append(checkbox, name, stats);
+    list.append(label);
+    checkbox.addEventListener('change', () => {
+      const selected = [...list.querySelectorAll('input:checked')].map(input => input.dataset.meshId);
+      if (!selected.length) {
+        checkbox.checked = true;
+        showToast('At least one body mesh must remain selected.', true);
+        return;
+      }
+      autoRigBodyMeshIds = selected;
+    });
+  }
+  const autoButton = document.getElementById('btn-autorig-mesh-auto');
+  if (autoButton) autoButton.onclick = () => {
+    autoRigBodyMeshIds = null;
+    startAutoRigAdjust();
+  };
+  const applyButton = document.getElementById('btn-autorig-mesh-apply');
+  if (applyButton) applyButton.onclick = () => startAutoRigAdjust();
 }
 
 function syncAutoRigFingerUI() {
@@ -3355,6 +3536,8 @@ async function startAutoRigAdjust() {
   }
   hideLoading();
 
+  renderAutoRigMeshSelection(guess.meshSelection);
+
   if (guess.suggestedBodyPlan === 'quadruped' && layoutOptions.bodyPlan !== 'quadruped') {
     showToast('🐾 This mesh looks like a quadruped — set Body plan: Animal for better markers.');
   }
@@ -3887,6 +4070,7 @@ async function startAutoRigAdjust() {
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
     serverGuess: { ...guess.joints },
+    meshSelection: guess.meshSelection,
     // Rest-space snapshot of the initial guess — restored by the "Rest" pose button
     restLayout: new Map([...canonical].map(([n, v]) => [n, v.clone()])),
     pausedCtrlCallback: ctrlObserver?.callback || null,
@@ -3910,7 +4094,7 @@ async function startAutoRigAdjust() {
   if (adjustPanel) adjustPanel.style.display = 'block';
   if (hint) {
     hint.textContent = guess.reRig
-      ? 'Markers placed from the current skeleton bind pose. Drag them to correct joint placement — applying will REPLACE the existing skeleton and skin weights, and animations will be re-merged.'
+      ? 'Markers placed from the current skeleton bind pose. Drag them to adjust joint placement. Apply preserves the current skeleton and weights; enable Rebuild Skeleton explicitly to replace them.'
       : "Drag the yellow joint markers in the viewport to match your character's anatomy (click a marker to attach the move gizmo), then apply.";
   }
 
@@ -4112,9 +4296,7 @@ async function runBatchAutoRig(files) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(err.error || 'Auto-rig failed');
       }
-      const report = (() => {
-        try { return JSON.parse(res.headers.get('X-Autorig-Report') || 'null'); } catch (_) { return null; }
-      })();
+      const report = readAutoRigReport(res);
       const buf = await res.arrayBuffer();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
@@ -4211,9 +4393,7 @@ async function applyAutoRig() {
     }
     // Server-side skinning quality report (X-Autorig-Report header): shown in
     // the Rig Health panel after the character reloads.
-    try {
-      lastAutoRigReport = JSON.parse(res.headers.get('X-Autorig-Report') || 'null');
-    } catch (_) { lastAutoRigReport = null; }
+    lastAutoRigReport = readAutoRigReport(res);
     const riggedBuffer = await res.arrayBuffer();
     completeMergeProgress();
 
@@ -4258,6 +4438,9 @@ function updateCharStatusBar(filename) {
 function clearCharacter() {
   cancelAutoRigAdjust();
   lastAutoRigReport = null;
+  autoRigBodyMeshIds = null;
+  boneMapOverrides = {};
+  preserveBoneOverridesOnNextImport = false;
 
   const bar = document.getElementById('char-status');
   if (bar) bar.style.display = 'none';
@@ -5393,7 +5576,14 @@ function setupDropzone(zoneId, inputId, onFile) {
   const fileInput = document.getElementById(inputId);
   if (!zone || !fileInput) return;
 
+  zone.setAttribute('role', 'button');
+  zone.tabIndex = 0;
+  zone.setAttribute('aria-label', zone.textContent.trim().replace(/\s+/g, ' ').slice(0, 160));
+
   zone.addEventListener('click', () => fileInput.click());
+  zone.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fileInput.click(); }
+  });
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) onFile(file);
@@ -5416,6 +5606,10 @@ function setupDropzone(zoneId, inputId, onFile) {
 // ═══════════════════════════════════════════════════════════
 // CODE GENERATOR & EXPORTER
 // ═══════════════════════════════════════════════════════════
+function jsString(value) {
+  return JSON.stringify(String(value));
+}
+
 function updateExportCode() {
   const codeBox = document.getElementById('export-code');
   if (!codeBox) return;
@@ -5425,9 +5619,9 @@ function updateExportCode() {
     const m = animMappings[key];
     if (m && m.animName !== 'None') {
       mappingsSnippet += `      // Remap ${key}\n`;
-      mappingsSnippet += `      const anim_${key} = filteredGroups.find(g => cleanAnimName(g.name) === '${m.animName}');\n`;
+      mappingsSnippet += `      const anim_${key} = filteredGroups.find(g => cleanAnimName(g.name) === ${jsString(m.animName)});\n`;
       mappingsSnippet += `      if (anim_${key}) {\n`;
-      mappingsSnippet += `        animCtrl.setAnimation('${key}', anim_${key});\n`;
+      mappingsSnippet += `        animCtrl.setAnimation(${jsString(key)}, anim_${key});\n`;
       mappingsSnippet += `        animCtrl.setAnimationRanges('${key}', ${m.from}, ${m.to});\n`;
       mappingsSnippet += `      }\n\n`;
     }
@@ -5437,12 +5631,12 @@ function updateExportCode() {
   customAnimations.forEach(cust => {
     if (cust.animName !== 'None') {
       customsSnippet += `      // Register custom action: ${cust.name}\n`;
-      customsSnippet += `      const anim_${cust.name} = filteredGroups.find(g => cleanAnimName(g.name) === '${cust.animName}');\n`;
+      customsSnippet += `      const anim_${cust.name} = filteredGroups.find(g => cleanAnimName(g.name) === ${jsString(cust.animName)});\n`;
       customsSnippet += `      if (anim_${cust.name}) {\n`;
-      customsSnippet += `        animCtrl.setAnimation('${cust.name}', anim_${cust.name});\n`;
+      customsSnippet += `        animCtrl.setAnimation(${jsString(cust.name)}, anim_${cust.name});\n`;
       customsSnippet += `      }\n`;
       if (cust.keyTrigger.length > 0) {
-        customsSnippet += `      charCtrl.keyBindings['${cust.name}'] = ${JSON.stringify(cust.keyTrigger)};\n`;
+        customsSnippet += `      charCtrl.keyBindings[${jsString(cust.name)}] = ${JSON.stringify(cust.keyTrigger)};\n`;
       }
       customsSnippet += `\n`;
     }
@@ -5454,10 +5648,13 @@ function updateExportCode() {
   let animFileOption = '';
   if (exportMode === 'runtime') {
     const animName = animationsFilename || 'animations.glb';
-    animFileOption = `\n    animationsFilename: '${animName}',`;
+    animFileOption = `\n    animationsFilename: ${jsString(animName)},`;
   }
+  const mergeOptionsCode = Object.keys(boneMapOverrides).length
+    ? `\n    mergeOptions: { boneMapOverrides: ${JSON.stringify(boneMapOverrides)} },`
+    : '';
 
-  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: 'assets/',\n    filename: '${exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated.glb'}',${animFileOption}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
+  const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: "assets/",\n    filename: ${jsString(exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated.glb')},${animFileOption}${mergeOptionsCode}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
   savePreferences();
@@ -5521,8 +5718,9 @@ async function downloadCharacterGlbFile() {
 
 function downloadBuilderConfigFile() {
   const config = {
-    schema: 'bjs-character-controller-builder/v1',
+    schema: 'bjs-character-controller-builder/v2',
     exportedAt: new Date().toISOString(),
+    includesAssets: false,
     controllerPreset: activeControllerPreset,
     character: {
       hasCharacter: !!characterGlbBuffer,
@@ -5542,6 +5740,7 @@ function downloadBuilderConfigFile() {
       } : null,
     },
     transforms: charTransformConfig,
+    rigging: { boneMapOverrides: { ...boneMapOverrides } },
     keys: keyBindings,
     physics: physicsConfig,
     animations: {
@@ -5558,6 +5757,59 @@ function downloadBuilderConfigFile() {
   link.download = 'builder-config.json';
   link.click();
   showToast('Downloaded builder-config.json!');
+}
+
+const IMPORT_LIMITS = {
+  GRAV: [0, 200], JUMP_PWR: [0, 100], SPD_WALK: [0, 100], SPD_JOG: [0, 100], SPD_SPRINT: [0, 100],
+  SPD_CROUCH: [0, 100], SPD_CROUCH_RUN: [0, 100], ACCEL: [0, 500], DECEL: [0, 500], ROT_SPD: [0, 500],
+  DYNAMIC_FOV_MAX: [0, 1], CAM_TILT_AMOUNT: [0, 1.5], CAM_FOLLOW_PITCH: [0.05, 3.09], CAM_FOLLOW_DIST: [0.1, 100],
+  SPEED_MULTIPLIER: [0.05, 10], COYOTE_TIME: [0, 2], JUMP_BUFFER: [0, 2], JUMP_CUT_MULT: [1, 10],
+  SCALE_X: [0.001, 100], SCALE_Y: [0.001, 100], SCALE_Z: [0.001, 100], SCALE_UNIFORM: [0.001, 100],
+  PIVOT_X: [-1000, 1000], PIVOT_Y: [-1000, 1000], PIVOT_Z: [-1000, 1000],
+  ARM_SPREAD_ANGLE: [-180, 180], ARM_SPLAY_ANGLE: [-180, 180], SHOULDER_RAISE_ANGLE: [-180, 180],
+  LEG_SPREAD_ANGLE: [-180, 180], SPINE_STRAIGHTEN_ANGLE: [-180, 180], HIPS_TILT_ANGLE: [-180, 180], HANDS_OPEN_CLOSE: [-180, 180],
+};
+
+function normalizeImportedRecord(value, defaults, warnings, label) {
+  const result = { ...defaults };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const key of Object.keys(defaults)) {
+    if (!(key in value)) continue;
+    const expected = typeof defaults[key];
+    const incoming = value[key];
+    if (expected === 'boolean') {
+      if (typeof incoming === 'boolean') result[key] = incoming;
+      else warnings.push(`${label}.${key} must be boolean`);
+    } else if (expected === 'number') {
+      if (typeof incoming !== 'number' || !Number.isFinite(incoming)) {
+        warnings.push(`${label}.${key} must be a finite number`);
+        continue;
+      }
+      const [min, max] = IMPORT_LIMITS[key] || [-1e6, 1e6];
+      const clamped = Math.max(min, Math.min(max, incoming));
+      if (clamped !== incoming) warnings.push(`${label}.${key} was clamped to ${clamped}`);
+      result[key] = clamped;
+    } else if (typeof incoming === expected) {
+      result[key] = incoming;
+    }
+  }
+  return result;
+}
+
+function normalizeImportedKeys(value, warnings) {
+  const result = { ...DEFAULT_KEY_BINDINGS };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [action, bindings] of Object.entries(value)) {
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(action)) {
+      warnings.push(`Invalid action name: ${action}`);
+      continue;
+    }
+    const list = Array.isArray(bindings) ? bindings : [bindings];
+    const valid = list.filter(code => typeof code === 'string' && /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(code)).slice(0, 8);
+    if (valid.length) result[action] = valid;
+    else warnings.push(`No valid key bindings for ${action}`);
+  }
+  return result;
 }
 
 function normalizeImportedAnimationMappings(value) {
@@ -5621,6 +5873,7 @@ function refreshBuilderAfterConfigImport() {
   renderAnimationEventsTab();
   renderKeyBindingsUI();
   applyAnimationsToController();
+  if (skeletonInfo?.health) renderSkeletonHealth(skeletonInfo.health);
   updateExportCode();
 }
 
@@ -5628,22 +5881,33 @@ async function importBuilderConfigFile(file) {
   try {
     const parsed = JSON.parse(await file.text());
     if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON object.');
-    if (parsed.schema && parsed.schema !== 'bjs-character-controller-builder/v1') {
+    const supportedSchemas = new Set(['bjs-character-controller-builder/v1', 'bjs-character-controller-builder/v2']);
+    if (parsed.schema && !supportedSchemas.has(parsed.schema)) {
       throw new Error(`Unsupported config schema: ${parsed.schema}`);
     }
+    const warnings = [];
 
     if (parsed.controllerPreset && CONTROLLER_PRESETS.some(p => p.id === parsed.controllerPreset)) {
       activeControllerPreset = parsed.controllerPreset;
     }
     if (parsed.physics && typeof parsed.physics === 'object') {
-      physicsConfig = { ...DEFAULT_PHYSICS_CONFIG, ...parsed.physics };
+      physicsConfig = normalizeImportedRecord(parsed.physics, DEFAULT_PHYSICS_CONFIG, warnings, 'physics');
     }
     if (parsed.keys && typeof parsed.keys === 'object') {
-      keyBindings = { ...DEFAULT_KEY_BINDINGS, ...parsed.keys };
+      keyBindings = normalizeImportedKeys(parsed.keys, warnings);
     }
     if (parsed.transforms && typeof parsed.transforms === 'object') {
-      charTransformConfig = { ...DEFAULT_CHAR_TRANSFORM, ...parsed.transforms };
+      charTransformConfig = normalizeImportedRecord(parsed.transforms, DEFAULT_CHAR_TRANSFORM, warnings, 'transforms');
     }
+    boneMapOverrides = {};
+    if (parsed.rigging?.boneMapOverrides && typeof parsed.rigging.boneMapOverrides === 'object') {
+      for (const [canonical, nodeName] of Object.entries(parsed.rigging.boneMapOverrides)) {
+        if (typeof canonical === 'string' && typeof nodeName === 'string' && canonical && nodeName) {
+          boneMapOverrides[canonical] = nodeName;
+        }
+      }
+    }
+    preserveBoneOverridesOnNextImport = !characterGlbBuffer && Object.keys(boneMapOverrides).length > 0;
 
     const importedAnimations = parsed.animations || {};
     animMappings = normalizeImportedAnimationMappings(importedAnimations.standardMappings);
@@ -5652,7 +5916,8 @@ async function importBuilderConfigFile(file) {
     animationEvents = normalizeImportedAnimationEvents(importedAnimations.events);
 
     refreshBuilderAfterConfigImport();
-    showToast(`Imported ${file.name}`);
+    showToast(warnings.length ? `Imported ${file.name} with ${warnings.length} corrected field(s)` : `Imported ${file.name}`);
+    if (warnings.length) console.warn('[builder-config] corrected fields:', warnings);
   } catch (err) {
     console.error('[builder-config] import failed:', err);
     showToast('Config import failed: ' + err.message, true);
@@ -5676,9 +5941,7 @@ async function downloadControllerFile() {
     buttons: { 'btn-sprint': 'ShiftLeft', 'btn-jump': 'Space', 'btn-roll': 'KeyR', 'btn-crouch': 'ControlLeft', 'btn-act': 'KeyF', 'btn-spell': 'KeyE' }
   }
 };`;
-      const _sig = JSON.stringify(physicsConfig);
-      const seedBlock = `\n(function() {\n  var _sig = ${JSON.stringify(_sig)};\n  if (localStorage.getItem('bcc_cfg_sig') !== _sig) {\n    var P = DEFAULT_CHAR_CONFIG.PHYSICS;\n    localStorage.setItem('air-control-enabled', String(P.AIR_CONTROL));\n    localStorage.setItem('cam-follow-lock', String(P.CAM_FOLLOW_LOCK));\n    localStorage.setItem('dynamic-fov', String(P.DYNAMIC_FOV));\n    localStorage.setItem('cam-tilt', String(P.CAM_TILT));\n    localStorage.setItem('cam-tilt-amount', String(P.CAM_TILT_AMOUNT));\n    localStorage.setItem('play-particles', String(P.PLAY_PARTICLES));\n    localStorage.setItem('bcc_cfg_sig', _sig);\n  }\n})();`;
-      sourceText = sourceText.replace(configMatch[0], newConfigBlock + seedBlock);
+      sourceText = sourceText.replace(configMatch[0], newConfigBlock);
     }
 
     const setupHookMatch = sourceText.match(/\/\/ Allow custom remapping of animations\/controls or extra setup from app/);
@@ -5687,15 +5950,15 @@ async function downloadControllerFile() {
       Object.keys(animMappings).forEach(key => {
         const m = animMappings[key];
         if (m && m.animName !== 'None') {
-          mappingInjection += `  const anim_${key} = filteredGroups.find(g => cleanAnimName(g.name) === '${m.animName}');\n`;
-          mappingInjection += `  if (anim_${key}) { animCtrl.setAnimation('${key}', anim_${key}); animCtrl.setAnimationRanges('${key}', ${m.from}, ${m.to}); }\n`;
+          mappingInjection += `  const anim_${key} = filteredGroups.find(g => cleanAnimName(g.name) === ${jsString(m.animName)});\n`;
+          mappingInjection += `  if (anim_${key}) { animCtrl.setAnimation(${jsString(key)}, anim_${key}); animCtrl.setAnimationRanges(${jsString(key)}, ${m.from}, ${m.to}); }\n`;
         }
       });
       customAnimations.forEach(cust => {
         if (cust.animName !== 'None') {
-          mappingInjection += `  const anim_${cust.name} = filteredGroups.find(g => cleanAnimName(g.name) === '${cust.animName}');\n`;
-          mappingInjection += `  if (anim_${cust.name}) { animCtrl.setAnimation('${cust.name}', anim_${cust.name}); }\n`;
-          if (cust.keyTrigger.length > 0) mappingInjection += `  charCtrl.keyBindings['${cust.name}'] = ${JSON.stringify(cust.keyTrigger)};\n`;
+          mappingInjection += `  const anim_${cust.name} = filteredGroups.find(g => cleanAnimName(g.name) === ${jsString(cust.animName)});\n`;
+          mappingInjection += `  if (anim_${cust.name}) { animCtrl.setAnimation(${jsString(cust.name)}, anim_${cust.name}); }\n`;
+          if (cust.keyTrigger.length > 0) mappingInjection += `  charCtrl.keyBindings[${jsString(cust.name)}] = ${JSON.stringify(cust.keyTrigger)};\n`;
         }
       });
       mappingInjection += formatAnimationEventsForExport('  ');

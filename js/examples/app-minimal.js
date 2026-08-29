@@ -13,6 +13,7 @@ const engine = new BABYLON.Engine(canvas, true);
 async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
+    persistPreferences: true,
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
@@ -45,7 +46,7 @@ async function createMinimalScene() {
   ground.checkCollisions = true;
 
   // 5. OPTIONAL: Initialize Havok Physics
-  const usePhysics = await initPhysics(scene);
+  const usePhysics = await initPhysics(scene, { persistPreferences: true });
   if (usePhysics) {
     // Setup ground physics
     new BABYLON.PhysicsAggregate(ground, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.8 }, scene);

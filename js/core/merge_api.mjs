@@ -1,13 +1,13 @@
 /**
  * merge_api.mjs
  * 
- * Exportable module wrapping the core logic of merge_animations.mjs.
- * Used by server.mjs to run GLB merges and analysis without spawning a subprocess.
+ * Canonical GLB analysis and retargeting implementation, shared by the worker,
+ * development server, desktop app tests and merge_animations.mjs CLI.
  */
 
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { prune, unpartition, draco as dracoCompress, resample } from '@gltf-transform/functions';
+import { mergeDocuments, prune, unpartition, draco as dracoCompress, resample } from '@gltf-transform/functions';
 import draco3d from 'draco3dgltf';
 
 // ============================================================================
@@ -251,10 +251,12 @@ const SKELETON_TYPES = [
     id: 'rigify',
     label: 'Rigify (Blender)',
     color: '#f59e0b',
-    test: (names) =>
-      (names.some(n => n.includes('thighl') && n.startsWith('thigh')) &&
-        names.some(n => n.includes('upperarml'))) ||
-      names.some(n => n === 'deftorso' || n === 'defspine' || n.startsWith('def')),
+    testRaw: (names) => {
+      const deformBones = names.filter(n => /(^|[:|])def[-_. ]/i.test(n));
+      const hasRigifyLimb = deformBones.some(n => /thigh|upper[_-]?arm/i.test(n));
+      const hasRigifyCore = deformBones.some(n => /spine|torso|pelvis/i.test(n));
+      return deformBones.length >= 3 && hasRigifyLimb && hasRigifyCore;
+    },
   },
   {
     id: 'biped',
@@ -980,7 +982,9 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   const src = animNode.getName();
   if (!src) return null;
   const lo = src.toLowerCase();
-  let hit = charByName.get(src) || charByName.get(lo);
+  // Lowercase aliases are also where explicit user overrides are installed;
+  // check them first so an exact-case auto match cannot bypass a correction.
+  let hit = charByName.get(lo) || charByName.get(src);
   if (hit) return hit;
 
   // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): generic
@@ -1051,6 +1055,37 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   if (best) return best;
   // console.log(`[findMatchingBone] Failed to find match for anim bone: "${src}" (normalized: "${norm}")`);
   return null;
+}
+
+function applyBoneMapOverrides(doc, overrides, charByName, charByNorm) {
+  if (overrides === undefined || overrides === null) return;
+  if (typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new Error('boneMapOverrides must be an object keyed by canonical bone role.');
+  }
+  const nodesByName = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    const name = node.getName();
+    if (!name) continue;
+    if (!nodesByName.has(name)) nodesByName.set(name, []);
+    nodesByName.get(name).push(node);
+  }
+  for (const [canonical, nodeName] of Object.entries(overrides)) {
+    if (!Object.hasOwn(BONE_MAP, canonical)) throw new Error(`Unknown canonical bone override "${canonical}".`);
+    if (typeof nodeName !== 'string' || !nodeName) throw new Error(`Bone override "${canonical}" requires a node name.`);
+    const candidates = nodesByName.get(nodeName) || nodesByName.get(stripBJSSuffix(nodeName)) || [];
+    if (candidates.length !== 1) {
+      throw new Error(candidates.length
+        ? `Bone override target "${nodeName}" is ambiguous (${candidates.length} nodes share the name).`
+        : `Bone override target "${nodeName}" does not exist.`);
+    }
+    const target = candidates[0];
+    for (const alias of [canonical, ...BONE_MAP[canonical]]) {
+      charByName.set(alias, target);
+      charByName.set(alias.toLowerCase(), target);
+      const norm = aliasNorm(alias);
+      if (norm) charByNorm.set(norm, target);
+    }
+  }
 }
 
 /**
@@ -1143,6 +1178,95 @@ function hasCanonicalBone(canonKey, charByName, charByNorm) {
   return false;
 }
 
+function detectBodyPlan(rawNames, hasSkin) {
+  if (!hasSkin) return 'none';
+  const names = rawNames.map(name => (name || '').toLowerCase());
+  const tailCount = names.filter(name => /(^|[:_.-])tail\d*/.test(name)).length;
+  const hasFrontLeg = names.some(name => /scapula|shoulder_[lr]|front.*(leg|paw)/.test(name));
+  const hasRearLeg = names.some(name => /hip_[lr]|hind.*(leg|paw)/.test(name));
+  return tailCount >= 2 && hasFrontLeg && hasRearLeg ? 'quadruped' : 'humanoid';
+}
+
+const QUADRUPED_REQUIRED_BONES = [
+  { key: 'root', label: 'Root / Pelvis', pattern: /(^|[:_.-])(root|pelvis|hips?)([_\-.]|$)/, critical: true },
+  { key: 'spine', label: 'Spine', pattern: /spine/, critical: true },
+  { key: 'head', label: 'Head', pattern: /head/, critical: true },
+  { key: 'front_shoulder_l', label: 'Left Front Shoulder', pattern: /(scapula|shoulder).*[_\-.]l$|^l[_\-.].*(scapula|shoulder)/, critical: true },
+  { key: 'front_elbow_l', label: 'Left Front Elbow', pattern: /elbow.*[_\-.]l$|^l[_\-.].*elbow/, critical: true },
+  { key: 'front_wrist_l', label: 'Left Front Wrist', pattern: /(wrist|front.*paw).*[_\-.]l$|^l[_\-.].*(wrist|front.*paw)/, critical: true },
+  { key: 'front_shoulder_r', label: 'Right Front Shoulder', pattern: /(scapula|shoulder).*[_\-.]r$|^r[_\-.].*(scapula|shoulder)/, critical: true },
+  { key: 'front_elbow_r', label: 'Right Front Elbow', pattern: /elbow.*[_\-.]r$|^r[_\-.].*elbow/, critical: true },
+  { key: 'front_wrist_r', label: 'Right Front Wrist', pattern: /(wrist|front.*paw).*[_\-.]r$|^r[_\-.].*(wrist|front.*paw)/, critical: true },
+  { key: 'rear_hip_l', label: 'Left Rear Hip', pattern: /hip.*[_\-.]l$|^l[_\-.].*hip/, critical: true },
+  { key: 'rear_knee_l', label: 'Left Rear Knee', pattern: /knee.*[_\-.]l$|^l[_\-.].*knee/, critical: true },
+  { key: 'rear_ankle_l', label: 'Left Rear Ankle', pattern: /(ankle|hind.*paw).*[_\-.]l$|^l[_\-.].*(ankle|hind.*paw)/, critical: true },
+  { key: 'rear_hip_r', label: 'Right Rear Hip', pattern: /hip.*[_\-.]r$|^r[_\-.].*hip/, critical: true },
+  { key: 'rear_knee_r', label: 'Right Rear Knee', pattern: /knee.*[_\-.]r$|^r[_\-.].*knee/, critical: true },
+  { key: 'rear_ankle_r', label: 'Right Rear Ankle', pattern: /(ankle|hind.*paw).*[_\-.]r$|^r[_\-.].*(ankle|hind.*paw)/, critical: true },
+  { key: 'tail', label: 'Tail', pattern: /(^|[:_.-])tail/, critical: false },
+];
+
+function buildCanonicalMappingReport(nodes) {
+  const byCanonical = new Map();
+  const unresolved = [];
+  const charByName = new Map();
+  const charByNorm = new Map();
+  for (const node of nodes) {
+    const raw = node.getName() || '(unnamed)';
+    if (raw !== '(unnamed)') {
+      charByName.set(raw, node);
+      charByName.set(raw.toLowerCase(), node);
+      const stripped = stripBJSSuffix(raw);
+      charByName.set(stripped, node);
+      charByName.set(stripped.toLowerCase(), node);
+      for (const norm of [normalizeName(raw), aliasNorm(raw), aliasNorm(stripped)]) {
+        if (norm && !charByNorm.has(norm)) charByNorm.set(norm, node);
+      }
+    }
+    const norm = normalizeName(raw) || aliasNorm(stripBJSSuffix(raw));
+    const canonical = NORM_TO_CANON.get(norm) || NORM_TO_CANON.get(aliasNorm(stripBJSSuffix(raw)));
+    if (!canonical) {
+      unresolved.push(raw);
+      continue;
+    }
+    const exact = norm === aliasNorm(canonical);
+    const match = {
+      canonical,
+      node: raw,
+      confidence: exact ? 1 : 0.95,
+      reason: exact ? 'canonical-name' : 'known-alias',
+    };
+    if (!byCanonical.has(canonical)) byCanonical.set(canonical, []);
+    byCanonical.get(canonical).push(match);
+  }
+  const entries = [];
+  const duplicates = [];
+  for (const canonical of Object.keys(BONE_MAP)) {
+    const matches = byCanonical.get(canonical) || [];
+    if (matches.length > 1) duplicates.push({ canonical, nodes: matches.map(match => match.node) });
+    const resolved = findMatchingBone({ getName: () => canonical }, charByName, charByNorm);
+    if (!resolved) {
+      entries.push({ canonical, node: null, confidence: 0, reason: 'unresolved' });
+      continue;
+    }
+    const direct = matches.find(match => match.node === resolved.getName());
+    entries.push(direct || {
+      canonical,
+      node: resolved.getName(),
+      confidence: 0.8,
+      reason: 'heuristic-match',
+    });
+  }
+  return {
+    entries,
+    candidateNodes: [...new Set(nodes.map(node => node.getName()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b)),
+    unresolvedNodes: unresolved,
+    duplicates,
+    warnings: duplicates.map(item => `Multiple nodes map to ${item.canonical}: ${item.nodes.join(', ')}`),
+  };
+}
+
 function scoreStatus(score) {
   if (score >= 88) return 'excellent';
   if (score >= 72) return 'good';
@@ -1150,14 +1274,18 @@ function scoreStatus(score) {
   return 'blocked';
 }
 
-function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, skeletonType, poseStyle, charByName, charByNorm }) {
+function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, skeletonType, poseStyle, charByName, charByNorm, rawNames, bodyPlan }) {
   const mesh = computeMeshStats(doc);
   const skinCount = doc.getRoot().listSkins().length;
+  const requiredBones = bodyPlan === 'quadruped' ? QUADRUPED_REQUIRED_BONES : HEALTH_REQUIRED_BONES;
+  const rawLower = rawNames.map(name => (name || '').toLowerCase());
   const missingBones = hasSkin
-    ? HEALTH_REQUIRED_BONES.filter(b => !hasCanonicalBone(b.key, charByName, charByNorm))
-    : HEALTH_REQUIRED_BONES;
+    ? requiredBones.filter(b => bodyPlan === 'quadruped'
+      ? !rawLower.some(name => b.pattern.test(name))
+      : !hasCanonicalBone(b.key, charByName, charByNorm))
+    : requiredBones;
   const criticalMissing = missingBones.filter(b => b.critical);
-  const coverageTotal = HEALTH_REQUIRED_BONES.length;
+  const coverageTotal = requiredBones.length;
   const coverageFound = coverageTotal - missingBones.length;
   const coverage = coverageTotal ? Math.round((coverageFound / coverageTotal) * 100) : 0;
 
@@ -1190,9 +1318,9 @@ function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, ske
     if (criticalMissing.length) {
       addCheck('error', 'Missing controller-critical bones', `${criticalMissing.map(b => b.label).slice(0, 6).join(', ')}${criticalMissing.length > 6 ? '...' : ''}.`, Math.min(34, 7 * criticalMissing.length));
     } else if (missingBones.length) {
-      addCheck('warn', 'Optional humanoid bones missing', `${missingBones.map(b => b.label).join(', ')}. Retargeting can still work, but feature coverage is reduced.`, Math.min(12, 3 * missingBones.length));
+      addCheck('warn', `Optional ${bodyPlan} bones missing`, `${missingBones.map(b => b.label).join(', ')}. Retargeting can still work, but feature coverage is reduced.`, Math.min(12, 3 * missingBones.length));
     } else {
-      checks.push({ severity: 'pass', title: 'Humanoid bone coverage complete', detail: 'All controller-critical limbs, spine and head targets were matched.' });
+      checks.push({ severity: 'pass', title: `${bodyPlan === 'quadruped' ? 'Quadruped' : 'Humanoid'} bone coverage complete`, detail: 'All controller-critical limbs, spine and head targets were matched.' });
     }
   }
 
@@ -1210,7 +1338,7 @@ function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, ske
     }
   }
 
-  if (hasSkin) {
+  if (hasSkin && bodyPlan === 'humanoid') {
     if (poseStyle === 'UNKNOWN') addCheck('warn', 'Bind pose could not be classified', 'The Builder could not confidently detect T-pose or A-pose from arm bones.', 6);
     else if (poseStyle === 'CUSTOM') addCheck('warn', 'Custom bind pose', 'Retargeting may need manual pose offsets if arms, feet or torso twist after merge.', 8);
     else checks.push({ severity: 'pass', title: `${poseStyle} detected`, detail: 'Pose detection can guide retargeting and autorig adjustments.' });
@@ -1226,6 +1354,7 @@ function buildHealthReport({ doc, hasSkin, boneCount, rootBones, animations, ske
   return {
     score,
     status: scoreStatus(score),
+    bodyPlan,
     coverage,
     missingBones: missingBones.map(b => ({ key: b.key, label: b.label, critical: b.critical })),
     metrics: {
@@ -1323,7 +1452,17 @@ export async function analyzeGLB(buffer) {
 
   // ── 4. Skeleton type detection ────────────────────────────────────────────
   const rawNames = bones.map(b => b.name);
-  const skeletonType = detectSkeletonType(rawNames);
+  // A transform hierarchy is not a skeleton until a skin references it. This
+  // prevents ordinary node/material names such as "defaultMaterial" from being
+  // fingerprinted as a Rigify DEF rig.
+  const bodyPlan = detectBodyPlan(rawNames, hasSkin);
+  let skeletonType = hasSkin
+    ? detectSkeletonType(rawNames)
+    : { id: 'none', label: 'No Skeleton', color: '#6b7280' };
+  if (bodyPlan === 'quadruped' && skeletonType.id === 'unknown') {
+    skeletonType = { id: 'quadruped', label: 'Generic Quadruped', color: '#22c55e' };
+  }
+  const mapping = bodyPlan === 'humanoid' ? buildCanonicalMappingReport(relevantNodes) : null;
 
   const charByName = new Map();
   const charByNorm = new Map();
@@ -1366,6 +1505,8 @@ export async function analyzeGLB(buffer) {
     poseStyle,
     charByName,
     charByNorm,
+    rawNames,
+    bodyPlan,
   });
 
   return {
@@ -1375,6 +1516,8 @@ export async function analyzeGLB(buffer) {
     hasSkin,
     boneCount: displayBones.length,
     skeletonType,
+    bodyPlan,
+    mapping,
     poseStyle,
     health,
   };
@@ -1584,6 +1727,19 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
+    // Meshes parented to a joint are rigid attachments (weapons, armour, hair,
+    // sockets...). Their local transform is meaningful and must remain under
+    // that joint. Only scene-level/body mesh containers need to move beneath
+    // the generated RootNode.
+    const isInsideSkeletonHierarchy = (node) => {
+      let current = node;
+      while (current) {
+        if (current === hipsNode) return true;
+        current = parentMap.get(current);
+      }
+      return false;
+    };
+
     // Skinned vertices may be stored in the exporter coordinate space while an
     // armature ancestor supplies the Y-up correction (Character Creator/Maya
     // commonly exports a -90° X `root`). Once that ancestor is removed and its
@@ -1623,6 +1779,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
 
     for (const meshNode of meshNodes) {
+      if (isInsideSkeletonHierarchy(meshNode)) continue;
       const mTrans = meshNode.getTranslation() || [0, 0, 0];
       // Mesh vertices are already in the correct coordinate space (pre-transformed by the
       // original exporter). Only apply the pivot offset — no coordinate rotation needed.
@@ -1653,21 +1810,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
-    // Update Inverse Bind Matrices of all skins to reflect the new Y-up world space hierarchy
-    const newParentMap = buildParentMap(charDoc);
-    const newCache = new Map();
-    for (const skin of charDoc.getRoot().listSkins()) {
-      const joints = skin.listJoints();
-      const ibmAcc = skin.getInverseBindMatrices();
-      if (!joints.length || !ibmAcc) continue;
-      const ibmData = new Float32Array(joints.length * 16);
-      joints.forEach((joint, i) => {
-        const W_new = worldMatrixOf(joint, newParentMap, newCache);
-        const IBM_new = invertRigidMat4(W_new);
-        ibmData.set(IBM_new, i * 16);
-      });
-      ibmAcc.setArray(ibmData);
-    }
+    // Preserve the source inverse bind matrices. The new RootNode reproduces
+    // the removed ancestor transform, so recomputing IBM as inverse(W_new)
+    // would erase the original skin-space scale (jointWorld * IBM = identity)
+    // and inflate centimetre/millimetre-authored meshes by ×100/×1000.
   }
 
   // If no animation buffer is provided, serialize and return the cleaned character directly
@@ -1699,6 +1845,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       if (na && !charByNorm.has(na)) charByNorm.set(na, node);
     }
   }
+  applyBoneMapOverrides(charDoc, cfg.boneMapOverrides, charByName, charByNorm);
 
   // Print bone names for debugging matching
   // console.log('--- DEBUG BON
@@ -1843,7 +1990,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   // Merge
   // console.log(`[merge] charDoc anims BEFORE merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   // console.log(`[merge] animDoc anims: ${animDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
-  charDoc.merge(animDoc);
+  mergeDocuments(charDoc, animDoc);
   // console.log(`[merge] charDoc anims AFTER merge: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
 
   // Remove junk animations — including original skeleton animations that are no longer valid

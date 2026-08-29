@@ -5,6 +5,8 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3dgltf';
 import { autoRigGLB, guessJoints, SKELETON_PRESETS, validateJointLayout } from '../js/core/autorig_api.mjs';
+import { analyzeGLB } from '../js/core/merge_api.mjs';
+import { parentMap } from './helpers.mjs';
 
 const fixture = new URL('../assets/female_character_simple.glb', import.meta.url);
 
@@ -153,4 +155,101 @@ test('rebuild strips an existing rig and generates the requested layout', async 
     const sum = weights[i] + weights[i + 1] + weights[i + 2] + weights[i + 3];
     assert.ok(Math.abs(sum - 1) < 1e-5, `normalized weight ${i / 4}`);
   }
+});
+
+test('auto-rig transforms morph deltas together with baked mesh transforms', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const doc = await io.readBinary(source);
+  const meshNode = doc.getRoot().listNodes().find(node => node.getMesh());
+  meshNode.setScale([2, 3, 4]);
+  meshNode.setRotation([0, Math.sin(Math.PI / 4), 0, Math.cos(Math.PI / 4)]);
+  const primitive = meshNode.getMesh().listPrimitives()[0];
+  const position = primitive.getAttribute('POSITION');
+  const deltas = new Float32Array(position.getCount() * 3);
+  deltas[0] = 1;
+  const targetPosition = doc.createAccessor('synthetic_morph')
+    .setType('VEC3').setArray(deltas).setBuffer(doc.getRoot().listBuffers()[0]);
+  primitive.addTarget(doc.createPrimitiveTarget('synthetic').setAttribute('POSITION', targetPosition));
+
+  const modified = await io.writeBinary(doc);
+  const guess = await guessJoints(modified, { fingerCount: 0 });
+  const output = await autoRigGLB(modified, {
+    joints: guess.joints,
+    fingerCount: 0,
+    geodesicWeights: false,
+  });
+  const result = await io.readBinary(output);
+  const target = result.getRoot().listMeshes().flatMap(mesh => mesh.listPrimitives())
+    .find(prim => prim.listTargets().length)?.listTargets()[0].getAttribute('POSITION').getArray();
+  assert.ok(Math.abs(target[0]) < 1e-5);
+  assert.ok(Math.abs(target[1]) < 1e-5);
+  assert.ok(Math.abs(target[2] + 2) < 1e-5);
+});
+
+test('body mesh selection exposes its decision and leaves excluded scenery unskinned', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const doc = await io.readBinary(source);
+  const scene = doc.getRoot().listScenes()[0];
+  const buffer = doc.getRoot().listBuffers()[0] || doc.createBuffer('selection-test');
+  const positions = doc.createAccessor('Ground_Test_positions').setType('VEC3').setBuffer(buffer)
+    .setArray(new Float32Array([
+      -20, -5, -20, 20, -5, -20, 20, -5, 20,
+      -20, -5, -20, 20, -5, 20, -20, -5, 20,
+    ]));
+  const ground = doc.createNode('Ground_Test').setMesh(doc.createMesh('Ground_Test')
+    .addPrimitive(doc.createPrimitive().setAttribute('POSITION', positions)));
+  scene.addChild(ground);
+  const withGround = await io.writeBinary(doc);
+
+  const automatic = await guessJoints(withGround, { fingerCount: 0 });
+  assert.equal(automatic.meshSelection.mode, 'automatic');
+  const groundEntry = automatic.meshSelection.meshes.find(mesh => mesh.name === 'Ground_Test');
+  assert.ok(groundEntry);
+  assert.equal(groundEntry.selected, false);
+  const bodyMeshIds = automatic.meshSelection.meshes.filter(mesh => mesh.selected).map(mesh => mesh.id);
+
+  const reportSink = {};
+  const output = await autoRigGLB(withGround, {
+    joints: automatic.joints,
+    fingerCount: 0,
+    bodyMeshIds,
+    geodesicWeights: false,
+    reportSink,
+  });
+  assert.equal(reportSink.meshSelection.mode, 'manual');
+  assert.deepEqual(reportSink.meshSelection.meshes.filter(mesh => mesh.selected).map(mesh => mesh.id), bodyMeshIds);
+  const result = await io.readBinary(output);
+  assert.equal(result.getRoot().listNodes().find(node => node.getName() === 'Ground_Test')?.getSkin(), null);
+  await assert.rejects(guessJoints(withGround, { bodyMeshIds: ['mesh-does-not-exist'] }), /Unknown body mesh/);
+});
+
+test('shared mesh instances are de-instanced before transform baking', async () => {
+  const source = await fs.readFile(fixture);
+  const io = await createIO();
+  const doc = await io.readBinary(source);
+  const originalNode = doc.getRoot().listNodes().find(node => node.getMesh());
+  const duplicate = doc.createNode('Shared_Body_Instance')
+    .setMatrix(originalNode.getMatrix())
+    .setMesh(originalNode.getMesh());
+  const parent = parentMap(doc).get(originalNode);
+  if (parent) parent.addChild(duplicate);
+  else doc.getRoot().listScenes()[0].addChild(duplicate);
+  const instanced = await io.writeBinary(doc);
+  const before = await analyzeGLB(instanced);
+  const guess = await guessJoints(instanced, { fingerCount: 0 });
+  const output = await autoRigGLB(instanced, {
+    joints: guess.joints,
+    fingerCount: 0,
+    geodesicWeights: false,
+  });
+  const result = await io.readBinary(output);
+  const skinned = result.getRoot().listNodes().filter(node => node.getSkin() && node.getMesh());
+  assert.equal(skinned.length, 2);
+  assert.notEqual(skinned[0].getMesh(), skinned[1].getMesh());
+  const arrays = skinned.map(node => node.getMesh().listPrimitives()[0].getAttribute('POSITION').getArray());
+  assert.deepEqual([...arrays[0].slice(0, 30)], [...arrays[1].slice(0, 30)]);
+  const after = await analyzeGLB(output);
+  assert.ok(Math.abs(after.health.metrics.height / before.health.metrics.height - 1) < 0.005);
 });

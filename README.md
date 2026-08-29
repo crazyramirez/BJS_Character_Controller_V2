@@ -27,6 +27,8 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Smart Snap-Down Controls**: Dynamically disables downward snap forces when ascending stairs or steep slopes to eliminate physics/collision jitter.
 *   **Implicit Self-Collision Prevention**: Prevents parent-capsule jitter by automatically disabling collision checks (`checkCollisions = false`) on imported character visual meshes.
 *   **Mobile Touch Support**: Responsive virtual joystick and customizable glassmorphism action buttons.
+*   **Gamepad Support**: Analog movement with configurable dead zone and edge-triggered jump, roll, sprint, crouch and action buttons.
+*   **Production Rigging Pipeline**: Human and quadruped analysis, body-mesh selection, editable canonical bone assignment, topology-aware auto-rigging, quality diagnostics and deterministic animation retargeting.
 *   **Air Dash (Mid-Air Roll)**: Perform a responsive dodge roll in mid-air with a horizontal speed boost and a 55% jump-power vertical hop (available if Double Jump is enabled, works even after double jumping).
 *   **Action Interrupt Roll**: Pressing Roll immediately interrupts active attack combos or spell casts for instant responsiveness.
 *   **Roll Cooldown & HUD Feedback**: A 1.1s cooldown prevents roll spamming, displaying a "DODGE COOLDOWN" HUD warning when pressed too early.
@@ -41,33 +43,26 @@ An advanced third-person character locomotion and physics framework built with *
 *   **Havok Physics (Default)**: Leverages the WASM-powered **Havok Physics** engine. The character capsule is created as a dynamic `PhysicsBody` with defined mass and inertia properties, interacting naturally with other dynamic aggregates (like boxes, cylinders, and triggers).
 *   **Kinematic Collisions**: Runs entirely within Babylon's native collision engine using kinematic ellipsoids (`moveWithCollisions`). Havok initialization is skipped entirely, providing maximum performance and deterministic locomotion.
 
-### Automatic detection (default behaviour)
+### Explicit configuration (default behaviour)
 
-The engine **auto-detects** on every load. No configuration required:
-
-| `localStorage('use-physics')` | Result |
-|---|---|
-| not set | Try Havok → success: physics mode. Fail: kinematic silently. |
-| `'true'` (HUD forced ON) | Try Havok → success: physics mode. Fail: kinematic + clears override. |
-| `'false'` (HUD forced OFF) | Kinematic always, skips Havok init entirely. |
+Runtime options are authoritative. `initPhysics(scene)` tries Havok and falls back to kinematic collisions without reading or modifying browser storage. Pass `usePhysics: false` when kinematic mode is required.
 
 ### Overriding the mode
 
-**HUD toggle** — easiest. Saves to `localStorage` and reloads. Clears itself automatically if Havok fails to load.
+Preference persistence is deliberately opt-in. The bundled HUD examples use `persistPreferences: true`; embedded applications remain deterministic by default:
 
-**Programmatic override via `localStorage`:**
 ```javascript
-localStorage.setItem('use-physics', 'false'); // force kinematic
-localStorage.setItem('use-physics', 'true');  // force Havok (falls back if unavailable)
-localStorage.removeItem('use-physics');        // back to auto-detect
-// reload required for change to take effect
-window.location.reload();
+const usePhysics = await initPhysics(scene, {
+  usePhysics: true,
+  persistPreferences: true
+});
 ```
 
-**Direct constructor option** (bypasses localStorage, for embedded use):
+The same policy is available on the controller constructor:
 ```javascript
 const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, {
   usePhysics: true,  // or false
+  persistPreferences: false,
   config: {
     SPEED_MULTIPLIER: 1.5 // Multiplies walking, running and jogging speeds
   }
@@ -189,6 +184,7 @@ You can initialize physics and load the character in just a few lines of code us
 async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,                             // Optional: shadow generator to add character meshes to
+    persistPreferences: true,           // Optional: allow HUD/browser preference persistence
     assetsPath: 'assets/',              // Optional: path to GLB assets folder (defaults to 'assets/')
     filename: 'character_animated.glb', // Optional: GLB file name (defaults to 'character_animated.glb')
     spawnPosition: new BABYLON.Vector3(0, 2, 0), // Optional: starting position override
@@ -203,7 +199,7 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
 }
 
 // 2. Initialize physics (Havok or Kinematic fallback)
-const usePhysics = await initPhysics(scene);
+const usePhysics = await initPhysics(scene, { persistPreferences: true });
 
 // 3. Load the character using the helper
 const { playerCapsule, animCtrl, charCtrl } = await loadCharacter(scene, shadow, camera, usePhysics);
@@ -244,50 +240,58 @@ To run the local server which powers advanced skeletal retargeting, GLB animatio
 3. **Open the builder:**
    Navigate to [http://localhost:3000/builder](http://localhost:3000/builder) in your browser.
 
+4. **Run the complete verification suite before publishing changes:**
+   ```bash
+   npm run check
+   npm audit
+   ```
+
 
 ### Tabs
 
 | Tab | What it does |
 |---|---|
-| **Model** | Import your character GLB, adjust scale/pivot (with *Pivot to Ground* helper), tweak bind-pose angles (arm spread/splay, leg spread, spine straighten), inspect the skeleton tree & health report, and auto-rig skinless meshes |
-| **Animations** | Auto-match Mixamo/custom animation names to controller slots, define **Animation Events** (gameplay frame markers), and add custom triggered actions. Each row has an `↺` reset button to re-run keyword auto-detection for that single slot |
-| **Controls** | Remap every key binding. Each action has an `↺` button to restore its default key |
-| **Physics** | Apply **Controller Presets**, test moves in the **Controller Test Lab**, and tune all physics, camera, and speed parameters with sliders and toggles. Each control has an `↺` reset to restore the baked default |
-| **Export** | Preview the final configuration code, download `custom-character-controller.js`, save/restore the full setup as `builder-config.json`, or export the character in GLB format with all animations incorporated |
+| **Import & Rig** | Import GLB/FBX, choose the deforming body meshes, adjust transforms and bind pose, inspect skeleton health, edit canonical bone assignments and generate or rebuild rigs |
+| **Animate** | Auto-match animation names, preview clips, define gameplay frame markers and add custom triggered actions |
+| **Input Mapping** | Remap keyboard/gameplay actions and restore individual defaults |
+| **Controller** | Apply presets, use the live test lab, and tune movement, camera and feel |
+| **Physics** | Configure collision, gravity, jumping, grounding, slopes and Havok/kinematic behaviour |
+| **Validate & Export** | Review diagnostics and generated code, save/restore schema-validated configuration, or export a merged GLB and standalone controller |
 
-All changes auto-save to `localStorage`. Use **Reset All** in the sidebar to wipe all overrides and restore factory defaults.
+Builder preferences auto-save locally for editing convenience. Exported runtime controllers do not inherit that storage unless the application explicitly enables `persistPreferences`.
 
 ### 💀 FBX Direct Import & Bind-Pose Posture Tuning
 
-When running the NodeJS backend, the **Model** tab offers advanced rigging, conversion, and alignment utilities:
+When running the NodeJS backend, the **Import & Rig** tab offers advanced rigging, conversion, and alignment utilities:
 
 *   **Direct FBX Support**: Drag-and-drop `.fbx` character models and animation files. The server auto-converts them to `.glb` under-the-hood (using `fbx_api.mjs`), fixing materials and flattening the `RootNode` transformation to avoid rotation/scale offset issues.
 *   **Scale & Pivot Offsets**: Fine-tune character sizing using uniform scaling or independent X, Y, and Z scaling. Adjust the pivot offset (X, Y, Z) and use the **Pivot to Ground** helper to easily snap a character's feet to the ground level.
 *   **Skeletal Posture Adjustments**: Straighten or adjust character postures (e.g., matching A-poses to T-poses) using bind-pose angle sliders for **Arm Spread**, **Arm Splay**, **Shoulder Raise**, **Leg Spread**, **Hips Tilt**, and **Spine Straightening**.
-*   **Skeleton Tree & Health Report**: View your character's bone hierarchy tree and check its bone-mapping diagnostics (overall score, Mixamo bone compatibility, bone coverage, and list of missing standard bones).
+*   **Skeleton Tree & Health Report**: View the hierarchy, humanoid/quadruped body plan, coverage, duplicate and unresolved roles, and confidence/reason for every canonical mapping. Every role can be reassigned to an exact node without renaming the source asset.
 
 ### 💀 Auto-Rig (skeleton generation for skinless meshes)
 
-If you import a mesh-only GLB (no skeleton/skin), the **Model → Skeleton** section offers **Generate Skeleton (Auto-Rig)**:
+If you import a mesh-only GLB (no skeleton/skin), **Import & Rig → Skeleton** offers **Generate Skeleton (Auto-Rig)**:
 
-1. The server analyzes the actual vertex cloud — not just the bounding box — to propose Mixamo-named joint positions: it detects the crotch (where the body splits into legs), shoulder height, hand positions (works for both **T-pose and A-pose** meshes), per-leg offsets, and follows hunched spines.
+1. Choose exactly which meshes form the deforming body. Automatic selection excludes likely floors, props and accessories; manual selection is available for ambiguous assets. The server then analyzes the selected vertex cloud — not just the bounding box — and selects a humanoid or quadruped body plan.
+2. For humanoids it proposes Mixamo-named joint positions: it detects the crotch (where the body splits into legs), shoulder height, hand positions (works for both **T-pose and A-pose** meshes), per-leg offsets, and follows hunched spines.
    For meshes in **non-standard poses** (crouching, sitting, action poses) a pose-independent topology pass kicks in automatically: the mesh is voxelized, the interior is filled (works on non-watertight meshes), and the five extremities (head, hands, feet) are found on the geodesic graph and classified by body topology — legs merge far from the head, arms merge near it. Joints are placed along the detected limb centerlines.
-2. The builder enters a dedicated **rig viewport mode**: the character is isolated, draggable yellow joint markers appear, with Front/Side/Top camera presets (keys `1`/`2`/`3`) and optional **symmetric editing** (left ↔ right mirroring).
-3. **Apply Rig** builds the skeleton, computes proximity-based skin weights server-side, and re-merges your animation set against the fresh rig automatically.
+3. The builder enters a dedicated **rig viewport mode**: the character is isolated, draggable yellow joint markers appear, with Front/Side/Top camera presets (keys `1`/`2`/`3`) and optional **symmetric editing** (left ↔ right mirroring).
+4. **Apply Rig** builds the skeleton, computes bounded topology-aware skin weights server-side, preserves unselected rigid meshes and morph deltas, and re-merges the animation set automatically. The final quality report records selection, coverage, warnings and compatibility.
 
 Already-rigged characters get **Re-Rig / Adjust Skeleton** instead: markers seed from the current bind pose, and applying moves the existing joints while preserving the hierarchy, extra bones (fingers/twist) and the original artist skin weights.
 
 ### 🎭 Custom Actions & Animations
 
-In the **Animations → Custom Animations** section, you can extend the controller by registering completely new character actions (e.g., `TAUNT`, `DANCE`, `WAVE`):
+In **Animate → Custom Animations**, you can extend the controller by registering completely new character actions (e.g., `TAUNT`, `DANCE`, `WAVE`):
 *   Map a custom action name to any animation group in the library.
 *   Assign key triggers directly to the custom action.
 *   In the exported snippet, these actions are configured and bound automatically.
-*   You can trigger custom actions programmatically at runtime using `charCtrl.anim.play('CUSTOM_ACTION_NAME')`.
+*   You can trigger custom actions through the complete controller state machine using `charCtrl.triggerAction('CUSTOM_ACTION_NAME')`.
 
 ### 🎯 Animation Events (gameplay frame markers)
 
-In **Animations → Animation Events** you can attach typed markers (`footstep`, `hit`, `cast`, `sound`, `particle`, `camera`, `custom`) to any mapped animation at a specific frame:
+In **Animate → Animation Events** you can attach typed markers (`footstep`, `hit`, `cast`, `sound`, `particle`, `camera`, `custom`) to any mapped animation at a specific frame:
 
 - Markers fire **live in the builder viewport** (toast + console) while previewing or playing animations — including during crossfades and inside the Locomotion blend tree (footsteps fire on Walk/Sprint loops).
 - Markers survive character swaps: they are kept as long as the slot maps to the **same clip**, and a **Clear All** button removes every marker at once.
@@ -308,24 +312,24 @@ window.addEventListener('charanimevent', (e) => console.log(e.detail));
 
 ### 🧪 Controller Presets & Test Lab
 
-The **Physics** tab includes four one-click controller presets (**Balanced Adventure**, **Action Combat**, **Arcade Platformer**, **Cinematic Walkthrough**) and a **Controller Test Lab**: scenario camera chips (Studio / Motion / Air / Close Cam), action buttons (Idle, Walk, Sprint, Jump, Roll, Crouch — locomotion buttons drive the real blend tree, exactly like in-game), and a live metrics panel (state, speed, grounded, active animation, camera framing).
+The **Controller** tab includes four one-click controller presets (**Balanced Adventure**, **Action Combat**, **Arcade Platformer**, **Cinematic Walkthrough**) and a **Controller Test Lab**: scenario camera chips (Studio / Motion / Air / Close Cam), action buttons (Idle, Walk, Sprint, Jump, Roll, Crouch — locomotion buttons drive the real blend tree, exactly like in-game), and a live metrics panel (state, speed, grounded, active animation, camera framing).
 
 #### ↺ Parameter Reset Buttons
-Beside every slider, toggle, or control mapping under the **Physics** and **Controls** tabs, there is an `↺` reset button. Clicking it instantly restores that single parameter to its baked system default without clearing the rest of your custom settings.
+Beside every slider, toggle, or control mapping under **Controller**, **Physics** and **Input Mapping**, there is an `↺` reset button. Clicking it restores that single parameter without clearing the rest of the setup.
 
 ### 🔄 Retargeting & Animation Merging (`merge_api.mjs`)
 
-The Visual Builder utilizes the server-side module [merge_api.mjs](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/core/merge_api.mjs) (via `server.mjs`) to dynamically retarget and combine your character model with custom animations.
+The Visual Builder uses the canonical server-side module [merge_api.mjs](js/core/merge_api.mjs) (via `server.mjs`) to analyze, retarget and combine characters and animations deterministically.
 
 When using the builder, you can import assets in different ways:
-- **Separate Import:** You can load your character mesh (with or without animations) in the **Model** tab, and then load external animation GLB files in the **Animations** tab.
-- **Using Embedded Animations:** If you want to use the animations already present in the character model itself, you must import the character model file in the **Model** tab, and then import the **same character model file** again in the **Animations** tab.
+- **Separate Import:** Load a character in **Import & Rig**, then one or more external animation GLBs/FBXs in **Animate**.
+- **Embedded Animations:** A character's own animation groups are available immediately after import; no duplicate upload is required.
 
 ---
 
 ## 📥 Exporting & Downloading Options
 
-The **Export** tab provides 4 distinct ways to output your configuration and assets for production:
+**Validate & Export** provides four distinct ways to output your configuration and assets for production:
 
 ### 🔀 Integration Modes (Pre-merged GLB vs. Runtime Retargeting)
 When exporting your setup, you can choose between two integration architectures depending on your project needs:
@@ -335,9 +339,9 @@ When exporting your setup, you can choose between two integration architectures 
     *   **Best for**: Single character games, simple setups, or engines where loading multiple separate files is not desired.
     *   **Drawback**: Duplicate data. If you have 10 characters sharing the same locomotion set, you will be downloading those animation frames 10 times.
 *   **Runtime Retargeting (Client-Side Dynamic Retargeting)**:
-    *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations.glb`) separate. In your code, [setupCharacter](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L3179) automatically maps the animation channels onto whichever character skeleton is loaded at runtime using [normBone](file:///d:/DEV/BJS%20Character%20Controller%20V2/js/character-controller.js#L123) matching.
+    *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations.glb`) separate. [setupCharacter](js/character-controller.js) requests the same canonical server merge used by the builder and falls back to client retargeting when the service is unavailable. Manual `boneMapOverrides` travel with the exported setup.
     *   **Best for**: Multi-character games, RPGs, or modular projects. Reuses one shared animation file across dozens of characters, drastically reducing download size and memory footprint.
-    *   **Note**: Requires Babylon.js 9+ (utilizes the native `AnimatorAvatar` class).
+    *   **Note**: Requires Babylon.js 9+. Cross-convention rigs are most accurate with the local merge service available.
 
 ### 1. 📋 Export Code Snippet (Preview & Copy)
 This provides a complete, custom `loadCharacter` helper function matching your settings. Copy and paste it directly into your `app.js` entry file to replace the default loader. It automatically bakes in:
@@ -349,7 +353,7 @@ This provides a complete, custom `loadCharacter` helper function matching your s
 
 ### 2. 💾 Saving & Restoring Builder Config (`builder-config.json`)
 Allows you to save/load your visual builder configuration presets:
-*   **Download builder-config.json**: Saves all skeleton transforms, key bindings, physics settings, standard animation mappings, custom action setups, and animation events into a portable JSON file.
+*   **Download builder-config.json**: Saves schema-versioned transforms, exact bone assignments, key bindings, physics settings, animation mappings, custom actions and events. It intentionally does **not** embed model or animation binaries (`includesAssets: false`).
 *   **Import builder-config.json**: Restore your saved configuration at any time to resume working in the builder without losing your adjustments.
 
 ### 3. 📦 Exporting the Character as GLB (with animations)
@@ -358,7 +362,7 @@ Click **Download character_animated.glb** to download a single, self-contained G
 ### ⚡ 4. Downloading Baked Controller (`custom-character-controller.js`)
 Generates a tailored standalone `character-controller.js` file with your settings pre-baked:
 *   Replaces the default configurations (`DEFAULT_CHAR_CONFIG`) inside the script with your custom physics, keys, and touch layouts.
-*   Injects a **local-storage auto-seed signature block** to prioritize your baked physics defaults on first load over any stale cached `localStorage` from previous builder sessions.
+*   Keeps baked defaults authoritative and does not inject or mutate `localStorage`; persistence remains an explicit application choice.
 *   Bakes all standard and custom animation remappings, frame ranges, and event markers directly into the controller's setup hooks, acting as a complete drop-in replacement with zero extra code required in your loader scripts.
 
 ```html

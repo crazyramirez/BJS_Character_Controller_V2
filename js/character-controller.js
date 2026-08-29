@@ -168,7 +168,10 @@ function normBone(name) {
 
   // If we found a side, prepend it to ensure left/right are distinct
   if (side) {
-    n = n.replace(/^(left|right|l|r)/, '');
+    // Exporters use both prefixes (L_Arm) and suffixes (upperarm_r). Remove
+    // either marker after punctuation normalization so it does not leak into
+    // the canonical role ("rightarmr") and break retarget matching.
+    n = n.replace(/^(left|right|l|r)/, '').replace(/(left|right|l|r)$/, '');
     n = side + n;
   }
 
@@ -317,6 +320,8 @@ class AnimCtrl {
     this.customWeights = new Map(); // Store specific defaults here
     this.onAnimationChange = null;  // Callback for decoupling UI
     this._warnedMissing = new Set();
+    this._endObservers = new Map();
+    this._disposed = false;
 
     // Support both pre-populated Map or a simple Array of AnimationGroups
     if (groups instanceof Map) {
@@ -325,7 +330,11 @@ class AnimCtrl {
       this.g = new Map();
       groups.forEach(ag => {
         const cleanName = cleanAnimName(ag.name);
-        this.g.set(cleanName, ag);
+        if (this.g.has(cleanName)) {
+          console.warn(`[AnimCtrl] Duplicate animation name "${cleanName}" ignored. Rename the clip to map it explicitly.`);
+        } else {
+          this.g.set(cleanName, ag);
+        }
       });
     } else {
       this.g = new Map();
@@ -387,11 +396,16 @@ class AnimCtrl {
       const last = this._evtLastFrame.get(name);
       this._evtLastFrame.set(name, frame);
       if (frame === last) continue;
+      const direction = Number(ag.speedRatio ?? a.speedRatio ?? 1) < 0 ? -1 : 1;
       for (const evt of list) {
         const f = Number(evt.frame);
-        const crossed = frame >= last
-          ? (f > last && f <= frame)            // normal advance
-          : (f > last || f <= frame);           // loop wrapped
+        const crossed = direction >= 0
+          ? (frame >= last
+            ? (f > last && f <= frame)          // forward advance
+            : (f > last || f <= frame))         // forward loop wrap
+          : (frame <= last
+            ? (f < last && f >= frame)          // reverse advance
+            : (f < last || f >= frame));        // reverse loop wrap
         if (crossed) this._fireAnimationEvent(evt, name);
       }
     }
@@ -469,7 +483,26 @@ class AnimCtrl {
     // console.warn('[AnimCtrl] missing:', name);
   }
 
+  _clearEndObserver(group) {
+    const observer = this._endObservers.get(group);
+    if (observer && group?.onAnimationGroupEndObservable) {
+      group.onAnimationGroupEndObservable.remove(observer);
+    }
+    this._endObservers.delete(group);
+  }
+
+  _setEndObserver(group, callback) {
+    this._clearEndObserver(group);
+    if (!callback || !group?.onAnimationGroupEndObservable) return;
+    const observer = group.onAnimationGroupEndObservable.addOnce(() => {
+      this._endObservers.delete(group);
+      callback();
+    });
+    this._endObservers.set(group, observer);
+  }
+
   play(name, loop = false, blendDuration = 0.25, onEnd = null, speedRatio = 1.0, weightParam = null) {
+    if (this._disposed) return false;
     const ag = this.g.get(name);
     if (!ag) { this._warnMissing(name); return false; }
 
@@ -494,14 +527,10 @@ class AnimCtrl {
       this.cur.setWeightForAllAnimatables(targetWeight);
       this.cur.speedRatio = finalSpeedRatio;
       if (!loop) {
-        if (this.cur.onAnimationGroupEndObservable) {
-          this.cur.onAnimationGroupEndObservable.clear();
-        }
+        this._clearEndObserver(this.cur);
         this.cur.start(loop, finalSpeedRatio, this.cur.from, this.cur.to, false);
         if (Number.isFinite(this.cur.from)) this._evtLastFrame.set(name, this.cur.from - 0.001);
-        if (onEnd) {
-          this.cur.onAnimationGroupEndObservable.addOnce(() => onEnd());
-        }
+        this._setEndObserver(this.cur, onEnd);
       }
       return true;
     }
@@ -525,9 +554,7 @@ class AnimCtrl {
     incoming.setWeightForAllAnimatables(outgoing ? 0 : targetWeight);
 
     if (outgoing) {
-      if (outgoing.onAnimationGroupEndObservable) {
-        outgoing.onAnimationGroupEndObservable.clear();
-      }
+      this._clearEndObserver(outgoing);
       // An ended one-shot has already stopped: its animatables are gone, so the
       // crossfade would have no source pose — Babylon normalizes the incoming
       // group's tiny weight to full influence and the pose snaps. Re-start the
@@ -594,7 +621,7 @@ class AnimCtrl {
     }
 
     if (onEnd && !loop) {
-      incoming.onAnimationGroupEndObservable.addOnce(() => onEnd());
+      this._setEndObserver(incoming, onEnd);
     }
 
     this.resetInactiveWeights();
@@ -621,6 +648,16 @@ class AnimCtrl {
     });
     this.activeTransitions = [];
     this.stop();
+  }
+
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.forceStop();
+    if (this._eventObserver) this.scene.onBeforeRenderObservable.remove(this._eventObserver);
+    for (const group of this._endObservers.keys()) this._clearEndObserver(group);
+    this._evtLastFrame.clear();
+    this.charCtrl = null;
   }
 
   has(name) { return this.g.has(name); }
@@ -747,12 +784,7 @@ class AnimCtrl {
   }
 
   destroy() {
-    this.forceStop();
-    if (this._eventObserver) {
-      this.scene.onBeforeRenderObservable.remove(this._eventObserver);
-      this._eventObserver = null;
-    }
-    this._evtLastFrame.clear();
+    this.dispose();
   }
 }
 
@@ -761,9 +793,42 @@ class AnimCtrl {
 // ═══════════════════════════════════════════════════════════
 class CharCtrl {
   constructor(root, visualMesh, camera, anim, scene, options = {}) {
+    if (!camera || !Number.isFinite(camera.alpha) || !Number.isFinite(camera.beta) || !Number.isFinite(camera.radius)) {
+      throw new TypeError('CharCtrl requires a Babylon.js ArcRotateCamera (alpha, beta and radius must be finite).');
+    }
     this.root = root; // Capsule collider parent mesh
     this.visualMesh = visualMesh; // Visual character mesh
     this.camera = camera;
+    this._destroyed = false;
+    this._timers = new Set();
+    this._intervals = new Set();
+    this._cameraStateBeforeController = {
+      alpha: camera.alpha,
+      beta: camera.beta,
+      radius: camera.radius,
+      lowerRadiusLimit: camera.lowerRadiusLimit,
+      upperRadiusLimit: camera.upperRadiusLimit,
+      wheelPrecision: camera.wheelPrecision,
+      pinchPrecision: camera.pinchPrecision,
+      panningSensibility: camera.panningSensibility,
+      checkCollisions: camera.checkCollisions,
+      angularSensibilityX: camera.angularSensibilityX,
+      angularSensibilityY: camera.angularSensibilityY,
+      fov: camera.fov,
+      upVector: camera.upVector?.clone ? camera.upVector.clone() : null,
+    };
+    const attachedInputs = camera.inputs?.attached;
+    const wheelInput = attachedInputs?.mousewheel || attachedInputs?.mouseWheel;
+    const pointerInput = attachedInputs?.pointers || attachedInputs?.pointersInput;
+    this._cameraInputStateBeforeController = {
+      wheelInput,
+      pointerInput,
+      wheelPrecision: wheelInput?.wheelPrecision,
+      wheelPrecisionX: wheelInput?.wheelPrecisionX,
+      wheelPrecisionY: wheelInput?.wheelPrecisionY,
+      wheelPrecisionZ: wheelInput?.wheelPrecisionZ,
+      pinchPrecision: pointerInput?.pinchPrecision,
+    };
     if (this.camera) {
       this.camera.checkCollisions = false;
     }
@@ -784,8 +849,16 @@ class CharCtrl {
     // Physics & Speeds Config
     const config = Object.assign({}, DEFAULT_CHAR_CONFIG.PHYSICS, options.config || {});
 
+    // Runtime configuration is authoritative. Browser persistence is opt-in so
+    // an exported project cannot be silently changed by stale settings left by
+    // another character or a previous Builder session.
+    this._storage = options.storage || (options.persistPreferences === true && typeof localStorage !== 'undefined' ? localStorage : null);
+    const stored = (key) => {
+      try { return this._storage?.getItem(key) ?? null; } catch (_) { return null; }
+    };
+
     // Use physics parameter
-    this.usePhysics = options.usePhysics !== undefined ? options.usePhysics : (localStorage.getItem('use-physics') !== 'false');
+    this.usePhysics = options.usePhysics !== undefined ? !!options.usePhysics : true;
 
     this.GRAV = config.GRAV;
     this.JUMP_PWR = config.JUMP_PWR;
@@ -797,46 +870,46 @@ class CharCtrl {
     this.ACCEL = config.ACCEL;
     this.DECEL = config.DECEL;
     this.ROT_SPD = config.ROT_SPD;
-    const savedAirControl = localStorage.getItem('air-control-enabled');
+    const savedAirControl = stored('air-control-enabled');
     this.AIR_CONTROL = savedAirControl !== null ? (savedAirControl === 'true') : (config.AIR_CONTROL !== undefined ? config.AIR_CONTROL : false);
-    // Load configurable states from localStorage, falling back to configuration block defaults
-    const savedCamFollowLock = localStorage.getItem('cam-follow-lock');
+    // Load optional persisted preferences, falling back to configuration defaults.
+    const savedCamFollowLock = stored('cam-follow-lock');
     this.CAM_FOLLOW_LOCK = savedCamFollowLock !== null ? (savedCamFollowLock === 'true') : config.CAM_FOLLOW_LOCK;
 
-    const savedDynamicFov = localStorage.getItem('dynamic-fov');
+    const savedDynamicFov = stored('dynamic-fov');
     this.DYNAMIC_FOV = savedDynamicFov !== null ? (savedDynamicFov === 'true') : config.DYNAMIC_FOV;
 
-    const savedDynamicFovMax = localStorage.getItem('dynamic-fov-max');
+    const savedDynamicFovMax = stored('dynamic-fov-max');
     this.DYNAMIC_FOV_MAX = savedDynamicFovMax !== null ? parseFloat(savedDynamicFovMax) : config.DYNAMIC_FOV_MAX;
 
-    const savedCamTilt = localStorage.getItem('cam-tilt');
+    const savedCamTilt = stored('cam-tilt');
     this.CAM_TILT = savedCamTilt !== null ? (savedCamTilt === 'true') : (config.CAM_TILT !== undefined ? config.CAM_TILT : false);
 
-    const savedCamTiltAmount = localStorage.getItem('cam-tilt-amount');
+    const savedCamTiltAmount = stored('cam-tilt-amount');
     this.CAM_TILT_AMOUNT = savedCamTiltAmount !== null ? parseFloat(savedCamTiltAmount) : (config.CAM_TILT_AMOUNT !== undefined ? config.CAM_TILT_AMOUNT : 0.15);
 
-    const savedCamFollowPitch = localStorage.getItem('cam-follow-pitch');
+    const savedCamFollowPitch = stored('cam-follow-pitch');
     this.CAM_FOLLOW_PITCH = savedCamFollowPitch !== null ? parseFloat(savedCamFollowPitch) : (config.CAM_FOLLOW_PITCH !== undefined ? config.CAM_FOLLOW_PITCH : Math.PI / 3.0);
 
-    const savedCamFollowDist = localStorage.getItem('cam-follow-dist');
+    const savedCamFollowDist = stored('cam-follow-dist');
     this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
 
-    const savedCamLockPitch = localStorage.getItem('cam-lock-pitch');
+    const savedCamLockPitch = stored('cam-lock-pitch');
     this.CAM_LOCK_PITCH = savedCamLockPitch !== null ? (savedCamLockPitch === 'true') : (config.CAM_LOCK_PITCH !== undefined ? config.CAM_LOCK_PITCH : false);
 
-    const savedJoystickLockX = localStorage.getItem('joystick-lock-x');
+    const savedJoystickLockX = stored('joystick-lock-x');
     this.JOYSTICK_LOCK_X = savedJoystickLockX !== null ? (savedJoystickLockX === 'true') : (config.JOYSTICK_LOCK_X !== undefined ? config.JOYSTICK_LOCK_X : false);
 
-    const savedDoubleJump = localStorage.getItem('double-jump-enabled');
+    const savedDoubleJump = stored('double-jump-enabled');
     this.DOUBLE_JUMP_ENABLED = savedDoubleJump !== null ? (savedDoubleJump === 'true') : (config.DOUBLE_JUMP_ENABLED !== undefined ? config.DOUBLE_JUMP_ENABLED : true);
 
-    const savedSpeedMultiplier = localStorage.getItem('speed-multiplier');
+    const savedSpeedMultiplier = stored('speed-multiplier');
     this.SPEED_MULTIPLIER = savedSpeedMultiplier !== null ? parseFloat(savedSpeedMultiplier) : (config.SPEED_MULTIPLIER !== undefined ? config.SPEED_MULTIPLIER : 1.0);
 
-    const savedShowCombo = localStorage.getItem('show-combo');
+    const savedShowCombo = stored('show-combo');
     this.SHOW_COMBO = savedShowCombo !== null ? (savedShowCombo === 'true') : true;
 
-    const savedPlayParticles = localStorage.getItem('play-particles');
+    const savedPlayParticles = stored('play-particles');
     this.PLAY_PARTICLES = savedPlayParticles !== null ? (savedPlayParticles === 'true') : (config.PLAY_PARTICLES !== undefined ? config.PLAY_PARTICLES : true);
 
     this.MOVING_PLATFORMS = config.MOVING_PLATFORMS !== undefined ? config.MOVING_PLATFORMS : true;
@@ -864,8 +937,8 @@ class CharCtrl {
     this._originalRadius = this.camera ? this.camera.radius : 8.0;
     // console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
-    // Apply Hide Cursor state if persisted in localStorage
-    if (localStorage.getItem('hide-cursor') === 'true') {
+    // Apply Hide Cursor only when the opt-in storage contains the preference.
+    if (stored('hide-cursor') === 'true') {
       document.body.classList.add('cursor-hidden');
     }
 
@@ -925,6 +998,9 @@ class CharCtrl {
 
     this.keys = {};
     this.touchVector = { x: 0, y: 0 };
+    this.gamepadEnabled = options.gamepad !== false;
+    this.gamepadVector = { x: 0, y: 0 };
+    this._gamepadButtons = new Map();
     this.isTouch = false;
     this._touchListeners = [];
     this._pointerDragging = false;
@@ -948,7 +1024,7 @@ class CharCtrl {
     if (this.isTouch) {
       document.body.classList.add('touch-device');
       // Wait slightly for DOM loading
-      setTimeout(() => this._setupTouchHUD(), 200);
+      this._setTimeout(() => this._setupTouchHUD(), 200);
     }
 
     // Capture initial dimensions for automatic crouch scaling
@@ -1031,7 +1107,7 @@ class CharCtrl {
         const maxVal = slider ? parseFloat(slider.max) : 15;
         this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
         this._baseCamFollowDist = this.CAM_FOLLOW_DIST / (this._capScaleY || 1.0);
-        localStorage.setItem('cam-follow-dist', this.CAM_FOLLOW_DIST);
+        this._setStoredPreference('cam-follow-dist', this.CAM_FOLLOW_DIST);
 
         const label = document.getElementById('cam-dist-val');
         if (slider) {
@@ -1061,7 +1137,7 @@ class CharCtrl {
           const lo = this.camera.lowerBetaLimit || 0.05;
           const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
           this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.camera.beta));
-          localStorage.setItem('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+          this._setStoredPreference('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
           // Sync HUD slider and label
           const slider = document.getElementById('slider-cam-pitch');
           const label = document.getElementById('cam-pitch-val');
@@ -1210,6 +1286,7 @@ class CharCtrl {
   }
 
   _isPressed(action) {
+    if (this._isInputBlocked()) return false;
     const keysForAction = this.keyBindings[action];
     if (!keysForAction) return false;
     if (Array.isArray(keysForAction)) {
@@ -1227,11 +1304,50 @@ class CharCtrl {
     return keysForAction === code;
   }
 
+  _pollGamepad() {
+    if (!this.gamepadEnabled || typeof navigator.getGamepads !== 'function') return;
+    const gamepad = [...navigator.getGamepads()].find(Boolean);
+    if (!gamepad) {
+      this.gamepadVector = { x: 0, y: 0 };
+      this._gamepadButtons.clear();
+      return;
+    }
+    const deadzone = 0.16;
+    const curve = (value) => {
+      const magnitude = Math.abs(value);
+      if (magnitude <= deadzone) return 0;
+      return Math.sign(value) * Math.min(1, (magnitude - deadzone) / (1 - deadzone));
+    };
+    this.gamepadVector.x = curve(gamepad.axes[0] || 0);
+    this.gamepadVector.y = -curve(gamepad.axes[1] || 0);
+
+    const mapping = {
+      0: 'JUMP', 1: 'ROLL', 2: 'INTERACT', 3: 'PUNCH',
+      4: 'CROUCH', 5: 'SPRINT', 6: 'SPELL',
+    };
+    for (const [buttonIndex, action] of Object.entries(mapping)) {
+      const pressed = !!gamepad.buttons[Number(buttonIndex)]?.pressed;
+      const wasPressed = this._gamepadButtons.get(action) === true;
+      if (pressed && !wasPressed) {
+        const binding = this.keyBindings[action];
+        const code = Array.isArray(binding) ? binding[0] : binding;
+        if (code) this._keyDown(code);
+      } else if (!pressed && wasPressed && action === 'JUMP') {
+        this._releaseJump();
+      }
+      this._gamepadButtons.set(action, pressed);
+    }
+  }
+
   // ── INPUT ──────────────────────────────────────────────
   _setupInput() {
     this._boundKeyDown = e => {
       const modal = document.getElementById('info-panel-modal');
       if (modal && modal.classList.contains('open')) {
+        return;
+      }
+      if (this._isInputBlocked()) {
+        this.keys = {};
         return;
       }
       this.keys[e.code] = true;
@@ -1292,6 +1408,8 @@ class CharCtrl {
   _resetInputState() {
     this.keys = {};
     this.touchVector = { x: 0, y: 0 };
+    this.gamepadVector = { x: 0, y: 0 };
+    this._gamepadButtons.clear();
     this._jumpBufferTimer = -1; // discard any pending buffered jump on focus loss
     if (this.joystickKnob) {
       this.joystickKnob.style.transform = 'translate(0px, 0px)';
@@ -1449,7 +1567,36 @@ class CharCtrl {
   get animationEvents() { return this.anim.animationEvents; }
   set animationEvents(v) { this.anim.animationEvents = v || {}; }
 
+  _setTimeout(callback, delay) {
+    let id = null;
+    id = setTimeout(() => {
+      this._timers.delete(id);
+      if (!this._destroyed) callback();
+    }, delay);
+    this._timers.add(id);
+    return id;
+  }
+
+  _setInterval(callback, delay) {
+    const id = setInterval(() => {
+      if (!this._destroyed) callback();
+    }, delay);
+    this._intervals.add(id);
+    return id;
+  }
+
+  _setStoredPreference(key, value) {
+    try { this._storage?.setItem(key, String(value)); } catch (_) { /* optional storage */ }
+  }
+
+  _isInputBlocked() {
+    const active = document.activeElement;
+    return !!active && (active.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName));
+  }
+
   destroy() {
+    if (this._destroyed) return;
+    this._destroyed = true;
     // 1. Remove window keyboard and focus/blur event listeners
     if (this._boundKeyDown) window.removeEventListener('keydown', this._boundKeyDown);
     if (this._boundKeyUp) window.removeEventListener('keyup', this._boundKeyUp);
@@ -1464,6 +1611,16 @@ class CharCtrl {
     }
     if (this._cameraLockObserver) {
       this.scene.onBeforeCameraRenderObservable.remove(this._cameraLockObserver);
+    }
+    if (this._camTiltPointerObserver) {
+      this.scene.onPointerObservable.remove(this._camTiltPointerObserver);
+    }
+    if (this._cameraFollowObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._cameraFollowObserver);
+    }
+    if (this._recenterObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._recenterObserver);
+      this._recenterObserver = null;
     }
 
     // 3. Remove touch and button event listeners
@@ -1512,11 +1669,44 @@ class CharCtrl {
         this._crouchShape.dispose();
       }
     }
+
+    for (const id of this._timers) clearTimeout(id);
+    for (const id of this._intervals) clearInterval(id);
+    this._timers.clear();
+    this._intervals.clear();
+
+    if (this.anim?.dispose) this.anim.dispose();
+    const previous = this._cameraStateBeforeController;
+    if (previous && this.camera) {
+      this.camera.alpha = previous.alpha;
+      this.camera.beta = previous.beta;
+      this.camera.radius = previous.radius;
+      this.camera.lowerRadiusLimit = previous.lowerRadiusLimit;
+      this.camera.upperRadiusLimit = previous.upperRadiusLimit;
+      this.camera.wheelPrecision = previous.wheelPrecision;
+      this.camera.pinchPrecision = previous.pinchPrecision;
+      this.camera.panningSensibility = previous.panningSensibility;
+      this.camera.checkCollisions = previous.checkCollisions;
+      this.camera.angularSensibilityX = previous.angularSensibilityX;
+      this.camera.angularSensibilityY = previous.angularSensibilityY;
+      this.camera.fov = previous.fov;
+      if (previous.upVector) this.camera.upVector.copyFrom(previous.upVector);
+    }
+    const inputState = this._cameraInputStateBeforeController;
+    if (inputState?.wheelInput) {
+      inputState.wheelInput.wheelPrecision = inputState.wheelPrecision;
+      if (inputState.wheelPrecisionX !== undefined) inputState.wheelInput.wheelPrecisionX = inputState.wheelPrecisionX;
+      if (inputState.wheelPrecisionY !== undefined) inputState.wheelInput.wheelPrecisionY = inputState.wheelPrecisionY;
+      if (inputState.wheelPrecisionZ !== undefined) inputState.wheelInput.wheelPrecisionZ = inputState.wheelPrecisionZ;
+    }
+    if (inputState?.pointerInput && inputState.pinchPrecision !== undefined) {
+      inputState.pointerInput.pinchPrecision = inputState.pinchPrecision;
+    }
   }
 
   playParticles(enable) {
     this.PLAY_PARTICLES = !!enable;
-    localStorage.setItem('play-particles', this.PLAY_PARTICLES);
+    this._setStoredPreference('play-particles', this.PLAY_PARTICLES);
     if (!this.PLAY_PARTICLES && this.dustPS) {
       this.dustPS.emitRate = 0;
       this.dustPS.stop();
@@ -1524,6 +1714,7 @@ class CharCtrl {
   }
 
   _keyDown(code) {
+    if (this._isInputBlocked()) return;
     const inAction = this._isInAction();
 
     if (this._matchesAction(code, 'CROUCH')) {
@@ -1535,7 +1726,7 @@ class CharCtrl {
             this._returnToLoco();
           } else {
             this._showCombo('CEILING BLOCKED');
-            setTimeout(() => this._hideCombo(), 1200);
+            this._setTimeout(() => this._hideCombo(), 1200);
           }
         } else {
           this.crouching = true;
@@ -1561,7 +1752,7 @@ class CharCtrl {
       if (coyoteEligible && (!inAction || this.state === S.JUMP_LAND) && !this.sitting) {
         if (this._isCeilingBlocked()) {
           this._showCombo('CEILING BLOCKED');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._setTimeout(() => this._hideCombo(), 1200);
         } else if (this.crouching) {
           if (this._canUncrouch()) {
             this.crouching = false;
@@ -1578,9 +1769,8 @@ class CharCtrl {
           // Jump buffer: remember this press so it fires the instant we land,
           // instead of requiring a frame-perfect press right on touchdown.
           this._jumpBufferTimer = 0;
-          this._rollOnLand = true;
-          this._showCombo('ROLL QUEUED');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._showCombo('JUMP QUEUED');
+          this._setTimeout(() => this._hideCombo(), 1200);
         }
       } else if (!coyoteEligible && inAction && this.state !== S.ROLL) {
         // Pressed jump a moment too early (e.g. tail end of a landing/attack
@@ -1592,7 +1782,7 @@ class CharCtrl {
       if (this._rollActive) return;
       if (now - this._lastRollTime < 1100) {
         this._showCombo('DODGE COOLDOWN');
-        setTimeout(() => this._hideCombo(), 800);
+        this._setTimeout(() => this._hideCombo(), 800);
         return;
       }
       if (!this.sitting) {
@@ -1603,12 +1793,12 @@ class CharCtrl {
         }
         if (this.grounded && this.crouching && this._isCeilingBlocked()) {
           this._showCombo('NO SPACE TO ROLL');
-          setTimeout(() => this._hideCombo(), 1200);
+          this._setTimeout(() => this._hideCombo(), 1200);
           return;
         }
         if (!this.grounded) {
           this._showCombo('AIR DASH');
-          setTimeout(() => this._hideCombo(), 800);
+          this._setTimeout(() => this._hideCombo(), 800);
         }
         this._roll();
       }
@@ -1622,7 +1812,28 @@ class CharCtrl {
     } else if (this._matchesAction(code, 'INTERACT')) {
       if (inAction) return;
       if (!this.sitting) this._interact();
+    } else if (!inAction && !this.sitting) {
+      // Any mapped non-built-in action with a registered animation is a valid
+      // one-shot custom action. This lives in the runtime controller so custom
+      // mappings behave identically in Builder preview and exported projects.
+      const reserved = new Set([
+        'MOVE_FORWARD', 'MOVE_BACKWARD', 'MOVE_LEFT', 'MOVE_RIGHT',
+        'CROUCH', 'SPRINT', 'JUMP', 'ROLL', 'PUNCH', 'SPELL', 'INTERACT',
+      ]);
+      for (const action of Object.keys(this.keyBindings)) {
+        if (reserved.has(action) || !this._matchesAction(code, action) || !this.anim.has(action)) continue;
+        this.triggerAction(action);
+        break;
+      }
     }
+  }
+
+  triggerAction(action, { blend = 0.25, speedRatio = 1 } = {}) {
+    if (!action || this._isInAction() || this.sitting || !this.anim.has(action)) return false;
+    this._setState(action);
+    return this.anim.play(action, false, blend, () => {
+      if (this.state === action) this._returnToLoco();
+    }, speedRatio);
   }
 
   // ── ACTIONS ────────────────────────────────────────────
@@ -1632,6 +1843,14 @@ class CharCtrl {
   // cut this ascent (idempotent — safe from stray key-up events).
   _releaseJump() {
     if (!this.JUMP_CUT || this._jumpCutApplied) return;
+    if (this.usePhysics && this.physicsBody) {
+      const velocity = this.physicsBody.getLinearVelocity();
+      if (velocity?.y > 0.5) {
+        this.physicsBody.setLinearVelocity(new BABYLON.Vector3(velocity.x, velocity.y * 0.45, velocity.z));
+        this._jumpCutApplied = true;
+      }
+      return;
+    }
     if (this.jumpVel > 0.5) {
       this.jumpVel *= 0.45;
       this._jumpCutApplied = true;
@@ -1649,7 +1868,7 @@ class CharCtrl {
     this._setState(S.JUMP_START);
     // Dynamic takeoff squash
     this.targetScale.set(1.05, 0.92, 1.05);
-    setTimeout(() => {
+    this._setTimeout(() => {
       if (!this.grounded) {
         this.targetScale.set(0.97, 1.05, 0.97);
       }
@@ -1677,6 +1896,9 @@ class CharCtrl {
     if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
       inputX = this.touchVector.x; inputZ = this.touchVector.y;
     }
+    if (Math.abs(this.gamepadVector.x) > 0.01 || Math.abs(this.gamepadVector.y) > 0.01) {
+      inputX = this.gamepadVector.x; inputZ = this.gamepadVector.y;
+    }
 
     if (this.CAM_FOLLOW_LOCK) {
       if (inputZ !== 0) {
@@ -1697,14 +1919,14 @@ class CharCtrl {
     }
 
     this.targetScale.set(1.05, 0.92, 1.05);
-    setTimeout(() => {
+    this._setTimeout(() => {
       if (!this.grounded) {
         this.targetScale.set(0.97, 1.05, 0.97);
       }
     }, 100);
 
     this._showCombo('DOUBLE JUMP');
-    setTimeout(() => this._hideCombo(), 1200);
+    this._setTimeout(() => this._hideCombo(), 1200);
 
     this.anim.play('Jump_Start', false, 0.15, () => {
       if (this.state === S.JUMP_START && !this.grounded) {
@@ -1779,7 +2001,7 @@ class CharCtrl {
 
     this.anim.play('Roll', false, 0.4, null, 1.1);
 
-    this._rollTimeoutId = setTimeout(() => {
+    this._rollTimeoutId = this._setTimeout(() => {
       this._rollActive = false;
       if (this.state !== S.ROLL) return;
 
@@ -1973,7 +2195,7 @@ class CharCtrl {
       this.anim.play('Spell_Simple_Shoot', false, 0.15);
 
       // Let the player move almost immediately (50ms into the shoot animation)
-      setTimeout(() => {
+      this._setTimeout(() => {
         if (this.state === S.SPELL_SHOOT) {
           this._returnToLoco(0.35);
         }
@@ -1994,8 +2216,8 @@ class CharCtrl {
       if (this.state === S.INTERACT) this._returnToLoco(0.35);
     });
 
-    setTimeout(() => {
-      const cancelIfMoving = setInterval(() => {
+    this._setTimeout(() => {
+      const cancelIfMoving = this._setInterval(() => {
         if (this.state !== S.INTERACT) { clearInterval(cancelIfMoving); return; }
         const moving = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
           this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
@@ -2445,6 +2667,7 @@ class CharCtrl {
 
   _simulate(dt) {
     if (dt <= 0 || dt > 0.1) return;
+    this._pollGamepad();
     this._applyMovingPlatform(dt);
     this.stateT += dt;
     this._timeSinceSpawn += dt;
@@ -2477,6 +2700,10 @@ class CharCtrl {
     if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
       inputX = this.touchVector.x;
       inputZ = this.touchVector.y;
+    }
+    if (Math.abs(this.gamepadVector.x) > 0.01 || Math.abs(this.gamepadVector.y) > 0.01) {
+      inputX = this.gamepadVector.x;
+      inputZ = this.gamepadVector.y;
     }
 
     const isSprinting = this.sprinting;
@@ -2519,6 +2746,7 @@ class CharCtrl {
     // Landing / roll recovery
     let landingTriggered = false;
     let _snapVelY = 0;
+    let inAction = this._isInAction();
     // Buffered jump: a JUMP press taken while airborne (too early to act on)
     // fires the instant landing is detected, instead of being dropped.
     if (this._jumpBufferTimer >= 0) {
@@ -2575,7 +2803,7 @@ class CharCtrl {
       this._highestAirborneY = this.root.position.y;
     }
 
-    let inAction = this._isInAction();
+    inAction = this._isInAction();
 
     // Calculate movement direction vector 'dir' early so it is available for vertical snap/slope calculations
     let dir = new BABYLON.Vector3(0, 0, 0);
@@ -3447,7 +3675,7 @@ class CharCtrl {
           this._camShake = 0.08;
         }
         // Smoothly restore to normal scale after squash duration
-        setTimeout(() => {
+        this._setTimeout(() => {
           this.targetScale.set(1, 1, 1);
         }, 120);
       }
@@ -3482,7 +3710,7 @@ class CharCtrl {
     if (!this._camTiltPointerInit) {
       this._camTiltPointerInit = true;
       this._camTiltDragPx = 0;
-      this.scene.onPointerObservable.add((pi) => {
+      this._camTiltPointerObserver = this.scene.onPointerObservable.add((pi) => {
         if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE && pi.event && pi.event.buttons > 0) {
           this._camTiltDragPx += pi.event.movementX || 0;
         }
@@ -3684,6 +3912,10 @@ class CharCtrl {
   // ── RECENTER CAMERA (DOUBLE TAP OPTIMIZATION) ─────────
   _recenterCamera() {
     if (!this.camera) return;
+    if (this._recenterObserver) {
+      this.scene.onBeforeRenderObservable.remove(this._recenterObserver);
+      this._recenterObserver = null;
+    }
 
     // targetAlpha is the rotation angle directly behind the character's facing direction (rotY)
     const targetAlpha = -this.rotY - Math.PI / 2;
@@ -3714,16 +3946,29 @@ class CharCtrl {
 
       if (t >= 1.0) {
         this.scene.onBeforeRenderObservable.remove(obs);
+        if (this._recenterObserver === obs) this._recenterObserver = null;
       }
     });
+    this._recenterObserver = obs;
   }
 }
 
 // ═══════════════════════════════════════════════════════════
 // SHARED PHYSICS INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
-async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
-  const physicsOverride = localStorage.getItem('use-physics');
+async function initPhysics(scene, gravityOrOptions = null, maybeOptions = {}) {
+  const looksLikeVector = gravityOrOptions &&
+    Number.isFinite(gravityOrOptions.x) && Number.isFinite(gravityOrOptions.y) && Number.isFinite(gravityOrOptions.z);
+  const gravity = looksLikeVector ? gravityOrOptions : new BABYLON.Vector3(0, -22, 0);
+  const options = looksLikeVector ? maybeOptions : (gravityOrOptions || {});
+  const storage = options.storage ||
+    (options.persistPreferences === true && typeof localStorage !== 'undefined' ? localStorage : null);
+  let physicsOverride = null;
+  if (options.usePhysics === false) physicsOverride = 'false';
+  else if (options.usePhysics === true) physicsOverride = 'true';
+  else {
+    try { physicsOverride = storage?.getItem('use-physics') ?? null; } catch (_) { physicsOverride = null; }
+  }
   if (physicsOverride === 'false') return false;
   try {
     const havokInstance = await HavokPhysics();
@@ -3734,7 +3979,7 @@ async function initPhysics(scene, gravity = new BABYLON.Vector3(0, -22, 0)) {
   } catch (e) {
     if (physicsOverride === 'true') {
       // console.warn('[Physics] Havok forced but failed to load — falling back to kinematic.', e);
-      localStorage.removeItem('use-physics');
+      try { storage?.removeItem('use-physics'); } catch (_) { /* optional storage */ }
     } else {
       // console.info('[Physics] Havok unavailable — using kinematic mode.', e);
     }
@@ -3783,7 +4028,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         const formData = new FormData();
         formData.append('character', new Blob([charBuf], { type: 'model/gltf-binary' }), options.filename);
         formData.append('animations', new Blob([animBuf], { type: 'model/gltf-binary' }), options.animationsFilename);
-        formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false }));
+        formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false, ...(options.mergeOptions || {}) }));
 
         const mergeRes = await fetch('/api/merge', { method: 'POST', body: formData });
         if (!mergeRes.ok) {
@@ -3849,6 +4094,10 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
         const charOptions = Object.assign({}, options.charOptions);
         if (options.keys) charOptions.keys = options.keys;
         if (options.config) charOptions.config = options.config;
+        if (options.persistPreferences !== undefined) charOptions.persistPreferences = options.persistPreferences;
+        if (options.storage) charOptions.storage = options.storage;
+        if (options.gamepad !== undefined) charOptions.gamepad = options.gamepad;
+        charOptions.usePhysics = !!usePhysics;
         const charCtrl = new CharCtrl(playerCapsule, mergedRoot, camera, animCtrl, scene, charOptions);
         if (typeof options.configure === 'function') {
           options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
@@ -3856,7 +4105,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
 
         const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         const cameraYOffset = isMobileDev ? -0.25 : 0.4;
-        scene.registerBeforeRender(() => {
+        charCtrl._cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
           const dt = scene.getEngine().getDeltaTime() / 1000;
           const clampedDt = Math.max(0.001, Math.min(0.1, dt));
           const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
@@ -4002,6 +4251,10 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const charOptions = Object.assign({}, options.charOptions);
   if (options.keys) charOptions.keys = options.keys;
   if (options.config) charOptions.config = options.config;
+  if (options.persistPreferences !== undefined) charOptions.persistPreferences = options.persistPreferences;
+  if (options.storage) charOptions.storage = options.storage;
+  if (options.gamepad !== undefined) charOptions.gamepad = options.gamepad;
+  charOptions.usePhysics = !!usePhysics;
 
   const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, charOptions);
 
@@ -4013,7 +4266,7 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   const cameraYOffset = isMobileDev ? -0.25 : 0.4;
 
-  scene.registerBeforeRender(() => {
+  charCtrl._cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
     const dt = scene.getEngine().getDeltaTime() / 1000;
     const clampedDt = Math.max(0.001, Math.min(0.1, dt));
     const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;

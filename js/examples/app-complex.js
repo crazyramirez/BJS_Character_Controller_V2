@@ -34,6 +34,7 @@ const engine = new BABYLON.Engine(canvas, true, {
 async function loadCharacter(scene, shadow, camera, usePhysics) {
   return setupCharacter(scene, camera, usePhysics, {
     shadow,
+    persistPreferences: true,
     assetsPath: 'assets/',
     // Integration Mode options:
     // Option A: Pre-merged GLB (Embedded animations, standard)
@@ -60,7 +61,7 @@ async function createDemoScene() {
   scene.fogColor = C3(0.04, 0.04, 0.09);
 
   // Physics mode: HUD/localStorage override takes priority.
-  const usePhysics = await initPhysics(scene);
+  const usePhysics = await initPhysics(scene, { persistPreferences: true });
 
   // Enable Collisions
   scene.collisionsEnabled = true;

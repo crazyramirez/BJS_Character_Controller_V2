@@ -1,35 +1,42 @@
 {
   "name": "bjs-character-controller-builder",
   "productName": "BJS Character Controller Builder",
-  "version": "1.0.0",
+  "version": "2.4.1",
   "description": "Build, configure and export a BabylonJS character controller.",
   "main": "electron/main.cjs",
   "scripts": {
     "start": "node server.mjs",
     "electron": "electron .",
     "pack": "electron-builder --win",
-    "test": "node --test test/*.test.mjs"
+    "sync-vendor": "node scripts/sync-vendor.mjs",
+    "postinstall": "npm run sync-vendor",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run sync-vendor && node scripts/check-syntax.mjs && npm test"
   },
   "keywords": [],
   "author": "crazyramirez (https://github.com/crazyramirez)",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "@gltf-transform/core": "^3.10.1",
-    "@gltf-transform/extensions": "^3.10.1",
-    "@gltf-transform/functions": "^3.10.1",
+    "@babylonjs/havok": "^1.3.14",
+    "@gltf-transform/core": "^4.4.2",
+    "@gltf-transform/extensions": "^4.4.2",
+    "@gltf-transform/functions": "^4.4.2",
+    "babylonjs": "^9.23.0",
+    "babylonjs-loaders": "^9.23.0",
+    "babylonjs-materials": "^9.23.0",
     "draco3dgltf": "^1.5.7",
     "express": "^5.2.1",
     "fbx2gltf": "^0.9.7-p1",
     "fs-extra": "^11.3.5",
-    "multer": "^2.1.1"
+    "multer": "^2.3.0"
   },
   "overrides": {
-    "sharp": "^0.33.5"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
-    "electron": "^42.4.0",
-    "electron-builder": "^26.15.2"
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.crazyramirez.bjs-character-controller-builder",
@@ -45,8 +52,8 @@
       "css/**",
       "js/**",
       "assets/**",
-      "package.json",
-      "node_modules/**"
+      "vendor/**",
+      "package.json"
     ],
     "asarUnpack": [
       "node_modules/fbx2gltf/**",

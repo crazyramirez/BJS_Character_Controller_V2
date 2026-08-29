@@ -7,9 +7,6 @@
   <title>BJS Character Controller Builder — v2</title>
   <meta name="description"
     content="Build, configure and export a BabylonJS character controller. Import separate character mesh and animation files, remap animations, tune physics and export ready-to-use code.">
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-    rel="stylesheet">
   <link rel="icon" type="image/png" href="assets/icons/favicon-96x96.png" sizes="96x96">
   <link rel="icon" type="image/svg+xml" href="assets/icons/favicon.svg">
   <link rel="shortcut icon" href="assets/icons/favicon.ico">
@@ -59,12 +56,12 @@
 
       <!-- Tab Navigation -->
       <nav class="tabs-nav">
-        <button class="tab-btn active" data-tab="model">Model</button>
-        <button class="tab-btn" data-tab="animations">Animations</button>
-        <button class="tab-btn" data-tab="mapping">Mapping</button>
-        <button class="tab-btn" data-tab="keys">Controls</button>
+        <button class="tab-btn active" data-tab="model">Import &amp; Rig</button>
+        <button class="tab-btn" data-tab="animations">Animate</button>
+        <button class="tab-btn" data-tab="mapping">Input Mapping</button>
+        <button class="tab-btn" data-tab="keys">Controller</button>
         <button class="tab-btn" data-tab="physics">Physics</button>
-        <button class="tab-btn" data-tab="export">Export</button>
+        <button class="tab-btn" data-tab="export">Validate &amp; Export</button>
       </nav>
 
       <!-- ═══ TABS CONTENT ═══ -->
@@ -336,6 +333,15 @@
                       <option value="0">No fingers</option>
                     </select>
                   </label>
+                  <fieldset id="autorig-mesh-selection" class="autorig-mesh-selection" style="display:none;">
+                    <legend>Body meshes used for skinning</legend>
+                    <p>Select clothing and body parts. Exclude floors, scenery and rigid props.</p>
+                    <div id="autorig-mesh-list"></div>
+                    <div class="autorig-btn-row">
+                      <button type="button" id="btn-autorig-mesh-auto" class="btn-action btn-secondary">Use automatic</button>
+                      <button type="button" id="btn-autorig-mesh-apply" class="btn-action btn-secondary">Reanalyse selection</button>
+                    </div>
+                  </fieldset>
                   <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;">
                     Skeleton target
                     <select id="autorig-skeleton-preset" style="width:100%; margin-top:4px;">
@@ -819,8 +825,8 @@
           <div class="settings-section">
             <h3>Download Builder Config</h3>
             <p style="margin-bottom:12px;">
-              Save or restore the full Builder setup as a reusable <code>builder-config.json</code> preset for this
-              character.
+              Save or restore controller, rig, mapping and animation settings as <code>builder-config.json</code>.
+              Character and animation files are not embedded; export the GLB separately.
             </p>
             <div class="config-actions">
               <button class="btn-action btn-secondary" id="btn-download-config">
@@ -851,8 +857,8 @@
         <span style="font-size:0.72rem;color:var(--text-secondary);line-height:1.4;">If you like this tool,<br>consider
           supporting my work!</span>
         <a href="https://buymeacoffee.com/drlerian" target="_blank" rel="noopener noreferrer"
-          style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;background:#FFDD00;color:#000;font-size:0.75rem;font-weight:700;border-radius:6px;text-decoration:none;white-space:nowrap;flex-shrink:0;transition:opacity 0.2s;"
-          onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+          class="support-link"
+          style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;background:#FFDD00;color:#000;font-size:0.75rem;font-weight:700;border-radius:6px;text-decoration:none;white-space:nowrap;flex-shrink:0;transition:opacity 0.2s;">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;">
             <path
               d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z" />
@@ -1097,10 +1103,11 @@
   </style>
 
   <!-- Babylon Dependencies -->
-  <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
-  <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+  <script src="vendor/HavokPhysics_umd.js"></script>
+  <script src="vendor/babylon.js"></script>
+  <script src="vendor/babylonjs.loaders.min.js"></script>
+  <script src="vendor/babylonjs.materials.min.js"></script>
+  <script src="js/draco-config.js?v=2.4.1"></script>
 
   <!-- Custom Confirm Modal -->
   <div id="custom-confirm-modal" class="custom-confirm-overlay">
@@ -1121,8 +1128,8 @@
   </div>
 
   <!-- Builder & Controller Scripts -->
-  <script src="js/character-controller.js?v=2.3"></script>
-  <script src="js/core/builder.js?v=2.3"></script>
+  <script src="js/character-controller.js?v=2.4.1"></script>
+  <script src="js/core/builder.js?v=2.4.1"></script>
 
 </body>
 

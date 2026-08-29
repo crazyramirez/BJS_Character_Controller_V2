@@ -3,8 +3,6 @@
    Style: Modern Cinema Dark × Developer Tool × Glassmorphism
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 :root {
   /* Backgrounds */
   --bg-void: #020203;
@@ -213,6 +211,10 @@ body::before {
   padding: 0 8px;
   gap: 0;
   flex-shrink: 0;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
 }
 
 .tabs-nav::-webkit-scrollbar {
@@ -234,6 +236,7 @@ body::before {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   outline: none;
+  scroll-snap-align: center;
 }
 
 .tab-btn:hover {
@@ -248,6 +251,13 @@ body::before {
 
 .tab-btn.active {
   color: var(--text-primary);
+}
+
+.support-link:hover,
+.support-link:focus-visible {
+  opacity: 0.85;
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
 }
 
 /* Glowing bottom indicator */
@@ -702,6 +712,53 @@ input[type="range"]::-moz-range-thumb {
 
 #autorig-adjust .autorig-symmetry-row input {
   accent-color: var(--accent);
+}
+
+.autorig-mesh-selection {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: var(--r-sm);
+}
+
+.autorig-mesh-selection legend {
+  padding: 0 5px;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.autorig-mesh-selection > p {
+  margin-bottom: 6px !important;
+}
+
+#autorig-mesh-list {
+  max-height: 132px;
+  margin-bottom: 8px;
+  overflow: auto;
+}
+
+.autorig-mesh-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 3px;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.autorig-mesh-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autorig-mesh-option small {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .autorig-btn-row {
@@ -2350,6 +2407,71 @@ input[type="range"]::-moz-range-thumb {
    REDUCED MOTION
    ============================================================ */
 
+@media (max-width: 900px) {
+  #builder-container {
+    flex-direction: column;
+  }
+
+  #viewport-container {
+    order: -1;
+    flex: 0 0 42dvh;
+    width: 100%;
+    min-height: 260px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  #sidebar {
+    width: 100%;
+    height: 58dvh;
+    flex: 1 1 auto;
+    border-right: 0;
+    box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.55);
+  }
+
+  .sidebar-header {
+    padding: 10px 14px 9px;
+  }
+
+  .sidebar-header h1 {
+    font-size: 0.95rem;
+  }
+
+  .sidebar-header p {
+    font-size: 0.58rem;
+  }
+
+  .tabs-content {
+    padding: 14px 14px 22px;
+  }
+
+  .tab-btn {
+    padding: 10px 13px;
+    font-size: 0.66rem;
+  }
+
+  .hud-overlay {
+    top: 8px;
+    right: 8px;
+    transform: scale(0.86);
+    transform-origin: top right;
+  }
+}
+
+@media (max-width: 520px) {
+  #viewport-container {
+    flex-basis: 38dvh;
+    min-height: 220px;
+  }
+
+  #sidebar {
+    height: 62dvh;
+  }
+
+  .settings-section {
+    padding: 13px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
 
   *,
@@ -2973,6 +3095,68 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.64rem;
   color: var(--text-secondary);
   line-height: 1.35;
+}
+
+.bone-mapping-audit {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.bone-mapping-audit summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.bone-mapping-help {
+  margin: 0;
+  padding: 0 12px 9px;
+  color: var(--text-muted);
+  font-size: 0.67rem;
+  line-height: 1.4;
+}
+
+.bone-mapping-table {
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.bone-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(105px, 0.9fr) minmax(130px, 1.2fr) 48px minmax(80px, 0.8fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.67rem;
+}
+
+.bone-mapping-row.unresolved {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.bone-mapping-row code,
+.bone-mapping-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bone-mapping-select {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.72);
+  color: var(--text-secondary);
+  font-size: 0.67rem;
 }
 
 .health-actions {
