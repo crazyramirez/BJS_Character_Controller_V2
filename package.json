@@ -1,7 +1,7 @@
 {
   "name": "bjs-character-controller-builder",
   "productName": "BJS Character Controller Builder",
-  "version": "2.4.1",
+  "version": "2.4.3",
   "description": "Build, configure and export a BabylonJS character controller.",
   "main": "electron/main.cjs",
   "scripts": {
@@ -11,6 +11,7 @@
     "sync-vendor": "node scripts/sync-vendor.mjs",
     "postinstall": "npm run sync-vendor",
     "test": "node --test test/*.test.mjs",
+    "test:packaged-fbx": "electron scripts/check-packaged-fbx.cjs",
     "check": "npm run sync-vendor && node scripts/check-syntax.mjs && npm test"
   },
   "keywords": [],

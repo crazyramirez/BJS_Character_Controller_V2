@@ -1,12 +1,6 @@
 name: Build Desktop Apps
 
 on:
-  push:
-    branches:
-      - '**'
-    tags:
-      - 'v*'
-  pull_request:
   workflow_dispatch:
 
 jobs:
