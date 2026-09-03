@@ -69,7 +69,7 @@ async function fixGLB(glbPath, options) {
 
 /**
  * Convert an FBX file buffer to a normalized GLB buffer.
- * @param {Buffer} fbxBuffer  Raw FBX file contents
+ * @param {Buffer|ArrayBuffer|ArrayBufferView} fbxBuffer  Raw FBX file contents
  * @param {string} [name]     Original filename (for logging only)
  * @returns {Promise<Buffer>} GLB binary
  */
@@ -80,7 +80,10 @@ export async function convertFBXToGLB(fbxBuffer, name = 'model.fbx', options = {
     const glbPath = path.join(tmpDir, `${id}.glb`);
 
     try {
-        fs.writeFileSync(fbxPath, fbxBuffer);
+        // Workers transfer file payloads as ArrayBuffer, which fs cannot write
+        // directly. Leave existing views intact to preserve their byte range.
+        const bytes = fbxBuffer instanceof ArrayBuffer ? new Uint8Array(fbxBuffer) : fbxBuffer;
+        fs.writeFileSync(fbxPath, bytes);
         await convert(fbxPath, glbPath, []);
         return await fixGLB(glbPath, options);
     } finally {

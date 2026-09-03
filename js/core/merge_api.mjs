@@ -1740,43 +1740,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       return false;
     };
 
-    // Skinned vertices may be stored in the exporter coordinate space while an
-    // armature ancestor supplies the Y-up correction (Character Creator/Maya
-    // commonly exports a -90° X `root`). Once that ancestor is removed and its
-    // rotation is baked into Hips, recomputed IBMs make raw vertices visible in
-    // their original Z-up space unless the same correction is baked into them.
-    const rotationIsIdentity = Math.abs(normRot[0]) + Math.abs(normRot[1]) + Math.abs(normRot[2]) < 1e-6;
-    if (!rotationIsIdentity) {
-      const rotatedMeshes = new Set();
-      for (const meshNode of meshNodes) {
-        const mesh = meshNode.getMesh();
-        if (!mesh || rotatedMeshes.has(mesh)) continue;
-        rotatedMeshes.add(mesh);
-        for (const primitive of mesh.listPrimitives()) {
-          for (const semantic of ['POSITION', 'NORMAL']) {
-            const accessor = primitive.getAttribute(semantic);
-            const src = accessor?.getArray();
-            if (!src) continue;
-            const out = src.slice();
-            for (let i = 0; i < out.length; i += 3) {
-              const v = rotateVec3([out[i], out[i + 1], out[i + 2]], normRot);
-              out[i] = v[0]; out[i + 1] = v[1]; out[i + 2] = v[2];
-            }
-            accessor.setArray(out);
-          }
-          const tangent = primitive.getAttribute('TANGENT');
-          const srcTangent = tangent?.getArray();
-          if (srcTangent) {
-            const out = srcTangent.slice();
-            for (let i = 0; i < out.length; i += 4) {
-              const v = rotateVec3([out[i], out[i + 1], out[i + 2]], normRot);
-              out[i] = v[0]; out[i + 1] = v[1]; out[i + 2] = v[2];
-            }
-            tangent.setArray(out);
-          }
-        }
-      }
-    }
+    // The ancestor rotation is already carried by Hips, and source IBMs are
+    // preserved below. Rotating geometry as well would apply the axis fix twice
+    // (Z-up FBX characters end up lying on their backs). Keep vertex and morph
+    // data in their authored skin space.
 
     for (const meshNode of meshNodes) {
       if (isInsideSkeletonHierarchy(meshNode)) continue;

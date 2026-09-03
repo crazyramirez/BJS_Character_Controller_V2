@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { Document } from '@gltf-transform/core';
 import { analyzeGLB, mergeGLBs } from '../js/core/merge_api.mjs';
-import { createIO, parentMap } from './helpers.mjs';
+import { approx, createIO, parentMap } from './helpers.mjs';
 
 const characterDir = new URL('../assets/characters_test/', import.meta.url);
 
@@ -39,6 +39,36 @@ test('merge preserves rigid attachments below skeleton joints', async () => {
   const result = await io.readBinary(output);
   const sword = result.getRoot().listNodes().find((node) => node.getName() === 'SwordProp');
   assert.equal(parentMap(result).get(sword)?.getName(), 'LeftHand');
+});
+
+test('merge preserves Z-up skin geometry when its armature supplies the Y-up rotation', async () => {
+  const doc = new Document();
+  const buffer = doc.createBuffer();
+  const scene = doc.createScene();
+  const armature = doc.createNode('root').setRotation([-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
+  const hips = doc.createNode('Hips').setTranslation([0, 0, 1]);
+  armature.addChild(hips);
+  scene.addChild(armature);
+  const positions = doc.createAccessor().setType('VEC3').setBuffer(buffer)
+    .setArray(new Float32Array([-0.3, 0, 0, 0.3, 0, 0, 0, 0.1, 2]));
+  const ibm = doc.createAccessor().setType('MAT4').setBuffer(buffer)
+    .setArray(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -1, 1]));
+  const skin = doc.createSkin().addJoint(hips).setSkeleton(hips).setInverseBindMatrices(ibm);
+  const primitive = doc.createPrimitive().setAttribute('POSITION', positions)
+    .setAttribute('JOINTS_0', doc.createAccessor().setType('VEC4').setBuffer(buffer).setArray(new Uint8Array(12)))
+    .setAttribute('WEIGHTS_0', doc.createAccessor().setType('VEC4').setBuffer(buffer)
+      .setArray(new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])));
+  scene.addChild(doc.createNode('Body').setMesh(doc.createMesh().addPrimitive(primitive)).setSkin(skin));
+  const io = await createIO();
+  const source = await io.writeBinary(doc);
+  const output = await mergeGLBs(source, null, { COMPRESS_OUTPUT: false });
+  const before = await analyzeGLB(source);
+  const after = await analyzeGLB(output);
+  assert.deepEqual(after.health.metrics.boundsSize, before.health.metrics.boundsSize);
+  const result = await io.readBinary(output);
+  assert.deepEqual([...result.getRoot().listMeshes()[0].listPrimitives()[0].getAttribute('POSITION').getArray()], [...positions.getArray()]);
+  const actualHips = result.getRoot().listNodes().find(n => n.getName() === 'Hips');
+  actualHips.getWorldMatrix().forEach((value, i) => approx(value, hips.getWorldMatrix()[i], 1e-5));
 });
 
 test('skinless meshes are not classified as Rigify from unrelated DEF prefixes', async () => {
