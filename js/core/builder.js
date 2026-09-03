@@ -1349,6 +1349,12 @@ async function maybeConvertFbxFile(file) {
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
 async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigReload = false) {
+  if (!internalRigReload) {
+    autoRigModelRevision++;
+    cancelAutoRigAdjust();
+    autoRigBodyMeshIds = null;
+    lastAutoRigReport = null;
+  }
   if (!preloadedBuffer && isFbxFile(file)) {
     try {
       file = await maybeConvertFbxFile(file);
@@ -1440,6 +1446,7 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigRe
     originalCharacterGlbBuffer = null;
     hideLoading();
     showToast('Failed to load character: ' + err.message, true);
+    if (internalRigReload) throw err;
   }
 }
 
@@ -2232,6 +2239,15 @@ function renderSkeletonHealth(health) {
       </div>`;
   }
 
+  if (lastAutoRigReport?.mode === 'adjust') {
+    const r = lastAutoRigReport;
+    rigReportHtml = `<div class="health-check ${r.notes?.length ? 'warn' : 'pass'}">
+      <span class="health-dot"></span><div>
+        <strong>Rig adjusted: ${Number(r.adjustedJoints) || 0} joint(s) moved</strong>
+        <p>${escapeHtml((r.notes || []).join(' ') || 'Original skin weights and rest shape preserved.')}</p>
+      </div></div>`;
+  }
+
   const mapping = skeletonInfo?.mapping;
   let mappingHtml = '';
   if (mapping?.entries?.length) {
@@ -2453,6 +2469,24 @@ function renderSkeletonSectionFromBJS() {
 // ═══════════════════════════════════════════════════════════
 let autoRigState = null; // { markers: Map<name, mesh>, gizmoManager, height }
 let autoRigBodyMeshIds = null; // null = server heuristic; array = explicit user selection
+let autoRigRequest = null;
+let autoRigModelRevision = 0;
+
+function beginAutoRigRequest(kind) {
+  autoRigRequest?.controller.abort();
+  const request = { kind, controller: new AbortController(), revision: autoRigModelRevision };
+  autoRigRequest = request;
+  return request;
+}
+
+function isCurrentAutoRigRequest(request) {
+  return autoRigRequest === request && request.revision === autoRigModelRevision && !request.controller.signal.aborted;
+}
+
+function sameAutoRigLayout(a, b) {
+  return !!a && !!b && a.bodyPlan === b.bodyPlan && a.fingerCount === b.fingerCount &&
+    JSON.stringify(a.bodyMeshIds?.slice().sort() ?? null) === JSON.stringify(b.bodyMeshIds?.slice().sort() ?? null);
+}
 
 // ── Marker undo/redo (Ctrl+Z / Ctrl+Y while in rig mode) ─────────────────────
 // Snapshots hold the FULL marker set (position + rotation), captured right
@@ -2535,6 +2569,7 @@ async function loadMarkerLayoutPreset(file) {
   if (!st || !file) return;
   try {
     const data = JSON.parse(await file.text());
+    if (autoRigState !== st) return;
     if (!data || typeof data.joints !== 'object') throw new Error('Not a marker layout file.');
     pushMarkerUndo();
     const scale = (Number(data.height) > 1e-6 && st.height > 1e-6) ? st.height / Number(data.height) : 1;
@@ -3506,6 +3541,7 @@ function mapMarkerRotationToPosture(name, rotationQuaternion) {
 }
 
 async function startAutoRigAdjust() {
+  if (autoRigRequest?.kind === 'apply') return;
   if (!characterGlbBuffer || !activeCharacter) {
     showToast('Load a character mesh first!', true);
     return;
@@ -3517,19 +3553,23 @@ async function startAutoRigAdjust() {
 
   const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
   const layoutOptions = getAutoRigLayoutOptions();
+  const request = beginAutoRigRequest('analyze');
   showLoading('Analyzing mesh proportions…');
   let guess;
   try {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
     formData.append('options', JSON.stringify(layoutOptions));
-    const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData });
+    const res = await fetch('/api/autorig-joints', { method: 'POST', body: formData, signal: request.controller.signal });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || 'Joint analysis failed');
     }
     guess = await res.json();
+    if (!isCurrentAutoRigRequest(request)) return;
   } catch (err) {
+    if (!isCurrentAutoRigRequest(request)) return;
+    autoRigRequest = null;
     hideLoading();
     showToast('Auto-rig failed: ' + err.message, true);
     return;
@@ -3572,17 +3612,14 @@ async function startAutoRigAdjust() {
   // an exact memory for this character, use it and skip the bone-snap re-fit so
   // markers land precisely where they were applied. Only when the body plan +
   // finger layout still match — a changed layout needs fresh guessed joints.
-  const sameLayout = lastAppliedRig?.layoutOptions
-    ? lastAppliedRig.layoutOptions.bodyPlan === layoutOptions.bodyPlan &&
-      lastAppliedRig.layoutOptions.fingerCount === layoutOptions.fingerCount
-    : true;
-  if (lastAppliedRig?.joints && sameLayout) {
+  const sameLayout = sameAutoRigLayout(lastAppliedRig?.layoutOptions, layoutOptions);
+  if (lastAppliedRig?.joints && lastAppliedRig.forBuffer === baseBuffer && sameLayout) {
     guess.joints = JSON.parse(JSON.stringify(lastAppliedRig.joints));
     guess.restored = true;
     showToast('Restored your last joint positions.');
   }
 
-  cancelAutoRigAdjust();
+  cancelAutoRigAdjust({ keepRequest: true });
 
   // Freeze character in bind pose (T-pose) so markers line up with the mesh:
   // pause the controller update loop, stop animations, return skeleton to rest.
@@ -3655,7 +3692,7 @@ async function startAutoRigAdjust() {
   const mpWorldInv = mpWorld.clone().invert();
   // Server joint coordinates are in glTF's character root local space.
   // Transform them to markerParent's local space.
-  const toMarkerLocal = mpWorldInv.multiply(activeCharacter.charRoot.getWorldMatrix());
+  const toMarkerLocal = activeCharacter.charRoot.getWorldMatrix().multiply(mpWorldInv);
   // Marker size must be constant on-screen; markerParent may scale its children
   // (Sketchfab 0.3), so divide that scale out of the local sphere diameter.
   const mpScaleV = new BABYLON.Vector3();
@@ -3675,12 +3712,12 @@ async function startAutoRigAdjust() {
         if (leftPos && rightPos) {
           const avgY = (leftPos[1] + rightPos[1]) / 2;
           const avgZ = (leftPos[2] + rightPos[2]) / 2;
-          const avgAbsX = (Math.abs(leftPos[0]) + Math.abs(rightPos[0])) / 2;
-          const signLeft = leftPos[0] >= 0 ? 1 : -1;
-          leftPos[0] = signLeft * avgAbsX;
+          const centerX = guess.joints.Hips?.[0] ?? (leftPos[0] + rightPos[0]) / 2;
+          const halfSpan = (leftPos[0] - rightPos[0]) / 2;
+          leftPos[0] = centerX + halfSpan;
           leftPos[1] = avgY;
           leftPos[2] = avgZ;
-          rightPos[0] = -signLeft * avgAbsX;
+          rightPos[0] = centerX - halfSpan;
           rightPos[1] = avgY;
           rightPos[2] = avgZ;
         }
@@ -4063,6 +4100,7 @@ async function startAutoRigAdjust() {
   markerHistory.undo.length = 0;
   markerHistory.redo.length = 0;
   autoRigState = {
+    sourceBuffer: baseBuffer, layoutOptions,
     markers, gizmoManager, height: guess.height, sceneHeight,
     groupMats, hoverObserver, clickObserver, hideTip, canonical, followObserver,
     boneBindings, restRel, markerParent, localToServerAffine,
@@ -4082,10 +4120,12 @@ async function startAutoRigAdjust() {
   // initial layout already sits inside the body (P1). Restored sessions and
   // existing-skin re-rigs already hold exact positions — leave them.
   if (!guess.restored && !scene.skeletons?.length) {
-    requestAnimationFrame(() => snapAllMarkersToBody());
+    const currentState = autoRigState;
+    requestAnimationFrame(() => { if (autoRigState === currentState) snapAllMarkersToBody(); });
   }
   // Default selection reflects the analyzed layout
   setActivePoseButton('rest');
+  autoRigRequest = null;
 
   const startBtn = document.getElementById('btn-autorig-start');
   const adjustPanel = document.getElementById('autorig-adjust');
@@ -4101,7 +4141,13 @@ async function startAutoRigAdjust() {
   showToast('Adjust the joint markers, then Apply Rig.');
 }
 
-function cancelAutoRigAdjust() {
+function cancelAutoRigAdjust({ keepRequest = false } = {}) {
+  if (!keepRequest && autoRigRequest) {
+    autoRigRequest.controller.abort();
+    autoRigRequest = null;
+    hideLoading();
+    showMergeProgress(false);
+  }
   if (autoRigState) {
     exitRigViewportMode(autoRigState);
     if (autoRigState.hoverObserver) scene.onPointerObservable.remove(autoRigState.hoverObserver);
@@ -4246,8 +4292,8 @@ function snapAllMarkersToBody() {
   pushMarkerUndo();
   let n = 0;
   autoRigState.markers.forEach((m) => { if (snapMarkerToMeshDepth(m)) n++; });
-  autoRigState.markers.forEach((m, name) => {
-    autoRigState.canonical?.set(name, m.position.clone());
+  autoRigState.markers.forEach((m) => {
+    autoRigState.updateCanonicalFromMarker?.(m);
   });
   showToast(n > 0 ? `Snapped ${n} markers to body depth.` : 'No depth snap (no mesh hit).');
 }
@@ -4263,8 +4309,8 @@ function swapAutoRigSides() {
     const p = left.position.clone();
     left.position.copyFrom(right.position);
     right.position.copyFrom(p);
-    autoRigState.canonical?.set(name, left.position.clone());
-    autoRigState.canonical?.set(twinName, right.position.clone());
+    autoRigState.updateCanonicalFromMarker?.(left);
+    autoRigState.updateCanonicalFromMarker?.(right);
   });
   showToast('Left and Right joint markers swapped.');
 }
@@ -4280,6 +4326,8 @@ async function runBatchAutoRig(files) {
   if (!glbs.length) return;
 
   const layoutOptions = getAutoRigLayoutOptions();
+  // Mesh IDs belong to one analyzed file and cannot be reused across a batch.
+  delete layoutOptions.bodyMeshIds;
   const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
   const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
   const results = [];
@@ -4322,7 +4370,7 @@ async function runBatchAutoRig(files) {
 }
 
 async function applyAutoRig() {
-  if (!autoRigState || !characterGlbBuffer) return;
+  if (!autoRigState || !characterGlbBuffer || autoRigRequest) return;
 
   // Collect adjusted joint positions (local to charRoot = glTF space).
   // Use the canonical (rest-space) coordinates: displayed markers may be
@@ -4366,14 +4414,13 @@ async function applyAutoRig() {
     }
   });
 
-  const baseBuffer = autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer;
+  const baseBuffer = st.sourceBuffer;
   const layoutOptions = getAutoRigLayoutOptions();
-  // Remember exactly what the user applied so re-entering Auto-Rig restores
-  // these positions verbatim (the post-Apply animation merge nudges the bind
-  // pose, so re-guessing from the merged bones would move the markers). Tied to
-  // the base buffer it was rigged from and the layout it was rigged with.
-  lastAppliedRig = { joints: JSON.parse(JSON.stringify(joints)), forBuffer: baseBuffer, layoutOptions };
-  cancelAutoRigAdjust();
+  if (!sameAutoRigLayout(st.layoutOptions, layoutOptions)) {
+    showToast('Reanalyse the mesh selection before applying the rig.', true);
+    return;
+  }
+  const request = beginAutoRigRequest('apply');
 
   showLoading('Generating skeleton & skin weights…');
   showMergeProgress(true, 'Auto-rigging on server…');
@@ -4386,15 +4433,19 @@ async function applyAutoRig() {
     const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
     formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, twistBones, ...layoutOptions }));
 
-    const res = await fetch('/api/autorig', { method: 'POST', body: formData });
+    const res = await fetch('/api/autorig', { method: 'POST', body: formData, signal: request.controller.signal });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || 'Auto-rig failed');
     }
     // Server-side skinning quality report (X-Autorig-Report header): shown in
     // the Rig Health panel after the character reloads.
-    lastAutoRigReport = readAutoRigReport(res);
+    const report = readAutoRigReport(res);
     const riggedBuffer = await res.arrayBuffer();
+    if (!isCurrentAutoRigRequest(request)) return;
+    // Keep the editor intact until the server has returned a valid result.
+    cancelAutoRigAdjust({ keepRequest: true });
+    lastAutoRigReport = report;
     completeMergeProgress();
 
     // New skeleton = new bind pose: stale posture offsets (arm spread/splay,
@@ -4412,13 +4463,23 @@ async function applyAutoRig() {
     // Reload through the normal character pipeline: re-analyze, then merge
     // default/preloaded animations against the freshly rigged skeleton.
     const file = new File([riggedBuffer], 'rigged.glb');
+    autoRigRequest = null; // scene teardown may now cancel the old editor safely
     await loadCharacterMeshFile(file, riggedBuffer, true);
+    if (request.revision !== autoRigModelRevision) return;
+    lastAppliedRig = {
+      joints: JSON.parse(JSON.stringify(joints)),
+      forBuffer: autoRigSourceGlbBuffer || originalCharacterGlbBuffer || characterGlbBuffer,
+      layoutOptions,
+    };
     showToast('✓ Skeleton generated and assigned!');
   } catch (err) {
-    completeMergeProgress();
+    if (request.controller.signal.aborted || request.revision !== autoRigModelRevision) return;
+    showMergeProgress(false);
     hideLoading();
     console.error('[autorig] failed:', err);
     showToast('Auto-rig failed: ' + err.message, true);
+  } finally {
+    if (autoRigRequest === request) autoRigRequest = null;
   }
 }
 
@@ -4436,6 +4497,7 @@ function updateCharStatusBar(filename) {
 }
 
 function clearCharacter() {
+  autoRigModelRevision++;
   cancelAutoRigAdjust();
   lastAutoRigReport = null;
   autoRigBodyMeshIds = null;

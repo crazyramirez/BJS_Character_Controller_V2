@@ -17,7 +17,7 @@
 
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { prune } from '@gltf-transform/functions';
+import { prune, dequantize, convertPrimitiveToTriangles } from '@gltf-transform/functions';
 import draco3d from 'draco3dgltf';
 
 let _io = null;
@@ -151,30 +151,44 @@ function linearDeterminant(m) {
     + m[8] * (m[1] * m[6] - m[5] * m[2]);
 }
 
+function hasSingularTransform(matrix) {
+  const determinant = linearDeterminant(matrix);
+  return !Number.isFinite(determinant) || determinant === 0;
+}
+
+async function prepareRigGeometry(doc) {
+  // Quantized/normalized integer positions must be decoded before measuring
+  // or baking; writing transforms into integer arrays truncates the result.
+  await doc.transform(dequantize({ pattern: /^(POSITION|NORMAL|TANGENT)$/ }));
+  for (const mesh of doc.getRoot().listMeshes()) {
+    for (const primitive of mesh.listPrimitives()) {
+      if (primitive.getMode() === 5 || primitive.getMode() === 6) convertPrimitiveToTriangles(primitive);
+    }
+  }
+}
+
 // ── Skin space → render world ────────────────────────────────────────────────
 // Skinned vertices are authored in skin space and rendered as jointWorld·IBM·v.
 // At bind pose jointWorld·IBM is the same matrix S for every joint, but S is
 // NOT always identity: FBX-sourced exports (UE, Blender, 3ds Max, AccuRig)
 // keep vertices Z-up and put the up-axis fix on an armature ancestor, so
-// S is that rotation. Returns Map<mesh, mat4> for every skinned mesh.
+// S is that rotation. Key by node: shared geometry can have different skins.
 function skinWorldXforms(doc) {
   const parentMap = buildParentMap(doc);
   const cache = new Map();
-  const byMesh = new Map();
+  const byNode = new Map();
   for (const node of doc.getRoot().listNodes()) {
     const skin = node.getSkin();
     const mesh = node.getMesh();
-    if (!skin || !mesh || byMesh.has(mesh)) continue;
+    if (!skin || !mesh) continue;
     const joints = skin.listJoints();
     const ibm = skin.getInverseBindMatrices()?.getArray();
-    if (!joints.length || !ibm || ibm.length < 16) {
-      byMesh.set(mesh, MAT4_IDENTITY);
-      continue;
-    }
+    if (!joints.length) throw new Error('Skin has no joints.');
+    if (ibm && ibm.length < joints.length * 16) throw new Error('Skin has invalid inverse bind matrices.');
     const W = worldMatrixOf(joints[0], parentMap, cache);
-    byMesh.set(mesh, mat4Mul(W, ibm.slice(0, 16)));
+    byNode.set(node, mat4Mul(W, ibm ? ibm.slice(0, 16) : MAT4_IDENTITY));
   }
-  return byMesh;
+  return byNode;
 }
 
 // ── Mesh bounds (world space) ────────────────────────────────────────────────
@@ -189,19 +203,29 @@ function computeWorldBounds(doc, skinXforms = new Map(), bodyMeshes = null) {
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
     // Skinned vertices: skin space → world via jointWorld·IBM, not the node chain
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION');
       if (!pos) continue;
       const arr = pos.getArray();
+      if (pos.getType() !== 'VEC3') throw new Error('Mesh POSITION must contain 3D vertices.');
+      const indices = prim.getIndices()?.getArray();
+      if (indices && indices.some(index => !Number.isInteger(index) || index < 0 || index >= pos.getCount())) {
+        throw new Error(`Mesh "${mesh.getName()}" contains invalid triangle indices.`);
+      }
+      if (prim.getMode() === 4 && (indices?.length ?? pos.getCount()) % 3 !== 0) {
+        throw new Error(`Mesh "${mesh.getName()}" has incomplete triangles.`);
+      }
       for (let i = 0; i < arr.length; i += 3) {
         const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
+        if (!p.every(Number.isFinite)) throw new Error(`Mesh "${mesh.getName()}" contains non-finite vertex positions.`);
         for (let k = 0; k < 3; k++) {
           if (p[k] < min[k]) min[k] = p[k];
           if (p[k] > max[k]) max[k] = p[k];
         }
       }
     }
+    if (hasSingularTransform(world)) throw new Error(`Mesh "${mesh.getName()}" has a zero-scale transform.`);
   }
   if (!Number.isFinite(min[0])) throw new Error('No mesh geometry found in GLB.');
   return { min, max };
@@ -221,7 +245,7 @@ function selectBodyMeshes(doc, skinXforms = new Map(), options = {}, reportSink 
     const mesh = node.getMesh();
     if (!mesh || seen.has(mesh)) continue;
     seen.add(mesh);
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, cache);
     const min = [1 / 0, 1 / 0, 1 / 0], max = [-1 / 0, -1 / 0, -1 / 0];
     let count = 0;
     for (const prim of mesh.listPrimitives()) {
@@ -332,7 +356,7 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
       if (!arr) continue;
@@ -435,7 +459,7 @@ function collectWorldVertices(doc, skinXforms = new Map(), bodyMeshes = null, ma
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       const arr = prim.getAttribute('POSITION')?.getArray();
       if (!arr) continue;
@@ -746,7 +770,7 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
     const mesh = node.getMesh();
     if (!mesh) continue;
     if (bodyMeshes && !bodyMeshes.has(mesh)) continue;
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, matCache);
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, matCache);
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION')?.getArray();
       if (!pos) continue;
@@ -1323,39 +1347,39 @@ function seedNormVariants(name) {
   const kept = numericSuffix
     ? seedNorm(String(name).slice(0, -numericSuffix[0].length)) + numericSuffix[1]
     : stripped;
+  // spine_02 and finger_01 are authored indices, unlike Babylon's Hips_66.
+  if (kept !== stripped && Object.values(SEED_ALIASES).some(aliases => aliases.includes(kept))) return [kept];
   return stripped === kept ? [stripped] : [stripped, kept];
 }
 
-/**
- * World bind position per existing skin joint (from inverted IBMs), matched to
- * canonical Mixamo joint names. Used to pre-place markers when re-rigging.
- */
-function seedJointsFromSkins(doc) {
-  const parentMap = buildParentMap(doc);
-  const cache = new Map();
+function canonicalSkinJoints(doc) {
   const worldByNorm = new Map();
   for (const skin of doc.getRoot().listSkins()) {
-    const joints = skin.listJoints();
-    const ibmAcc = skin.getInverseBindMatrices();
-    const ibmArray = ibmAcc?.getArray();
-    if (!ibmArray || !joints.length) continue;
-    // Skin space → render world (FBX-sourced rigs keep IBMs Z-up)
-    const S = mat4Mul(worldMatrixOf(joints[0], parentMap, cache), ibmArray.slice(0, 16));
-    joints.forEach((joint, i) => {
-      if (i * 16 + 16 > ibmArray.length) return;
-      const W = invertRigidMat4(ibmArray.slice(i * 16, i * 16 + 16));
-      const p = transformPoint(S, [W[12], W[13], W[14]]);
-      for (const n of seedNormVariants(joint.getName())) {
-        if (n && !worldByNorm.has(n)) worldByNorm.set(n, p);
+    for (const joint of skin.listJoints()) {
+      for (const name of seedNormVariants(joint.getName())) {
+        if (name && !worldByNorm.has(name)) worldByNorm.set(name, joint);
       }
-    });
+    }
   }
   const seeded = {};
   for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
-    for (const a of aliases) {
-      if (worldByNorm.has(a)) { seeded[canon] = worldByNorm.get(a); break; }
+    for (const alias of aliases) {
+      if (worldByNorm.has(alias)) { seeded[canon] = worldByNorm.get(alias); break; }
     }
   }
+  applySeedChainAliases(worldByNorm, seeded);
+  return new Map(Object.entries(seeded));
+}
+
+/**
+ * Current default-pose world positions, using exactly the same canonical
+ * mapping as adjustment so opening and applying markers is an identity operation.
+ */
+function seedJointsFromSkins(doc) {
+  return Object.fromEntries([...canonicalSkinJoints(doc)].map(([name, node]) => [name, node.getWorldTranslation()]));
+}
+
+function applySeedChainAliases(worldByNorm, seeded) {
   // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): align seeds
   // with the merge-time chain shift (Spine→Waist, Spine1→Spine01, Spine2→Spine02)
   // so Spine2 gets a real seed instead of a mesh guess overlapping Spine1.
@@ -1382,13 +1406,13 @@ function seedJointsFromSkins(doc) {
     seeded.Spine1 = worldByNorm.get('spine2');
     seeded.Spine2 = worldByNorm.get('spine3');
   }
-  return seeded;
 }
 
 export async function guessJoints(buffer, options = {}) {
   const layout = buildRigLayout(options);
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
+  await prepareRigGeometry(doc);
   const skinXf = skinWorldXforms(doc);
   const selectionReport = {};
   const bodyMeshes = selectBodyMeshes(doc, skinXf, options, selectionReport);
@@ -1440,7 +1464,7 @@ export async function guessJoints(buffer, options = {}) {
   for (const name of Object.keys(guess.joints)) {
     if (!layout.order.includes(name)) delete guess.joints[name];
   }
-  validateJointLayout(guess.joints, guess.height, { layout });
+  validateJointLayout(guess.joints, guess.height, { layout, allowCollapsed: !!guess.reRig && !options.rebuild });
   guess.bodyPlan = layout.bodyPlan;
   guess.fingerCount = resolveFingerCount(options.fingerCount);
   guess.supportedSkeletonPresets = Object.entries(SKELETON_PRESETS).map(([id, preset]) => ({
@@ -1454,380 +1478,117 @@ export async function guessJoints(buffer, options = {}) {
   return guess;
 }
 
-// ── Helper functions for matrix/quaternion operations ─────────────────────────
-function mat3ToQuat(m) {
-  const tr = m[0] + m[4] + m[8];
-  let x, y, z, w;
-  if (tr > 0) {
-    const s = Math.sqrt(tr + 1.0) * 2;
-    w = 0.25 * s;
-    x = (m[5] - m[7]) / s;
-    y = (m[6] - m[2]) / s;
-    z = (m[1] - m[3]) / s;
-  } else if ((m[0] > m[4]) && (m[0] > m[8])) {
-    const s = Math.sqrt(1.0 + m[0] - m[4] - m[8]) * 2;
-    w = (m[5] - m[7]) / s;
-    x = 0.25 * s;
-    y = (m[1] + m[3]) / s;
-    z = (m[6] + m[2]) / s;
-  } else if (m[4] > m[8]) {
-    const s = Math.sqrt(1.0 + m[4] - m[0] - m[8]) * 2;
-    w = (m[6] - m[2]) / s;
-    x = (m[1] + m[3]) / s;
-    y = 0.25 * s;
-    z = (m[5] + m[7]) / s;
-  } else {
-    const s = Math.sqrt(1.0 + m[8] - m[0] - m[4]) * 2;
-    w = (m[1] - m[3]) / s;
-    x = (m[6] + m[2]) / s;
-    y = (m[5] + m[7]) / s;
-    z = 0.25 * s;
-  }
-  return qNormalize([x, y, z, w]);
-}
-
-function composeMat4([tx, ty, tz], [qx, qy, qz, qw], [sx, sy, sz]) {
-  const out = new Float32Array(16);
-  const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
-  const xx = qx * x2, xy = qx * y2, xz = qx * z2;
-  const yy = qy * y2, yz = qy * z2, zz = qz * z2;
-  const wx = qw * x2, wy = qw * y2, wz = qw * z2;
-
-  out[0] = (1 - (yy + zz)) * sx;
-  out[1] = (xy + wz) * sx;
-  out[2] = (xz - wy) * sx;
-  out[3] = 0;
-
-  out[4] = (xy - wz) * sy;
-  out[5] = (1 - (xx + zz)) * sy;
-  out[6] = (yz + wx) * sy;
-  out[7] = 0;
-
-  out[8] = (xz + wy) * sz;
-  out[9] = (yz - wx) * sz;
-  out[10] = (1 - (xx + yy)) * sz;
-  out[11] = 0;
-
-  out[12] = tx;
-  out[13] = ty;
-  out[14] = tz;
-  out[15] = 1;
-
-  return out;
-}
-
-function qNormalize(q) {
-  const len = Math.sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-  return len > 0 ? [q[0]/len, q[1]/len, q[2]/len, q[3]/len] : [0, 0, 0, 1];
-}
-function vec3Subtract(a, b) {
-  return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
-}
+// Keep authored joint axes and local scales when adjusting positions. Decomposing
+// world matrices into positive scales and quaternions loses mirrored transforms
+// and shear under non-uniform parents. Work through the actual hierarchy instead.
+function vec3Subtract(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function vec3Length(v) { return Math.hypot(...v); }
 function vec3Normalize(v) {
-  const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-  return len > 0 ? [v[0]/len, v[1]/len, v[2]/len] : [0, 0, 0];
-}
-function vec3Length(v) {
-  return Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-}
-function qInvert(q) {
-  return [-q[0], -q[1], -q[2], q[3]];
-}
-function qMul(a, b) {
-  return [
-    a[0] * b[3] + a[3] * b[0] + a[1] * b[2] - a[2] * b[1],
-    a[1] * b[3] + a[3] * b[1] + a[2] * b[0] - a[0] * b[2],
-    a[2] * b[3] + a[3] * b[2] + a[0] * b[1] - a[1] * b[0],
-    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-  ];
-}
-function rotateVec3(v, q) {
-  const x = v[0], y = v[1], z = v[2];
-  const qx = q[0], qy = q[1], qz = q[2], qw = q[3];
-  const ix = qw * x + qy * z - qz * y;
-  const iy = qw * y + qz * x - qx * z;
-  const iz = qw * z + qx * y - qy * x;
-  const iw = -qx * x - qy * y - qz * z;
-  return [
-    ix * qw + iw * -qx + iy * -qz - iz * -qy,
-    iy * qw + iw * -qy + iz * -qx - ix * -qz,
-    iz * qw + iw * -qz + ix * -qy - iy * -qx,
-  ];
-}
-function quatFromTwoVectors(a, b) {
-  const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-  if (dot < -0.99999) {
-    let axis = [a[1], -a[0], 0];
-    if (Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1]) < 0.0001) {
-      axis = [0, a[2], -a[1]];
-    }
-    const len = Math.sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
-    return qNormalize([axis[0]/len, axis[1]/len, axis[2]/len, 0]);
-  }
-  if (dot > 0.99999) return [0, 0, 0, 1];
-  const cross = [
-    a[1]*b[2] - a[2]*b[1],
-    a[2]*b[0] - a[0]*b[2],
-    a[0]*b[1] - a[1]*b[0]
-  ];
-  return qNormalize([cross[0], cross[1], cross[2], 1 + dot]);
+  const length = vec3Length(v);
+  return length > 1e-12 ? v.map(value => value / length) : [0, 0, 0];
 }
 
-// ── Adjust an existing rig in place ──────────────────────────────────────────
-// Moves matched joints to the requested world (skin-space) positions while
-// keeping hierarchy, bind orientations, extra bones (fingers, twist) and the
-// original skin weights. Unmatched descendants follow their nearest moved
-// ancestor rigidly. With unmoved markers this is an identity operation.
 function adjustExistingRig(doc, targetJoints = {}) {
   const root = doc.getRoot();
-
-  // Old animation tracks reference the old bind — caller re-merges afterwards
-  for (const anim of root.listAnimations()) anim.dispose();
-
   const parentMap = buildParentMap(doc);
-
-  // Find skins and identify joint set
-  const skinData = [];
-  const jointSet = new Set();
-  for (const skin of root.listSkins()) {
+  const before = new Map();
+  for (const node of root.listNodes()) worldMatrixOf(node, parentMap, before);
+  const skinData = root.listSkins().map(skin => {
     const joints = skin.listJoints();
-    const acc = skin.getInverseBindMatrices();
-    const arr = acc?.getArray();
-    if (!arr) continue;
-    skinData.push({ joints, acc, arr: Float32Array.from(arr) });
-    joints.forEach(j => jointSet.add(j));
-  }
-  if (skinData.length === 0) throw new Error('Skin has no inverse bind matrices.');
-
-  // S maps skin space → render world.
-  const matCache0 = new Map();
-  const S = mat4Mul(
-    worldMatrixOf(skinData[0].joints[0], parentMap, matCache0),
-    skinData[0].arr.slice(0, 16)
-  );
-  const invS = invertRigidMat4(S);
-
-  // Compute original bind world positions, rotations, and scales for ALL nodes in the scene in skin space
-  const origWorldPos = new Map();
-  const origWorldRot = new Map();
-  const origWorldScale = new Map();
-  const matCache = new Map();
-  
-  for (const node of doc.getRoot().listNodes()) {
-    const W_render = worldMatrixOf(node, parentMap, matCache);
-    const B = mat4Mul(invS, W_render); // Node's bind matrix in skin space
-    
-    origWorldPos.set(node, [B[12], B[13], B[14]]);
-
-    const sx = Math.hypot(B[0], B[1], B[2]) || 1;
-    const sy = Math.hypot(B[4], B[5], B[6]) || 1;
-    const sz = Math.hypot(B[8], B[9], B[10]) || 1;
-    origWorldScale.set(node, [sx, sy, sz]);
-
-    const m = [
-      B[0] / sx, B[1] / sx, B[2] / sx,
-      B[4] / sy, B[5] / sy, B[6] / sy,
-      B[8] / sz, B[9] / sz, B[10] / sz
-    ];
-    origWorldRot.set(node, mat3ToQuat(m));
-  }
-
-  // canonical marker name → joint node
-  const normToNode = new Map();
-  for (const j of jointSet) {
-    for (const n of seedNormVariants(j.getName())) {
-      if (n && !normToNode.has(n)) normToNode.set(n, j);
+    if (!joints.length) throw new Error('Cannot adjust a skin with no joints.');
+    const accessor = skin.getInverseBindMatrices();
+    if (accessor && (accessor.getType() !== 'MAT4' || accessor.getCount() < joints.length)) {
+      throw new Error('Skin has invalid inverse bind matrices.');
     }
+    // glTF defines missing IBMs as identity; each skin owns its own palette.
+    const palettes = joints.map((joint, i) => mat4Mul(before.get(joint),
+      accessor ? accessor.getElement(i, []) : MAT4_IDENTITY));
+    return { skin, joints, palettes };
+  });
+  const canonToNode = canonicalSkinJoints(doc);
+  const targets = new Map();
+  const ignoredJoints = [];
+  for (const [name, position] of Object.entries(targetJoints)) {
+    const node = canonToNode.get(name);
+    if (node) targets.set(node, position);
+    else ignoredJoints.push(name);
   }
+  if (Object.keys(targetJoints).length && !targets.size) {
+    throw new Error('No matching joints in the existing skeleton. Rebuild the skeleton to use this layout.');
+  }
+  const changed = new Set();
+  for (const [node, position] of targets) {
+    const old = before.get(node).slice(12, 15);
+    const tolerance = Math.max(1, ...old.map(Math.abs)) * 1e-6;
+    if (vec3Length(vec3Subtract(position, old)) > tolerance) changed.add(node);
+  }
+  if (!changed.size) return { adjustedJoints: 0, ignoredJoints };
 
-  const markerByNode = new Map();
-  for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
-    if (!targetJoints[canon]) continue;
-    for (const a of aliases) {
-      if (normToNode.has(a)) { markerByNode.set(normToNode.get(a), transformPoint(invS, targetJoints[canon])); break; }
-    }
-  }
-  // CC/AccuRig 3-bone spine: markers follow the same chain shift as the merge
-  // (Spine→Waist, Spine1→Spine01, Spine2→Spine02); overrides the generic pass.
-  if (normToNode.has('waist') && normToNode.has('spine01') &&
-      normToNode.has('spine02') && !normToNode.has('spine03')) {
-    for (const [canon, alias] of [['Spine', 'waist'], ['Spine1', 'spine01'], ['Spine2', 'spine02']]) {
-      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
-    }
-  }
-  // AdvancedSkeleton: Scapula = clavicle, Shoulder = upper arm — mirror the
-  // seed-time chain shift so markers drive the right bones.
-  for (const s of ['l', 'r']) {
-    if (normToNode.has(`scapula${s}`) && normToNode.has(`shoulder${s}`)) {
-      const side = s === 'l' ? 'Left' : 'Right';
-      for (const [canon, alias] of [[`${side}Shoulder`, `scapula${s}`], [`${side}Arm`, `shoulder${s}`]]) {
-        if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
+  const after = new Map();
+  const affected = new Set();
+  function update(node) {
+    if (after.has(node)) return after.get(node);
+    const parent = parentMap.get(node);
+    const parentWorld = parent ? update(parent) : MAT4_IDENTITY;
+    if (changed.has(node)) {
+      if (hasSingularTransform(parentWorld)) {
+        throw new Error('Cannot adjust a joint under a zero-scale transform.');
       }
+      node.setTranslation(transformPoint(invertRigidMat4(parentWorld), targets.get(node)));
+    } else if (targets.has(node) && parent && affected.has(parent)) {
+      // Explicit unchanged markers pin their joints while a parent is moved.
+      node.setTranslation(transformPoint(invertRigidMat4(parentWorld), targets.get(node)));
+    }
+    if (changed.has(node) || (parent && affected.has(parent))) affected.add(node);
+    const world = mat4Mul(parentWorld, node.getMatrix());
+    after.set(node, world);
+    return world;
+  }
+  for (const node of root.listNodes()) update(node);
+  const jointSet = new Set(skinData.flatMap(data => data.joints));
+  for (const joint of jointSet) {
+    if (!affected.has(joint)) continue;
+    let parent = parentMap.get(joint);
+    while (parent && !jointSet.has(parent)) parent = parentMap.get(parent);
+    if (!parent) continue;
+    const oldLength = vec3Length(vec3Subtract(before.get(joint).slice(12, 15), before.get(parent).slice(12, 15)));
+    const newLength = vec3Length(vec3Subtract(after.get(joint).slice(12, 15), after.get(parent).slice(12, 15)));
+    if (oldLength > 1e-6 && newLength < Math.max(1e-8, oldLength * 1e-4)) {
+      throw new Error(`Joint "${joint.getName()}" overlaps its parent "${parent.getName()}".`);
     }
   }
-  // 1-indexed spine chain (no plain "spine"): same shift as seed time.
-  if (!normToNode.has('spine') && normToNode.has('spine1') &&
-      normToNode.has('spine2') && normToNode.has('spine3')) {
-    for (const [canon, alias] of [['Spine', 'spine1'], ['Spine1', 'spine2'], ['Spine2', 'spine3']]) {
-      if (targetJoints[canon]) markerByNode.set(normToNode.get(alias), transformPoint(invS, targetJoints[canon]));
-    }
-  }
-
-  // New world positions: markers win; others keep their offset to the parent (for ALL nodes in the scene)
-  const newWorldPos = new Map();
-  function computeNewPos(node) {
-    if (newWorldPos.has(node)) return newWorldPos.get(node);
-    const marker = markerByNode.get(node);
-    if (marker) { newWorldPos.set(node, marker); return marker; }
-    const p = parentMap.get(node);
-    const o = origWorldPos.get(node);
-    if (!p) { newWorldPos.set(node, o); return o; }
-    const pNew = computeNewPos(p);
-    const pOld = origWorldPos.get(p);
-    const np = [o[0] + pNew[0] - pOld[0], o[1] + pNew[1] - pOld[1], o[2] + pNew[2] - pOld[2]];
-    newWorldPos.set(node, np);
-    return np;
-  }
-  for (const node of doc.getRoot().listNodes()) computeNewPos(node);
-
-  // Initialize newWorldRot with a copy of origWorldRot (for ALL nodes in the scene)
-  const newWorldRot = new Map();
-  for (const node of doc.getRoot().listNodes()) {
-    newWorldRot.set(node, [...origWorldRot.get(node)]);
-  }
-
-  // canonical name → joint node (for fast lookup during alignment)
-  const canonToNode = new Map();
-  for (const [canon, aliases] of Object.entries(SEED_ALIASES)) {
-    for (const a of aliases) {
-      if (normToNode.has(a)) {
-        canonToNode.set(canon, normToNode.get(a));
-        break;
+  for (const { skin, joints, palettes } of skinData) {
+    if (!joints.some(joint => affected.has(joint))) continue;
+    const out = new Float32Array(joints.length * 16);
+    joints.forEach((joint, i) => {
+      const world = after.get(joint);
+      if (hasSingularTransform(world)) {
+        throw new Error('Cannot adjust a skeleton with a zero-scale joint.');
       }
-    }
-  }
-  if (normToNode.has('waist') && normToNode.has('spine01') &&
-      normToNode.has('spine02') && !normToNode.has('spine03')) {
-    canonToNode.set('Spine', normToNode.get('waist'));
-    canonToNode.set('Spine1', normToNode.get('spine01'));
-    canonToNode.set('Spine2', normToNode.get('spine02'));
-  }
-  for (const s of ['l', 'r']) {
-    if (normToNode.has(`scapula${s}`) && normToNode.has(`shoulder${s}`)) {
-      const side = s === 'l' ? 'Left' : 'Right';
-      canonToNode.set(`${side}Shoulder`, normToNode.get(`scapula${s}`));
-      canonToNode.set(`${side}Arm`, normToNode.get(`shoulder${s}`));
-    }
-  }
-  if (!normToNode.has('spine') && normToNode.has('spine1') &&
-      normToNode.has('spine2') && normToNode.has('spine3')) {
-    canonToNode.set('Spine', normToNode.get('spine1'));
-    canonToNode.set('Spine1', normToNode.get('spine2'));
-    canonToNode.set('Spine2', normToNode.get('spine3'));
-  }
-
-  function applyRotationCorrection(node, qCorr) {
-    const cur = newWorldRot.get(node) || [0, 0, 0, 1];
-    newWorldRot.set(node, qNormalize(qMul(qCorr, cur)));
-    for (const child of node.listChildren()) {
-      applyRotationCorrection(child, qCorr);
-    }
-  }
-
-  // Align limbs so bones look at their updated children, propagating corrections down.
-  const alignPairs = [
-    ['LeftShoulder', 'LeftArm'],
-    ['LeftArm', 'LeftForeArm'],
-    ['LeftForeArm', 'LeftHand'],
-    ['RightShoulder', 'RightArm'],
-    ['RightArm', 'RightForeArm'],
-    ['RightForeArm', 'RightHand'],
-    ['LeftUpLeg', 'LeftLeg'],
-    ['LeftLeg', 'LeftFoot'],
-    ['LeftFoot', 'LeftToeBase'],
-    ['RightUpLeg', 'RightLeg'],
-    ['RightLeg', 'RightFoot'],
-    ['RightFoot', 'RightToeBase'],
-  ];
-
-  for (const [parentName, childName] of alignPairs) {
-    const P = canonToNode.get(parentName);
-    const C = canonToNode.get(childName);
-    if (!P || !C) continue;
-
-    const vOldWorld = vec3Subtract(origWorldPos.get(C), origWorldPos.get(P));
-    const qDiff = qMul(newWorldRot.get(P), qInvert(origWorldRot.get(P)));
-    const vCurr = rotateVec3(vOldWorld, qDiff);
-    const vTarget = vec3Subtract(newWorldPos.get(C), newWorldPos.get(P));
-
-    const vCurrNorm = vec3Normalize(vCurr);
-    const vTargetNorm = vec3Normalize(vTarget);
-
-    if (vec3Length(vCurrNorm) > 0.001 && vec3Length(vTargetNorm) > 0.001) {
-      // quatFromTwoVectors is the minimal-twist (roll-free) rotation between the
-      // two aim directions. The single ill-defined case is a ~180° flip, where
-      // the rotation axis is arbitrary and would inject random roll into the
-      // limb and everything below it. A re-rig marker move almost never inverts
-      // a limb, so treat that as a measurement error and skip the correction
-      // rather than twist the mesh.
-      const aim = vCurrNorm[0] * vTargetNorm[0] + vCurrNorm[1] * vTargetNorm[1] + vCurrNorm[2] * vTargetNorm[2];
-      if (aim > -0.98) {
-        const qCorr = quatFromTwoVectors(vCurrNorm, vTargetNorm);
-        applyRotationCorrection(P, qCorr);
-      } else {
-        console.warn(`[autorig] Skipping near-180° ${parentName}→${childName} alignment (would inject arbitrary roll).`);
-      }
-    }
-  }
-
-  // Update node local translations and rotations
-  for (const j of jointSet) {
-    const np = newWorldPos.get(j);
-    const directParent = parentMap.get(j) || null;
-    let localT;
-    if (directParent) {
-      const pNewPos = newWorldPos.get(directParent);
-      const pNewRot = newWorldRot.get(directParent);
-      const d = vec3Subtract(np, pNewPos);
-      localT = rotateVec3(d, qInvert(pNewRot));
-
-      // Handle parent scale if present
-      const pScale = origWorldScale.get(directParent) || [1, 1, 1];
-      localT = [localT[0] / pScale[0], localT[1] / pScale[1], localT[2] / pScale[2]];
-    } else {
-      localT = np.slice();
-    }
-    j.setTranslation(localT);
-
-    // Set local rotation
-    const parent = parentMap.get(j);
-    let localR;
-    if (parent) {
-      const pNewRot = newWorldRot.get(parent);
-      localR = qNormalize(qMul(qInvert(pNewRot), newWorldRot.get(j)));
-    } else {
-      localR = qNormalize(newWorldRot.get(j));
-    }
-    j.setRotation(localR);
-  }
-
-  // Update Inverse Bind Matrices (IBMs)
-  for (const { joints, acc, arr } of skinData) {
-    const out = Float32Array.from(arr);
-    joints.forEach((j, i) => {
-      const W_new = composeMat4(newWorldPos.get(j), newWorldRot.get(j), origWorldScale.get(j));
-      const IBM_new = invertRigidMat4(W_new);
-      for (let k = 0; k < 16; k++) {
-        out[i * 16 + k] = IBM_new[k];
-      }
+      // W_new * IBM_new = W_old * IBM_old: every vertex keeps its exact
+      // rendered rest shape, including separate skins and implicit IBMs.
+      out.set(mat4Mul(invertRigidMat4(world), palettes[i]), i * 16);
     });
-    acc.setArray(out);
+    skin.setInverseBindMatrices(doc.createAccessor('adjusted_ibm').setType('MAT4')
+      .setArray(out).setBuffer(root.listBuffers()[0] || doc.createBuffer()));
   }
+  // Preserve morph clips and unrelated scene animation. Only tracks driving
+  // the changed hierarchy have an obsolete rest pose and need re-merging.
+  for (const animation of root.listAnimations()) {
+    for (const channel of animation.listChannels()) {
+      if (channel.getTargetPath() !== 'weights' && affected.has(channel.getTargetNode())) channel.dispose();
+    }
+    if (!animation.listChannels().length) animation.dispose();
+  }
+  return { adjustedJoints: changed.size, ignoredJoints };
 }
 
 // ── Strip an existing rig (skin, weights, bones, animations) ─────────────────
-function stripExistingRig(doc) {
+function stripExistingRig(doc, skinTransforms) {
   const root = doc.getRoot();
+  const parents = buildParentMap(doc);
+  const originalWorld = new Map();
+  for (const node of root.listNodes()) worldMatrixOf(node, parents, originalWorld);
 
   // Old animations target old bones — remove (caller re-merges afterwards)
   for (const anim of root.listAnimations()) anim.dispose();
@@ -1842,12 +1603,17 @@ function stripExistingRig(doc) {
     if (node.getSkin()) {
       if (node.getMesh()) skinnedMeshes.add(node.getMesh());
       node.setSkin(null);
-      // Skinned node transforms are ignored by the glTF skinning path —
-      // neutralize so the now-static mesh doesn't pick up a stale transform.
-      node.setTranslation([0, 0, 0]);
-      node.setRotation([0, 0, 0, 1]);
-      node.setScale([1, 1, 1]);
     }
+  }
+  // Former skins become static in their render space. This also preserves
+  // excluded clothing/props, which will not receive the replacement skin.
+  // Non-skinned children keep their old world transform when a parent changes.
+  for (const node of root.listNodes()) {
+    const parent = parents.get(node);
+    if (!skinTransforms.has(node) && !skinTransforms.has(parent)) continue;
+    const world = skinTransforms.get(node) || originalWorld.get(node);
+    const parentWorld = parent ? (skinTransforms.get(parent) || originalWorld.get(parent)) : MAT4_IDENTITY;
+    node.setMatrix(Array.from(mat4Mul(invertRigidMat4(parentWorld), world)));
   }
   for (const mesh of skinnedMeshes) {
     for (const prim of mesh.listPrimitives()) {
@@ -2188,7 +1954,7 @@ function exportedJointName(presetId, preset, canonical) {
   return canonical;
 }
 
-export function validateJointLayout(joints, height, { partial = false, layout = DEFAULT_LAYOUT } = {}) {
+export function validateJointLayout(joints, height, { partial = false, layout = DEFAULT_LAYOUT, allowCollapsed = false } = {}) {
   if (!joints || typeof joints !== 'object' || Array.isArray(joints)) throw new Error('joints must be an object.');
   if (!Number.isFinite(height) || height <= 1e-6) throw new Error('Character bounds have zero or invalid height.');
   for (const [name, value] of Object.entries(joints)) {
@@ -2199,6 +1965,7 @@ export function validateJointLayout(joints, height, { partial = false, layout = 
   }
   if (partial) return true;
   for (const name of layout.order) if (!joints[name]) throw new Error(`Missing required joint "${name}".`);
+  if (allowCollapsed) return true; // imported helper/deform joints may share an origin
   const minLength = height * 1e-4;
   for (const [name, parent] of Object.entries(layout.hierarchy)) {
     if (!parent) continue;
@@ -2448,9 +2215,11 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
   }
   let vox = null;
   try {
-    // Positions are already baked to world and node transforms neutralized,
-    // so voxelize with no extra skin transforms.
-    vox = voxelizeSolid(doc, new Map(), bounds, 96, bodyMeshes);
+    // Geometry is baked to world. Ignore the entire mesh ancestry, including
+    // armature transforms retained for unskinned children/accessories.
+    const bakedTransforms = new Map(doc.getRoot().listNodes()
+      .filter(node => bakedMeshes.has(node.getMesh())).map(node => [node, MAT4_IDENTITY]));
+    vox = voxelizeSolid(doc, bakedTransforms, bounds, 96, bodyMeshes);
   } catch (e) {
     console.warn('[autorig] Voxelization for geodesic weights failed:', e.message);
   }
@@ -2599,20 +2368,28 @@ export async function autoRigGLB(buffer, options = {}) {
   // original artist skin weights; only joint positions move to the markers.
   // With options.rebuild the old rig is stripped (destructive) and a brand-new
   // skeleton with the requested layout is generated instead.
-  let previouslySkinned = new Map(); // mesh → skin-space→world xform (rebuilt rigs)
+  let previouslySkinned = new Map(); // node → skin-space→world xform (rebuilt rigs)
   if (root.listSkins().length > 0) {
     if (options.rebuild === true) {
       previouslySkinned = skinWorldXforms(doc);
-      stripExistingRig(doc);
+      stripExistingRig(doc, previouslySkinned);
       console.log('[autorig] Existing rig stripped — rebuilding skeleton with the requested layout.');
     } else {
       validateJointLayout(options.joints || {}, 1, { partial: true });
-      adjustExistingRig(doc, options.joints || {});
+      const adjustment = adjustExistingRig(doc, options.joints || {});
+      if (options.reportSink && typeof options.reportSink === 'object') {
+        Object.assign(options.reportSink, { mode: 'adjust', ...adjustment,
+          notes: adjustment.ignoredJoints.length
+            ? [`Unmapped markers: ${adjustment.ignoredJoints.join(', ')}.`] : [] });
+      }
+      if (!adjustment.adjustedJoints) return new Uint8Array(buffer);
       await doc.transform(prune({ keepLeaves: true }));
+      root.listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression')?.dispose();
       return io.writeBinary(doc);
     }
   }
 
+  await prepareRigGeometry(doc);
   const selectionReport = {};
   const bodyMeshes = selectBodyMeshes(doc, previouslySkinned, options, selectionReport);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
@@ -2649,7 +2426,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // Topology guesses assign Left/Right from the detected body frame — the
   // toe-direction heuristic is meaningless in arbitrary poses, skip the swap.
   // Quadruped bounds layouts already place Left/Right from forwardZ.
-  if (guess.method !== 'topology' && guess.method !== 'quadruped-bounds' && leftSide !== fwdSign) {
+  if (!options.joints && guess.method !== 'topology' && guess.method !== 'quadruped-bounds' && leftSide !== fwdSign) {
     for (const name of Object.keys(joints)) {
       if (!name.startsWith('Left')) continue;
       const twin = 'Right' + name.slice(4);
@@ -2676,11 +2453,14 @@ export async function autoRigGLB(buffer, options = {}) {
     instancesByMesh.get(mesh).push(node);
   }
   for (const [mesh, instances] of instancesByMesh) {
-    for (let i = 1; i < instances.length; i++) {
+    // Even distinct meshes/primitives can share accessors. Isolate every owner
+    // before any bake so body transforms cannot mutate clothing or scenery.
+    for (let i = 0; i < instances.length; i++) {
       const clone = cloneMeshForBake(doc, mesh, `instance_${i + 1}`);
+      if (i === 0) clone.setName(mesh.getName());
       instances[i].setMesh(clone);
       if (bodyMeshes) bodyMeshes.add(clone);
-      if (previouslySkinned.has(mesh)) previouslySkinned.set(clone, previouslySkinned.get(mesh));
+      // Skin transforms are keyed by node, so distinct instances keep their own bind space.
     }
   }
   const bakedMeshes = new Set();
@@ -2696,8 +2476,16 @@ export async function autoRigGLB(buffer, options = {}) {
     // Previously-skinned meshes (rebuild) live in skin space: bake S (skin →
     // render world). Identity for glTF-native rigs, a real rotation/scale for
     // FBX-sourced exports that keep vertices Z-up under an armature fix.
-    const world = previouslySkinned.get(mesh) || worldMatrixOf(node, parentMap, matCache);
+    const world = previouslySkinned.get(node) || worldMatrixOf(node, parentMap, matCache);
     for (const prim of mesh.listPrimitives()) {
+      if (linearDeterminant(world) < 0 && prim.getMode() === 4) {
+        const indices = prim.getIndices();
+        const count = prim.getAttribute('POSITION')?.getCount() || 0;
+        const reversed = indices ? indices.getArray().slice() : Uint32Array.from({ length: count }, (_, i) => i);
+        for (let i = 0; i < reversed.length; i += 3) [reversed[i + 1], reversed[i + 2]] = [reversed[i + 2], reversed[i + 1]];
+        prim.setIndices(doc.createAccessor().setType('SCALAR').setArray(reversed)
+          .setBuffer(root.listBuffers()[0] || doc.createBuffer()));
+      }
       const pos = prim.getAttribute('POSITION');
       if (pos) {
         const arr = pos.getArray().slice();
@@ -2759,12 +2547,8 @@ export async function autoRigGLB(buffer, options = {}) {
       }
     }
   }
-  // Neutralize mesh node transforms (positions are now world-space)
-  for (const node of meshNodes) {
-    node.setTranslation([0, 0, 0]);
-    node.setRotation([0, 0, 0, 1]);
-    node.setScale([1, 1, 1]);
-  }
+  // Skinning ignores mesh-node transforms. Keep them for static descendants,
+  // which must not jump when their parent's geometry is baked.
 
   // ── 2. Build joint node hierarchy ──────────────────────────────────────────
   // Bind orientation must encode the character's facing: retargeting computes

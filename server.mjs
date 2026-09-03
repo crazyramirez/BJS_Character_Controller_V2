@@ -123,9 +123,11 @@ function parseOptions(raw) {
 // the auto-rig report compact, explicitly whitelist its public fields, and
 // encode the UTF-8 JSON as base64url before exposing it to the Builder.
 export function encodeAutoRigReport(report) {
-  if (!report || !Number.isFinite(report.score)) return null;
+  if (!report || (!Number.isFinite(report.score) && report.mode !== 'adjust')) return null;
   const meshes = Array.isArray(report.meshSelection?.meshes) ? report.meshSelection.meshes : [];
   const compact = {
+    mode: report.mode,
+    adjustedJoints: report.adjustedJoints,
     score: report.score,
     vertices: report.vertices,
     crossSidePct: report.crossSidePct,

@@ -29,6 +29,9 @@ test('all exported skeleton presets produce a valid 52-joint skin', async () => 
     const skins = doc.getRoot().listSkins();
     assert.equal(skins.length, 1, id);
     assert.equal(skins[0].listJoints().length, 52, id);
+    const reGuess = await guessJoints(output);
+    const unchanged = await autoRigGLB(output, { joints: reGuess.joints });
+    assert.ok(Buffer.from(unchanged).equals(Buffer.from(output)), `${id}: generated preset can be reopened without moving joints`);
     const skinnedMeshes = new Set(doc.getRoot().listNodes().filter(node => node.getSkin()).map(node => node.getMesh()));
     assert.ok(skinnedMeshes.size > 0, `${id}: skinned mesh`);
     for (const primitive of [...skinnedMeshes].flatMap(mesh => mesh.listPrimitives())) {

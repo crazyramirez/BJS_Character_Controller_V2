@@ -98,6 +98,15 @@ test('auto-rig report encoding preserves non-ASCII fallback diagnostics', () => 
   assert.deepEqual(decoded.meshSelection, { mode: 'automatic', total: 1, selected: 1 });
 });
 
+test('existing-rig adjustment reports reach the client without a fabricated skin quality score', () => {
+  const encoded = encodeAutoRigReport({ mode: 'adjust', adjustedJoints: 2, notes: ['Unmapped markers: Head.'] });
+  const report = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+  assert.equal(report.mode, 'adjust');
+  assert.equal(report.adjustedJoints, 2);
+  assert.equal(report.score, undefined);
+  assert.deepEqual(report.notes, ['Unmapped markers: Head.']);
+});
+
 test('server rejects an occupied port without dereferencing a null address', async (t) => {
   const first = await startServer({ port: 0, host: '127.0.0.1' });
   t.after(() => new Promise(resolve => first.close(resolve)));
