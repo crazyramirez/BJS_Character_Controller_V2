@@ -9,6 +9,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { mergeDocuments, prune, unpartition, draco as dracoCompress, resample } from '@gltf-transform/functions';
 import draco3d from 'draco3dgltf';
+import { inferNumberedHumanoid } from './rig_topology.mjs';
 
 // ============================================================================
 // CONFIGURATION DEFAULTS (can be overridden per-call via options)
@@ -83,22 +84,22 @@ const BONE_MAP = {
   // ── Left leg ──────────────────────────────────────────
   //   UE5: thigh_l       Unity: leftupperleg    Rigify: thighl    Biped: lthigh
   'thigh_l': ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l',
-    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh', 'l_upperleg', 'upperleg_l'],
+    'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh', 'l_upperleg', 'upperleg_l', 'l_leg'],
   //   UE5: calf_l        Unity: leftlowerleg    Rigify: shinl    Biped: lcalf
   'calf_l': ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l',
     'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee', 'lcalf', 'l_lowerleg', 'lowerleg_l'],
   'foot_l': ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l', 'lfoot'],
-  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'lefttoes', 'ltoe0', 'ltoe', 'l_toebase', 'toebase_l'],
+  'toe_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'lefttoes', 'ltoe0', 'ltoe', 'l_toebase', 'toebase_l', 'l_toes'],
   'ball_l': ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
 
   // ── Right leg ────────────────────────────────────────
   //   Biped: rthigh, rcalf, rfoot
   'thigh_r': ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r',
-    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh', 'r_upperleg', 'upperleg_r'],
+    'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh', 'r_upperleg', 'upperleg_r', 'r_leg'],
   'calf_r': ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r',
     'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee', 'rcalf', 'r_lowerleg', 'lowerleg_r'],
   'foot_r': ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r', 'rfoot'],
-  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'righttoes', 'rtoe0', 'rtoe', 'r_toebase', 'toebase_r'],
+  'toe_r': ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'righttoes', 'rtoe0', 'rtoe', 'r_toebase', 'toebase_r', 'r_toes'],
   'ball_r': ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
 
   // ── Fingers ────────────────────────────────────────────
@@ -788,16 +789,15 @@ function computeMeshStats(doc) {
   // Skinned vertices are authored in skin space; render world = jointWorld·IBM.
   // FBX-sourced exports (UE/Blender/AccuRig) keep skin space Z-up with the
   // up-axis fix on an armature ancestor — identity would measure them lying down.
-  const skinXforms = new Map();
+  const skinPalettes = new Map();
   for (const node of doc.getRoot().listNodes()) {
     const skin = node.getSkin();
     const mesh = node.getMesh();
-    if (!skin || !mesh || skinXforms.has(mesh)) continue;
+    if (!skin || !mesh || skinPalettes.has(skin)) continue;
     const joints = skin.listJoints();
     const ibm = skin.getInverseBindMatrices()?.getArray();
-    skinXforms.set(mesh, (joints.length && ibm && ibm.length >= 16)
-      ? mat4Mul(worldMatrixOf(joints[0], parentMap, cache), ibm.slice(0, 16))
-      : MAT4_IDENTITY);
+    skinPalettes.set(skin, joints.map((joint, i) => mat4Mul(
+      worldMatrixOf(joint, parentMap, cache), ibm?.slice(i * 16, i * 16 + 16) || MAT4_IDENTITY)));
   }
 
   const min = [Infinity, Infinity, Infinity];
@@ -810,15 +810,31 @@ function computeMeshStats(doc) {
     const mesh = node.getMesh();
     if (!mesh) continue;
     meshSet.add(mesh);
-    const world = skinXforms.get(mesh) || worldMatrixOf(node, parentMap, cache);
+    const palette = skinPalettes.get(node.getSkin());
+    const world = worldMatrixOf(node, parentMap, cache);
     for (const prim of mesh.listPrimitives()) {
       primitiveCount++;
       const pos = prim.getAttribute('POSITION');
       if (!pos) continue;
       const arr = pos.getArray();
+      const influences = [0, 1].map(i => [prim.getAttribute(`JOINTS_${i}`), prim.getAttribute(`WEIGHTS_${i}`)])
+        .filter(([j, w]) => j && w);
       vertexCount += arr.length / 3;
       for (let i = 0; i < arr.length; i += 3) {
-        const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
+        const local = [arr[i], arr[i + 1], arr[i + 2]];
+        let p = [0, 0, 0], total = 0;
+        if (palette) for (const [indices, weights] of influences) {
+          const js = indices.getElement(i / 3, []), ws = weights.getElement(i / 3, []);
+          for (let j = 0; j < js.length; j++) {
+            if (!(ws[j] > 0) || !palette[js[j]]) continue;
+            const v = transformPoint(palette[js[j]], local);
+            for (let k = 0; k < 3; k++) p[k] += ws[j] * v[k];
+            total += ws[j];
+          }
+        }
+        // An unused synthetic root can have a different bind matrix from the
+        // deforming joints. Measure the actual weighted palette, not joint 0.
+        p = total > 0 ? p.map(v => v / total) : transformPoint(world, local);
         for (let k = 0; k < 3; k++) {
           if (p[k] < min[k]) min[k] = p[k];
           if (p[k] > max[k]) max[k] = p[k];
@@ -984,7 +1000,25 @@ function findMatchingBone(animNode, charByName, charByNorm) {
   const lo = src.toLowerCase();
   // Lowercase aliases are also where explicit user overrides are installed;
   // check them first so an exact-case auto match cannot bypass a correction.
-  let hit = charByName.get(lo) || charByName.get(src);
+  let hit = charByName.explicitOverrides?.get(lo);
+  if (hit) return hit;
+  if (charByName.inferredCanonical) {
+    const canonical = Object.hasOwn(BONE_MAP, lo) ? lo : NORM_TO_CANON.get(aliasNorm(src));
+    if (canonical) return charByName.inferredCanonical.get(canonical) || null;
+  }
+
+  // A spine1 → spine2 → spine3 chain has no plain Spine. Resolve its
+  // anatomical slots before exact-name lookup, which would shift the chest
+  // animation down a bone. Require the actual hierarchy, not just names.
+  const spine1 = charByNorm.get('spine1'), spine2 = charByNorm.get('spine2');
+  const spine3 = charByNorm.get('spine3');
+  if (!charByNorm.has('spine') && spine1?.listChildren().includes(spine2) &&
+      spine2?.listChildren().includes(spine3)) {
+    const slot = { spine: spine1, spine01: spine1, spine1: spine2,
+      spine02: spine2, spine2: spine3, spine03: spine3 }[aliasNorm(src)];
+    if (slot) return slot;
+  }
+  hit = charByName.get(lo) || charByName.get(src);
   if (hit) return hit;
 
   // CC/AccuRig 3-bone spine (Waist→Spine01→Spine02, no spine03): generic
@@ -1068,6 +1102,11 @@ function applyBoneMapOverrides(doc, overrides, charByName, charByNorm) {
     if (!name) continue;
     if (!nodesByName.has(name)) nodesByName.set(name, []);
     nodesByName.get(name).push(node);
+    const sourceName = node.getExtras().bjsSourceName;
+    if (sourceName && sourceName !== name) {
+      if (!nodesByName.has(sourceName)) nodesByName.set(sourceName, []);
+      nodesByName.get(sourceName).push(node);
+    }
   }
   for (const [canonical, nodeName] of Object.entries(overrides)) {
     if (!Object.hasOwn(BONE_MAP, canonical)) throw new Error(`Unknown canonical bone override "${canonical}".`);
@@ -1079,7 +1118,9 @@ function applyBoneMapOverrides(doc, overrides, charByName, charByNorm) {
         : `Bone override target "${nodeName}" does not exist.`);
     }
     const target = candidates[0];
+    charByName.explicitOverrides ||= new Map();
     for (const alias of [canonical, ...BONE_MAP[canonical]]) {
+      charByName.explicitOverrides.set(alias.toLowerCase(), target);
       charByName.set(alias, target);
       charByName.set(alias.toLowerCase(), target);
       const norm = aliasNorm(alias);
@@ -1175,7 +1216,60 @@ function hasCanonicalBone(canonKey, charByName, charByNorm) {
     const n = aliasNorm(cand);
     if (n && charByNorm.has(n)) return true;
   }
-  return false;
+  return !!findMatchingBone({ getName: () => canonKey }, charByName, charByNorm);
+}
+
+// Retargeting and the controller use +X for anatomical left and +Z forward.
+// Some FBX/Sketchfab characters carry a 180° (or 90°) scene-axis conversion.
+// Correct that as ONE rigid rotation before constructing the virtual T-pose;
+// otherwise aligning the arms to ±X bends them across the back. Snap only to
+// exporter quarter-turns so an asymmetric shoulder pose is not straightened.
+function alignRetargetFacing(doc, charByName, charByNorm) {
+  const get = name => findMatchingBone({ getName: () => name }, charByName, charByNorm);
+  const hips = get('pelvis'), head = get('head');
+  const left = get('upperarm_l'), right = get('upperarm_r');
+  if (!hips || !head || !left || !right) return;
+  const up = vec3Subtract(head.getWorldTranslation(), hips.getWorldTranslation());
+  if (up[1] < 0.7 * vec3Length(up)) return;
+  const lateral = vec3Subtract(left.getWorldTranslation(), right.getWorldTranslation());
+  if (Math.hypot(lateral[0], lateral[2]) < 1e-6) return;
+  const yaw = Math.round(Math.atan2(lateral[2], lateral[0]) / (Math.PI / 2)) * Math.PI / 2;
+  if (!yaw) return;
+  const rotation = [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)];
+  const parent = buildParentMap(doc).get(hips);
+  if (!parent || parent.getName() !== 'RootNode') return;
+  // A quarter-turn below unequal X/Z scales is not a rigid world rotation.
+  // Keep that authored transform rather than stretching the character.
+  const scale = parent.getScale();
+  if (Math.abs(Math.sin(yaw)) > 0.5 &&
+      Math.abs(scale[0] - scale[2]) > 1e-6 * Math.max(Math.abs(scale[0]), Math.abs(scale[2]))) return;
+  const children = new Set(parent.listChildren());
+  for (const node of children) {
+    node.setTranslation(rotateVec3(node.getTranslation(), rotation));
+    node.setRotation(qMul(rotation, node.getRotation()));
+  }
+  // Keep original clips coherent too when the caller chooses to retain them.
+  for (const clip of doc.getRoot().listAnimations()) {
+    for (const channel of clip.listChannels()) {
+      if (!children.has(channel.getTargetNode())) continue;
+      const path = channel.getTargetPath();
+      if (path !== 'rotation' && path !== 'translation') continue;
+      const sampler = channel.getSampler(), accessor = sampler?.getOutput();
+      const values = accessor?.getArray();
+      if (!values) continue;
+      const count = path === 'rotation' ? 4 : 3;
+      const transformed = values.slice();
+      for (let i = 0; i < values.length; i += count) {
+        const value = Array.from(values.slice(i, i + count));
+        transformed.set(path === 'rotation' ? qMul(rotation, value) : rotateVec3(value, rotation), i);
+      }
+      const output = accessor.clone().setArray(transformed);
+      const copy = sampler.clone().setOutput(output);
+      clip.addSampler(copy);
+      channel.setSampler(copy);
+    }
+  }
+  console.log(`[merge] Aligned character facing by ${Math.round(yaw * 180 / Math.PI)}° without changing skin weights.`);
 }
 
 function detectBodyPlan(rawNames, hasSkin) {
@@ -1206,7 +1300,22 @@ const QUADRUPED_REQUIRED_BONES = [
   { key: 'tail', label: 'Tail', pattern: /(^|[:_.-])tail/, critical: false },
 ];
 
-function buildCanonicalMappingReport(nodes) {
+function installInferredAliases(inferred, byName, byNorm) {
+  if (!inferred.size) return;
+  byName.inferredCanonical = new Map();
+  for (const [role, node] of inferred) {
+    byName.set(role, node);
+    byName.set(role.toLowerCase(), node);
+    byNorm.set(aliasNorm(role), node);
+    for (const [canonical, aliases] of Object.entries(BONE_MAP)) {
+      if ([canonical, ...aliases].some(a => aliasNorm(a) === aliasNorm(role))) {
+        byName.inferredCanonical.set(canonical, node);
+      }
+    }
+  }
+}
+
+function buildCanonicalMappingReport(nodes, inferred = new Map()) {
   const byCanonical = new Map();
   const unresolved = [];
   const charByName = new Map();
@@ -1239,6 +1348,8 @@ function buildCanonicalMappingReport(nodes) {
     if (!byCanonical.has(canonical)) byCanonical.set(canonical, []);
     byCanonical.get(canonical).push(match);
   }
+  installInferredAliases(inferred, charByName, charByNorm);
+  const inferredNodes = new Set(inferred.values());
   const entries = [];
   const duplicates = [];
   for (const canonical of Object.keys(BONE_MAP)) {
@@ -1253,15 +1364,15 @@ function buildCanonicalMappingReport(nodes) {
     entries.push(direct || {
       canonical,
       node: resolved.getName(),
-      confidence: 0.8,
-      reason: 'heuristic-match',
+      confidence: inferredNodes.has(resolved) ? 0.9 : 0.8,
+      reason: inferredNodes.has(resolved) ? 'humanoid-topology' : 'heuristic-match',
     });
   }
   return {
     entries,
     candidateNodes: [...new Set(nodes.map(node => node.getName()).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b)),
-    unresolvedNodes: unresolved,
+    unresolvedNodes: unresolved.filter(name => ![...inferredNodes].some(n => n.getName() === name)),
     duplicates,
     warnings: duplicates.map(item => `Multiple nodes map to ${item.canonical}: ${item.nodes.join(', ')}`),
   };
@@ -1462,7 +1573,11 @@ export async function analyzeGLB(buffer) {
   if (bodyPlan === 'quadruped' && skeletonType.id === 'unknown') {
     skeletonType = { id: 'quadruped', label: 'Generic Quadruped', color: '#22c55e' };
   }
-  const mapping = bodyPlan === 'humanoid' ? buildCanonicalMappingReport(relevantNodes) : null;
+  const inferred = bodyPlan === 'humanoid' ? inferNumberedHumanoid(relevantNodes) : new Map();
+  if (inferred.size && skeletonType.id === 'unknown') {
+    skeletonType = { id: 'numbered-humanoid', label: 'Numbered Humanoid', color: '#22c55e' };
+  }
+  const mapping = bodyPlan === 'humanoid' ? buildCanonicalMappingReport(relevantNodes, inferred) : null;
 
   const charByName = new Map();
   const charByNorm = new Map();
@@ -1485,6 +1600,7 @@ export async function analyzeGLB(buffer) {
       if (na && !charByNorm.has(na)) charByNorm.set(na, node);
     }
   });
+  installInferredAliases(inferred, charByName, charByNorm);
   const poseStyle = detectPoseStyle(doc, charByName, charByNorm);
 
   // ── 5. Animations ─────────────────────────────────────────────────────────
@@ -1535,6 +1651,36 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const io = await getIO();
 
   const charDoc = await io.readBinary(new Uint8Array(charBuffer));
+
+  // Adopt canonical names only on this output document. Keep the source name
+  // for manual overrides and leave the imported file/skin weights untouched.
+  const inferred = inferNumberedHumanoid([...new Set(charDoc.getRoot().listSkins().flatMap(s => s.listJoints()))]);
+  for (const [role, node] of inferred) {
+    node.setExtras({ ...node.getExtras(), bjsSourceName: node.getName() });
+    node.setName(role);
+  }
+  if (animBuffer && inferred.size && !inferred.has('Spine1')) {
+    // Carry the middle-spine animation through an unweighted helper. Inserting
+    // an identity transform preserves every original joint world matrix and
+    // avoids assigning two animation channels to the same chest bone.
+    const lower = inferred.get('Spine'), chest = inferred.get('Spine2');
+    const helper = charDoc.createNode('Spine1');
+    lower.addChild(helper);
+    helper.addChild(chest);
+    for (const skin of charDoc.getRoot().listSkins()) {
+      const joints = skin.listJoints(), index = joints.indexOf(lower);
+      if (index < 0 || !joints.includes(chest)) continue;
+      const accessor = skin.getInverseBindMatrices();
+      const values = accessor?.getArray();
+      const matrices = new Float32Array((joints.length + 1) * 16);
+      for (let i = 0; i <= joints.length; i++) matrices.set(
+        values ? values.slice((i === joints.length ? index : i) * 16, (i === joints.length ? index : i) * 16 + 16)
+          : MAT4_IDENTITY, i * 16);
+      skin.addJoint(helper);
+      skin.setInverseBindMatrices(charDoc.createAccessor().setType('MAT4').setArray(matrices)
+        .setBuffer(accessor?.getBuffer() || charDoc.getRoot().listBuffers()[0]));
+    }
+  }
 
   if (cfg.removeExistingAnimations) {
     charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
@@ -1813,6 +1959,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     }
   }
   applyBoneMapOverrides(charDoc, cfg.boneMapOverrides, charByName, charByNorm);
+  alignRetargetFacing(charDoc, charByName, charByNorm);
 
   // Print bone names for debugging matching
   // console.log('--- DEBUG BON

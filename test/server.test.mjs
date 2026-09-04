@@ -79,6 +79,10 @@ test('auto-rig response supports Unicode mesh names and returns a usable skin', 
   assert.equal(response.headers.get('x-autorig-report-encoding'), 'base64url');
   const report = JSON.parse(Buffer.from(response.headers.get('x-autorig-report'), 'base64url').toString('utf8'));
   assert.ok(report.score >= 0 && report.score <= 100);
+  assert.equal(report.restValidation.passed, true);
+  assert.ok(report.restValidation.maxPositionError <= report.restValidation.tolerance);
+  assert.ok(['ready', 'review'].includes(report.diagnostics.status));
+  assert.match(report.scoreScope, /not a measure of anatomical accuracy/);
   const riggedDocument = await io.readBinary(new Uint8Array(await response.arrayBuffer()));
   assert.ok(riggedDocument.getRoot().listSkins().length > 0);
   assert.ok(riggedDocument.getRoot().listSkins()[0].listJoints().length >= 20);

@@ -129,6 +129,22 @@ export function encodeAutoRigReport(report) {
     mode: report.mode,
     adjustedJoints: report.adjustedJoints,
     score: report.score,
+    scoreScope: typeof report.scoreScope === 'string' ? report.scoreScope.slice(0, 180) : undefined,
+    restValidation: report.restValidation ? {
+      passed: report.restValidation.passed === true,
+      vertices: report.restValidation.vertices,
+      maxPositionError: report.restValidation.maxPositionError,
+      maxWeightError: report.restValidation.maxWeightError,
+      tolerance: report.restValidation.tolerance,
+    } : undefined,
+    diagnostics: report.diagnostics ? {
+      status: report.diagnostics.status,
+      issues: (report.diagnostics.issues || []).slice(0, 6).map(issue => String(issue).slice(0, 280)),
+    } : undefined,
+    fingerSkinning: report.fingerSkinning ? {
+      mode: report.fingerSkinning.mode,
+      activeHands: ['Left', 'Right'].filter(side => report.fingerSkinning.activeHands?.includes(side)),
+    } : undefined,
     vertices: report.vertices,
     crossSidePct: report.crossSidePct,
     distantInfluencePct: report.distantInfluencePct,

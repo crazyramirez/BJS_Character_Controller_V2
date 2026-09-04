@@ -1252,8 +1252,7 @@ class CharCtrl {
     this.dustPS.blendMode = BABYLON.ParticleSystem.BLENDMODE_ADD;
 
     // Emitter is placed at the player's feet
-    const initialFeetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
-    this.dustPS.emitter = initialFeetPos;
+    this.dustPS.emitter = new BABYLON.Vector3();
     this.dustPS.minEmitBox = new BABYLON.Vector3(-0.25, -0.05, -0.25);
     this.dustPS.maxEmitBox = new BABYLON.Vector3(0.25, 0.05, 0.25);
 
@@ -1276,10 +1275,41 @@ class CharCtrl {
     this.dustPS.updateSpeed = 0.016;
 
     this.dustPS.manualEmitCount = -1; // Default to continuous emission mode
+    this._syncDustEmitter();
+  }
+
+  _syncDustEmitter() {
+    if (!this.dustPS) return;
+    // Collider dimensions are already in world units. Multiplying their
+    // offsets by root.scaling again would bury the emitter on small models.
+    const scaleY = this._capScaleY ?? (this.root.ellipsoid ? this.root.ellipsoid.y / 0.96 : 1);
+    const scaleW = this._capScaleW ?? (this.root.ellipsoid ? this.root.ellipsoid.x / 0.46 : 1);
+    const feet = this.dustPS.emitter;
+    feet.copyFrom(this.root.position);
+    if (this.usePhysics) {
+      // Both Havok capsules start at -0.55 * scaleY and have this radius.
+      feet.y -= 0.55 * scaleY + 0.46 * scaleW;
+    } else {
+      if (this.root.ellipsoidOffset) feet.addInPlace(this.root.ellipsoidOffset);
+      feet.y -= this.root.ellipsoid?.y ?? 0.96 * scaleY;
+    }
+    feet.y += 0.01 * scaleY;
+
+    // Keep the whole spawn volume above the contact point and the effect
+    // proportional to the character. Recompute from base values, not from
+    // the previous particle sizes, so repeated slider changes cannot drift.
+    this.dustPS.minEmitBox.set(-0.25 * scaleW, 0, -0.25 * scaleW);
+    this.dustPS.maxEmitBox.set(0.25 * scaleW, 0.05 * scaleY, 0.25 * scaleW);
+    this.dustPS.minSize = 0.16 * scaleW;
+    this.dustPS.maxSize = 0.45 * scaleW;
+    this.dustPS.gravity.set(0, 1.2 * scaleY, 0);
+    this.dustPS.direction1.set(-0.5 * scaleW, 0.2 * scaleY, -0.5 * scaleW);
+    this.dustPS.direction2.set(0.5 * scaleW, 0.4 * scaleY, 0.5 * scaleW);
   }
 
   _emitLandingDust() {
     if (this.PLAY_PARTICLES && this.dustPS) {
+      this._syncDustEmitter();
       this.dustPS.manualEmitCount = 30; // Emit 30 particles instantly
       this.dustPS.start();              // Force restart to process manual emission
     }
@@ -2344,7 +2374,7 @@ class CharCtrl {
       const liveHalfH = this.root.ellipsoid ? this.root.ellipsoid.y : this._standEllipsoidY;
       const liveOffY = this.root.ellipsoidOffset ? this.root.ellipsoidOffset.y : 0;
       // Place ray origin 0.08m above the actual capsule bottom to avoid starting inside the ground
-      originYOffset = -(liveHalfH) + liveOffY + 0.08;
+      originYOffset = -(liveHalfH) + liveOffY + 0.08 * this._capScaleY;
     }
 
     // Use a longer ray length on stairs/ramps (scalable meshes) or when rolling to bridge drops and prevent micro-airborne jitter.
@@ -3543,8 +3573,7 @@ class CharCtrl {
 
     // ── UPDATE PROCEDURAL PARTICLES ────────────────────────
     if (this.PLAY_PARTICLES && this.dustPS) {
-      const feetPos = this.root.position.add(new BABYLON.Vector3(0, -0.95, 0));
-      this.dustPS.emitter = feetPos;
+      this._syncDustEmitter();
 
       // Play dust trails while walking, sprinting or rolling on ground with actual speed
       const activeMove = this.CAM_FOLLOW_LOCK ? (inputZ !== 0) : hasMove;

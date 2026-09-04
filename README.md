@@ -281,6 +281,18 @@ If you import a mesh-only GLB (no skeleton/skin), **Import & Rig → Skeleton** 
 
 Already-rigged characters get **Re-Rig / Adjust Skeleton** instead: markers seed from the current bind pose, and applying moves the existing joints while preserving the hierarchy, extra bones (fingers/twist) and the original artist skin weights.
 
+FBX/Sketchfab rigs with `spine1 → spine2 → spine3` and `l/r leg → knee → foot → toes` are mapped by their anatomical roles. Marker display follows the exact imported bones across coordinate conversions and reopening. Animation retargeting aligns reversed scene axes before pose adaptation, and rebuilding retains valid coincident joint origins from the source rig.
+
+Numbered humanoid rigs can also be recognized from their hierarchy and joint positions: the fallback requires an upright, outstretched pose, two complete five-finger hands and matching arm/leg chains. It preserves imported joints and weights, including shared palm helpers; ambiguous layouts remain unresolved. Retargeting adds an unweighted compatibility joint for a missing middle-spine segment. Geometry diagnostics measure the weighted skin pose, including exports with unused synthetic root joints.
+
+**Hands and placement review:** the analysis panel reports each hand separately and provides **Inspect** buttons for close-up placement. Finger detection follows connected triangle branches through successive hand sections and estimates the three joint centers on each branch. It supports the selected 2–5 finger layout and hand rotation. Fused fingers, closed fists, ambiguous thumbs and insufficient geometry remain marked for review instead of being classified as a complete hand.
+
+**Finger skinning** defaults to **Automatic · detected hands only** in the editor. Unresolved hands keep solid hand weights; use **Use my reviewed finger markers** after placing all finger joints, or choose **Solid hands**. Finger influences are restricted across neighboring digits so bending one finger does not pull adjacent fingertips. The API accepts `skinFingers: 'auto'`, `true` (reviewed markers), or `false` (the API's backward-compatible default).
+
+Weights are normalized before surface smoothing, and twist bones use their actual skin indices even when finger bones are unweighted. Generation checks every vertex against the exported bind matrices and aborts if the rest-position error exceeds `height × 0.00002` or the weights are invalid. Rebuild also accounts for individual vertex influences when an imported skeleton was saved away from its bind pose. The report exposes `restValidation`, placement `diagnostics` and active finger skinning; its influence score is a heuristic, **not an anatomical accuracy percentage**. The validation does not guarantee deformation quality in every animation or detect collisions.
+
+Generate the skeleton in the mesh's actual pose. T/A-pose previews require an existing skin; they cannot reposition markers independently of an unskinned mesh. Asymmetric hand placement is preserved, and API symmetrization is explicitly enabled with `symmetrize: true`. Humanoid and quadruped templates still require inspection for unusual proportions, hidden anatomy or unsupported body plans.
+
 ### 🎭 Custom Actions & Animations
 
 In **Animate → Custom Animations**, you can extend the controller by registering completely new character actions (e.g., `TAUNT`, `DANCE`, `WAVE`):

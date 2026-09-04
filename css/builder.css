@@ -714,6 +714,29 @@ input[type="range"]::-moz-range-thumb {
   accent-color: var(--accent);
 }
 
+.autorig-diagnostics {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid rgba(74, 222, 128, 0.4);
+  border-radius: var(--r-sm);
+  background: rgba(74, 222, 128, 0.05);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.autorig-diagnostics[data-status="review"] {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.05);
+}
+
+.autorig-diagnostics p { margin: 6px 0 !important; }
+.autorig-diagnostics ul { padding-left: 18px; margin: 8px 0; }
+.autorig-diagnostics li { margin-bottom: 5px; }
+.autorig-diagnostics summary { cursor: pointer; margin-top: 8px; }
+.autorig-hand-result { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.autorig-hand-result span { flex: 1; }
+.autorig-hand-result .btn-action { width: auto; padding: 5px 9px; font-size: 0.72rem; }
+
 .autorig-mesh-selection {
   min-width: 0;
   margin: 0 0 12px;

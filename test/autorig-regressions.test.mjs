@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { Document } from '@gltf-transform/core';
 import { KHRMeshQuantization } from '@gltf-transform/extensions';
 import BABYLON from 'babylonjs';
-import { autoRigGLB, guessJoints } from '../js/core/autorig_api.mjs';
+import { autoRigGLB, guessJoints, validateRestSkin } from '../js/core/autorig_api.mjs';
 import { createIO, approx } from './helpers.mjs';
 
 const identity = () => BABYLON.Matrix.Identity().asArray();
@@ -217,6 +217,79 @@ test('collapsed edits fail while existing coincident joints can still be opened'
   forearm.setTranslation([0, 0, 0]);
   const guess = await guessJoints(await io.writeBinary(doc), { fingerCount: 0 });
   assert.deepEqual(guess.joints.LeftForeArm, guess.joints.LeftArm);
+});
+
+test('twists with unweighted fingers reference twist skin indices, never finger indices', async () => {
+  const io = await createIO();
+  const source = await fs.readFile(new URL('../assets/female_character_simple.glb', import.meta.url));
+  const reportSink = {};
+  const result = await io.readBinary(await autoRigGLB(source, {
+    fingerCount: 5, skinFingers: false, twistBones: true, geodesicWeights: false, reportSink,
+  }));
+  const names = result.getRoot().listSkins()[0].listJoints().map(j => j.getName());
+  let twistWeights = 0;
+  for (const node of result.getRoot().listNodes().filter(n => n.getSkin())) {
+    for (const prim of node.getMesh().listPrimitives()) {
+      const joints = prim.getAttribute('JOINTS_0').getArray(), weights = prim.getAttribute('WEIGHTS_0').getArray();
+      for (let i = 0; i < weights.length; i++) if (weights[i] > 0) {
+        assert.doesNotMatch(names[joints[i]], /Hand(Thumb|Index|Middle|Ring|Pinky)/);
+        if (names[joints[i]].endsWith('Twist')) twistWeights++;
+      }
+    }
+  }
+  assert.ok(twistWeights > 0, 'twist bones must actually deform the forearm');
+  assert.equal(reportSink.restValidation.passed, true);
+  assert.ok(reportSink.restValidation.maxPositionError <= reportSink.restValidation.tolerance);
+});
+
+test('bind validation rejects a corrupt palette, invalid indices and non-unit weights', async () => {
+  const io = await createIO();
+  const { doc } = rigFixture();
+  removeFixtureSkin(doc);
+  const result = await io.readBinary(await autoRigGLB(await io.writeBinary(doc), { fingerCount: 0, geodesicWeights: false }));
+  assert.equal(validateRestSkin(result, 2).passed, true);
+  const skin = result.getRoot().listSkins()[0], hips = skin.listJoints()[0];
+  const original = hips.getTranslation().slice();
+  hips.setTranslation(original.map((v, i) => v + (i === 0 ? 0.1 : 0)));
+  assert.throws(() => validateRestSkin(result, 2), /rest shape/);
+  hips.setTranslation(original);
+  const prim = result.getRoot().listNodes().find(n => n.getSkin()).getMesh().listPrimitives()[0];
+  const indices = prim.getAttribute('JOINTS_0').getArray(), weights = prim.getAttribute('WEIGHTS_0').getArray();
+  const oldIndex = indices[0]; indices[0] = 250;
+  assert.throws(() => validateRestSkin(result, 2), /invalid influence/);
+  indices[0] = oldIndex; weights[0] += 0.5;
+  assert.throws(() => validateRestSkin(result, 2), /rest shape/);
+});
+
+for (const implicitIBM of [false, true]) test(`rebuild preserves the visible shape of a posed skin (implicit IBM: ${implicitIBM})`, async () => {
+  const io = await createIO();
+  const { doc, skin, arm, forearm, positions } = rigFixture({ implicitIBM });
+  arm.setRotation([0, 0, Math.sin(0.3), Math.cos(0.3)]);
+  forearm.setTranslation([0.6, 0.2, 0.1]);
+  const matrices = palette(skin);
+  const expected = Array.from({ length: positions.getCount() }, (_, i) => {
+    const point = BABYLON.Vector3.FromArray(positions.getElement(i, []));
+    return BABYLON.Vector3.TransformCoordinates(point, BABYLON.Matrix.FromArray(matrices[i])).asArray();
+  });
+  const reportSink = {};
+  const result = await io.readBinary(await autoRigGLB(await io.writeBinary(doc), {
+    rebuild: true, fingerCount: 0, geodesicWeights: false, reportSink,
+  }));
+  const prim = result.getRoot().listNodes().find(n => n.getSkin()).getMesh().listPrimitives()[0];
+  expected.forEach((p, i) => p.forEach((v, a) => approx(prim.getAttribute('POSITION').getElement(i, [])[a], v, 2e-5)));
+  assert.equal(reportSink.restValidation.passed, true);
+});
+
+test('automatic finger mode keeps unresolved hands solid and exposes review diagnostics', async () => {
+  const io = await createIO(), { doc } = rigFixture();
+  removeFixtureSkin(doc);
+  const reportSink = {};
+  const result = await io.readBinary(await autoRigGLB(await io.writeBinary(doc), { skinFingers: 'auto', reportSink, geodesicWeights: false }));
+  assert.equal(reportSink.diagnostics.status, 'review');
+  assert.deepEqual(reportSink.fingerSkinning.activeHands, []);
+  assert.equal(reportSink.fingerDetection.Left.status, 'review');
+  const joints = result.getRoot().listNodes().find(n => n.getSkin()).getMesh().listPrimitives()[0].getAttribute('JOINTS_0').getArray();
+  assert.ok([...joints].every(i => i < 22));
 });
 
 for (const filename of ['low_poly.glb', 'characters_test/prisioner_hostage.glb',

@@ -311,9 +311,9 @@
                 <input type="file" id="autorig-batch-files" accept=".glb" multiple style="display:none;">
                 <div id="autorig-adjust" style="display:none;">
                   <p id="autorig-adjust-hint">
-                    Drag the yellow joint markers in the viewport to match your character's anatomy
-                    (click a marker to attach the move gizmo), then apply.
+                    Analyze the mesh, review the suggested joints, then apply the rig.
                   </p>
+                  <div id="autorig-diagnostics" class="autorig-diagnostics" role="status" aria-live="polite" style="display:none;"></div>
                   <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
                     title="Skeleton anatomy. Humanoid uses upright T/A-pose analysis; Animal builds a horizontal spine with four legs and a tail chain.">
                     Body plan
@@ -373,9 +373,14 @@
                     title="Swap every Left/Right marker without moving them one by one.">
                     ⇄ Swap Left / Right
                   </button>
-                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
-                    title="Enable only after placing every finger marker. Disabled keeps the original stable hand weighting.">
-                    <input type="checkbox" id="autorig-skin-fingers"> Skin fingers after manual placement
+                  <label class="autorig-symmetry-row" style="display:block; margin-top: 6px;"
+                    title="Automatic activates fingers only when separate digits are resolved. Use reviewed markers after checking every finger joint.">
+                    Finger skinning
+                    <select id="autorig-skin-fingers" style="width:100%; margin-top:4px;">
+                      <option value="auto">Automatic · detected hands only</option>
+                      <option value="off">Solid hands · no finger deformation</option>
+                      <option value="manual">Use my reviewed finger markers</option>
+                    </select>
                   </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Drag markers to dynamically bend and rotate character limbs and joints, posing the mesh in real-time.">

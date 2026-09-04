@@ -182,6 +182,12 @@ function boneRoleNorm(name) {
   return n.replace(/[:_\-.\s]/g, '');
 }
 
+function resolveAutoRigBone(name, jointSources, nodeByName, nodeByNorm) {
+  const sourceName = jointSources?.[name];
+  return (sourceName && (nodeByName.get(sourceName) || nodeByNorm.get(boneRoleNorm(sourceName))))
+    || nodeByNorm.get(boneRoleNorm(name));
+}
+
 const BONE_ROLE_SETS = {
   // Clavicle bones get their own role so Shoulder Raise can target them alone;
   // they still receive arm spread/splay (see boneOffsetObserver switch).
@@ -189,8 +195,8 @@ const BONE_ROLE_SETS = {
   shoulderR: new Set(['rightshoulder', 'rightcollar', 'clavicler', 'rclavicle', 'shoulderr', 'rshoulder', 'collarr']),
   armL: new Set(['leftarm', 'leftupperarm', 'upperarml', 'lupperarm', 'arml', 'larm']),
   armR: new Set(['rightarm', 'rightupperarm', 'upperarmr', 'rupperarm', 'armr', 'rarm']),
-  legL: new Set(['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'leftthigh', 'hipl']),
-  legR: new Set(['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'rightthigh', 'hipr']),
+  legL: new Set(['leftupleg', 'leftupperleg', 'thighl', 'lthigh', 'upperlegl', 'leftthigh', 'hipl', 'lleg']),
+  legR: new Set(['rightupleg', 'rightupperleg', 'thighr', 'rthigh', 'upperlegr', 'rightthigh', 'hipr', 'rleg']),
   spine: new Set(['spine', 'spine1', 'spine2', 'spine3', 'spine01', 'spine02', 'spine03',
     'waist', 'chest', 'upperchest', 'lowerback']),
   hips: new Set(['hips', 'hip', 'pelvis']),
@@ -298,6 +304,7 @@ function applyLiveTransformations() {
     ctrl._crouchEllipsoidY = 0.55 * sy;
     ctrl._capScaleY = sy;
     ctrl._capScaleW = widthScale;
+    ctrl._syncDustEmitter?.();
 
     // Adapt camera settings dynamically to character scale
     if (ctrl._baseCamFollowDist === undefined) {
@@ -2220,21 +2227,24 @@ function renderSkeletonHealth(health) {
   let rigReportHtml = '';
   if (lastAutoRigReport && Number.isFinite(lastAutoRigReport.score)) {
     const r = lastAutoRigReport;
-    const sev = r.score >= 85 ? 'pass' : r.score >= 60 ? 'warn' : 'error';
+    const sev = r.score < 60 ? 'error' : r.score < 85 || r.diagnostics?.status === 'review' ? 'warn' : 'pass';
     const tags = [
       r.geodesicWeights ? 'geodesic weights' : 'euclidean weights',
       r.twistBones ? 'twist bones' : null,
       r.symmetrized ? 'symmetrized' : null,
       r.propsAttached ? `${r.propsAttached} prop(s) attached` : null,
       r.guessMethod ? `guess: ${r.guessMethod}` : null,
+      r.restValidation?.passed ? 'rest shape verified' : null,
+      r.fingerSkinning?.activeHands?.length ? `finger skinning: ${r.fingerSkinning.activeHands.join(' / ')}` : 'solid hand weights',
     ].filter(Boolean).join(' · ');
     const notes = (r.notes || []).join(' ');
     rigReportHtml = `
       <div class="health-check ${sev}">
         <span class="health-dot"></span>
         <div>
-          <strong>Auto-Rig skin quality: ${Math.round(r.score)}/100</strong>
+          <strong>Auto-Rig influence checks: ${Math.round(r.score)}/100${r.diagnostics?.status === 'review' ? ' · Placement needs review' : ''}</strong>
           <p>${escapeHtml(tags)}${notes ? ' — ' + escapeHtml(notes) : ''}</p>
+          <p>${escapeHtml(r.scoreScope || 'Check the joint placement and test animation before export.')}</p>
         </div>
       </div>`;
   }
@@ -2766,7 +2776,6 @@ function syncAutoRigFingerUI() {
   const skinFingers = document.getElementById('autorig-skin-fingers');
   if (skinFingers) {
     const noFingers = fingerCount === 0;
-    if (noFingers) skinFingers.checked = false;
     skinFingers.disabled = noFingers;
     skinFingers.closest('label')?.classList.toggle('btn-disabled-offline', noFingers);
   }
@@ -3139,7 +3148,10 @@ function forceAutoRigPose(pose) {
 
   const skinned = !!scene.skeletons?.length && st.boneBindings.size > 0;
   if (skinned) poseSkeletonArms(pose);
-  else poseMarkerLayout(pose);
+  else {
+    showToast('Pose preview needs a skinned mesh. Apply the rig in the current mesh pose first.');
+    return;
+  }
 
   setActivePoseButton(pose);
   showToast(pose === 't' ? 'Forced T-Pose.' : 'Forced A-Pose.');
@@ -3540,6 +3552,41 @@ function mapMarkerRotationToPosture(name, rotationQuaternion) {
   }
 }
 
+function renderAutoRigDiagnostics(guess) {
+  const panel = document.getElementById('autorig-diagnostics');
+  if (!panel) return;
+  const diagnostics = guess.diagnostics || { status: 'review', issues: [] };
+  const labels = { detected: 'Digits detected', existing: 'Imported joints', review: 'Review needed', disabled: 'No fingers' };
+  panel.dataset.status = diagnostics.status;
+  panel.innerHTML = `<strong>${diagnostics.status === 'ready' ? 'Analysis complete' : 'Check joint placement'}</strong>
+    <p>1. Review joints &nbsp; 2. Check hands &nbsp; 3. Apply Rig</p>
+    ${['Left', 'Right'].map(side => {
+      const hand = guess.fingerDetection?.[side];
+      if (!hand) return '';
+      return `<div class="autorig-hand-result"><span>${side} hand: ${escapeHtml(labels[hand.status] || 'Review needed')}</span>
+        <button type="button" class="btn-action btn-secondary" aria-label="Inspect ${side.toLowerCase()} hand" data-rig-hand="${side}">Inspect</button></div>`;
+    }).join('')}
+    ${diagnostics.issues.length ? `<details open><summary>Placement notes (${diagnostics.issues.length})</summary><ul>${diagnostics.issues.map(issue => `<li>${escapeHtml(issue)}</li>`).join('')}</ul></details>` : ''}
+    <p>Automatic finger skinning keeps unresolved hands solid. You can place the markers and choose reviewed finger skinning.</p>`;
+  panel.style.display = 'block';
+  panel.querySelectorAll('[data-rig-hand]').forEach(button => button.addEventListener('click', () => {
+    if (!autoRigState || !camera) return;
+    const handMarkers = [...autoRigState.markers].filter(([name]) => name.startsWith(`${button.dataset.rigHand}Hand`));
+    if (!handMarkers.length) return;
+    const min = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+    const max = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const [, marker] of handMarkers) {
+      marker.computeWorldMatrix(true);
+      min.minimizeInPlace(marker.getAbsolutePosition());
+      max.maximizeInPlace(marker.getAbsolutePosition());
+    }
+    camera.target.copyFrom(min.add(max).scale(0.5));
+    camera.radius = Math.max(0.02, autoRigState.sceneHeight * 0.24,
+      BABYLON.Vector3.Distance(min, max) * 0.85 / Math.tan(camera.fov / 2));
+    camera.inertialRadiusOffset = 0;
+  }));
+}
+
 async function startAutoRigAdjust() {
   if (autoRigRequest?.kind === 'apply') return;
   if (!characterGlbBuffer || !activeCharacter) {
@@ -3577,6 +3624,7 @@ async function startAutoRigAdjust() {
   hideLoading();
 
   renderAutoRigMeshSelection(guess.meshSelection);
+  renderAutoRigDiagnostics(guess);
 
   if (guess.suggestedBodyPlan === 'quadruped' && layoutOptions.bodyPlan !== 'quadruped') {
     showToast('🐾 This mesh looks like a quadruped — set Body plan: Animal for better markers.');
@@ -3607,10 +3655,10 @@ async function startAutoRigAdjust() {
   if (rebuildCb) rebuildCb.onchange = syncLayoutLocks;
   syncLayoutLocks();
 
-  // Restore the user's last applied joints verbatim (P2). The server re-guesses
-  // from the post-merge bind, which drifts from what the user placed; if we have
-  // an exact memory for this character, use it and skip the bone-snap re-fit so
-  // markers land precisely where they were applied. Only when the body plan +
+  // Restore the user's last applied SERVER coordinates verbatim. Display
+  // coordinates still come from the corresponding scene bones, since the
+  // importer may have aligned the facing or converted the coordinate system.
+  // Only when the body plan +
   // finger layout still match — a changed layout needs fresh guessed joints.
   const sameLayout = sameAutoRigLayout(lastAppliedRig?.layoutOptions, layoutOptions);
   if (lastAppliedRig?.joints && lastAppliedRig.forBuffer === baseBuffer && sameLayout) {
@@ -3759,6 +3807,7 @@ async function startAutoRigAdjust() {
     // canonical-name → bone node, so re-rig binds by NAME (robust to the server's
     // joint space differing from Babylon's scene space on flipped/mirrored rigs)
     const nodeByNorm = new Map();
+    const nodeByName = new Map();
     scene.skeletons.forEach(sk => sk.bones.forEach(b => {
       const n = b.getTransformNode();
       if (n && !restRel.has(n)) {
@@ -3767,11 +3816,14 @@ async function startAutoRigAdjust() {
         nodes.push(n);
         const norm = boneRoleNorm(b.name || n.name || '');
         if (norm && !nodeByNorm.has(norm)) nodeByNorm.set(norm, n);
+        nodeByName.set(b.name, n);
+        nodeByName.set(n.name, n);
       }
     }));
+    const sourceNodeFor = name => resolveAutoRigBone(name, guess.jointSources, nodeByName, nodeByNorm);
     markers.forEach((m, name) => {
       // 1) exact joint-name match (LeftArm → mixamorig:LeftArm_09)
-      let bound = nodeByNorm.get(boneRoleNorm(name));
+      let bound = sourceNodeFor(name);
       // 2) fallback to nearest bone for unmatched / nonstandard names
       if (!bound) {
         m.computeWorldMatrix(true);
@@ -3794,19 +3846,20 @@ async function startAutoRigAdjust() {
     const mpInvSnap = markerParent.getWorldMatrix().clone().invert();
     const fitPairs = []; // { local: Vector3 (markerParent-local), server: [x,y,z] }
     markers.forEach((m, name) => {
-      const node = nodeByNorm.get(boneRoleNorm(name));
+      const node = sourceNodeFor(name);
       if (!node) return;
       node.computeWorldMatrix(true);
-      // Restored session (P2): the markers already hold the user's exact applied
-      // coords — do NOT snap them to the (drifted) merged bones. Still record the
-      // local↔server pair from the marker's current spot so the Apply affine
-      // round-trips correctly.
-      if (!guess.restored) {
-        const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
-        m.position.copyFrom(local);
-      }
+      // Even restored layouts are stored in source coordinates. Match their
+      // display to the real bones after axis conversion, retaining the saved
+      // server coordinate as the other half of the conversion pair.
+      const local = BABYLON.Vector3.TransformCoordinates(node.getAbsolutePosition(), mpInvSnap);
+      m.position.copyFrom(local);
       const sv = guess.joints[name];
-      if (sv) fitPairs.push({ local: m.position.clone(), server: sv });
+      // Retargeting can add unweighted compatibility bones absent from the
+      // source rig. Their guessed markers are not coordinate calibration data.
+      if (sv && (!guess.jointSources || Object.hasOwn(guess.jointSources, name))) {
+        fitPairs.push({ local: m.position.clone(), server: sv });
+      }
     });
     // Markers are now displayed in Babylon scene space (snapped to bones), but
     // the server rigs in its own RENDER-WORLD space (guessJoints / autorig). On
@@ -4108,6 +4161,7 @@ async function startAutoRigAdjust() {
     // Server's original joint guess (its own render-world space) per name — the
     // exact ground truth for un-dragged markers on Apply.
     serverGuess: { ...guess.joints },
+    fingerDetection: guess.fingerDetection,
     meshSelection: guess.meshSelection,
     // Rest-space snapshot of the initial guess — restored by the "Rest" pose button
     restLayout: new Map([...canonical].map(([n, v]) => [n, v.clone()])),
@@ -4119,7 +4173,7 @@ async function startAutoRigAdjust() {
   // First-time skinless guess: auto-solve marker depth against the mesh so the
   // initial layout already sits inside the body (P1). Restored sessions and
   // existing-skin re-rigs already hold exact positions — leave them.
-  if (!guess.restored && !scene.skeletons?.length) {
+  if (!guess.restored && !scene.skeletons?.length && guess.method === 'bounds') {
     const currentState = autoRigState;
     requestAnimationFrame(() => { if (autoRigState === currentState) snapAllMarkersToBody(); });
   }
@@ -4135,7 +4189,7 @@ async function startAutoRigAdjust() {
   if (hint) {
     hint.textContent = guess.reRig
       ? 'Markers placed from the current skeleton bind pose. Drag them to adjust joint placement. Apply preserves the current skeleton and weights; enable Rebuild Skeleton explicitly to replace them.'
-      : "Drag the yellow joint markers in the viewport to match your character's anatomy (click a marker to attach the move gizmo), then apply.";
+      : 'Skeleton and hands analyzed. Review the highlighted diagnostics, adjust any markers that need it, then Apply Rig. The mesh stays in its current rest shape.';
   }
 
   showToast('Adjust the joint markers, then Apply Rig.');
@@ -4338,7 +4392,9 @@ async function runBatchAutoRig(files) {
     try {
       const formData = new FormData();
       formData.append('file', new Blob([await file.arrayBuffer()], { type: 'model/gltf-binary' }), file.name);
-      formData.append('options', JSON.stringify({ skeletonPreset, twistBones, ...layoutOptions }));
+      // Batch files have no manually reviewed markers. Auto mode checks each hand.
+      const skinFingers = document.getElementById('autorig-skin-fingers')?.value === 'off' ? false : 'auto';
+      formData.append('options', JSON.stringify({ skeletonPreset, twistBones, skinFingers, ...layoutOptions }));
       const res = await fetch('/api/autorig', { method: 'POST', body: formData });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -4428,7 +4484,8 @@ async function applyAutoRig() {
     const formData = new FormData();
     formData.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
     const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
-    const skinFingers = document.getElementById('autorig-skin-fingers')?.checked === true;
+    const fingerMode = document.getElementById('autorig-skin-fingers')?.value || 'auto';
+    const skinFingers = fingerMode === 'manual' ? true : fingerMode === 'auto' ? 'auto' : false;
     const rebuild = document.getElementById('autorig-rebuild')?.checked === true;
     const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
     formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, twistBones, ...layoutOptions }));
