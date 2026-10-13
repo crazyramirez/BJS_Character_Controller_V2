@@ -1,6 +1,6 @@
 import { parentPort } from 'node:worker_threads';
 import { analyzeGLB, mergeGLBs } from './merge_api.mjs';
-import { autoRigGLB, guessJoints } from './autorig_api.mjs';
+import { autoRigGLB, guessJoints, orientGLB } from './autorig_api.mjs';
 import { convertFBXToGLB } from './fbx_api.mjs';
 
 function binaryResult(value, extra = {}) {
@@ -15,9 +15,15 @@ parentPort.on('message', async ({ type, payload }) => {
     if (type === 'analyze') {
       result = { message: { kind: 'json', data: await analyzeGLB(payload.file) }, transfer: [] };
     } else if (type === 'merge') {
-      result = binaryResult(await mergeGLBs(payload.character, payload.animations, payload.options));
+      const report = {};
+      result = binaryResult(await mergeGLBs(payload.character, payload.animations,
+        { ...payload.options, reportSink: report }), { report });
     } else if (type === 'guessJoints') {
       result = { message: { kind: 'json', data: await guessJoints(payload.file, payload.options) }, transfer: [] };
+    } else if (type === 'orient') {
+      const { buffer, orientation, placement } = await orientGLB(payload.file, payload.options);
+      result = buffer ? binaryResult(buffer, { orientation, placement })
+        : { message: { kind: 'json', data: { orientation, placement } }, transfer: [] };
     } else if (type === 'autorig') {
       const report = {};
       result = binaryResult(await autoRigGLB(payload.file, { ...payload.options, reportSink: report }), { report });

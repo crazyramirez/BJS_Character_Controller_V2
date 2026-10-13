@@ -138,6 +138,22 @@ test('successful Apply commits layout only after the model reload succeeds', asy
   assert.equal(run('autoRigRequest'), null);
 });
 
+test('Apply without rig edits preserves the current scene, animations and posture', async () => {
+  const { run, events } = editor(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(12) }));
+  run(`readAutoRigReport = () => ({ mode: 'adjust', adjustedJoints: 0 });
+    charTransformConfig.ARM_SPREAD_ANGLE = 12;
+    const previousBuffer = characterGlbBuffer;
+    animationsGlbBuffer = new ArrayBuffer(16);
+    const previousAnimations = animationsGlbBuffer;`);
+  await run('applyAutoRig()');
+  assert.ok(!events.includes('reload'));
+  assert.equal(run('characterGlbBuffer === previousBuffer'), true);
+  assert.equal(run('animationsGlbBuffer === previousAnimations'), true);
+  assert.equal(run('charTransformConfig.ARM_SPREAD_ANGLE'), 12);
+  assert.equal(run('autoRigRequest'), null);
+  assert.ok(events.some(message => message.includes('Rig unchanged')));
+});
+
 for (const [mode, expected] of [['auto', 'auto'], ['off', false], ['manual', true]]) {
   test(`finger skinning mode ${mode} reaches the server`, async () => {
     let submitted;

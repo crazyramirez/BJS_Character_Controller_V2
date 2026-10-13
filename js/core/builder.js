@@ -19,6 +19,7 @@ let animationsGlbBuffer = null; // ArrayBuffer of the preloaded animations GLB
 let isServerAvailable = false;
 let characterFilename = 'character.glb';
 let animationsFilename = 'animations.glb';
+let animationImportInProgress = false;
 
 // Skeleton info
 let skeletonInfo = null; // { bones, rootBones, hasSkin, boneCount } from /api/analyze
@@ -80,6 +81,9 @@ let physicsConfig = {
   CAM_FOLLOW_PITCH: 1.047,
   CAM_FOLLOW_DIST: 8.0,
   CAM_LOCK_PITCH: false,
+  HEAD_LOOK: true,
+  STRIDE_MATCHING: true,
+  UPPER_BODY_ACTIONS: false,
   JOYSTICK_LOCK_X: false,
   DOUBLE_JUMP_ENABLED: true,
   SPEED_MULTIPLIER: 1.0,
@@ -258,7 +262,7 @@ function loadPreferences() {
 
 function savePreferences() {
   try {
-    localStorage.setItem('builder_anim_mappings', JSON.stringify(animMappings));
+    localStorage.setItem('builder_anim_mappings', JSON.stringify({ ...savedAnimMappings, ...animMappings }));
     localStorage.setItem('builder_key_bindings', JSON.stringify(keyBindings));
     localStorage.setItem('builder_physics_config', JSON.stringify(physicsConfig));
     localStorage.setItem('builder_custom_animations', JSON.stringify(customAnimations));
@@ -843,6 +847,9 @@ function syncPhysicsConfigToUI() {
 
   setCheckbox('toggle-cam-follow-lock', physicsConfig.CAM_FOLLOW_LOCK);
   setCheckbox('toggle-cam-lock-pitch', physicsConfig.CAM_LOCK_PITCH);
+  setCheckbox('toggle-head-look', physicsConfig.HEAD_LOOK);
+  setCheckbox('toggle-stride-matching', physicsConfig.STRIDE_MATCHING !== false);
+  setCheckbox('toggle-upper-body-actions', physicsConfig.UPPER_BODY_ACTIONS === true);
   setCheckbox('toggle-joystick-lock-x', physicsConfig.JOYSTICK_LOCK_X);
   setCheckbox('toggle-dynamic-fov', physicsConfig.DYNAMIC_FOV);
   setCheckbox('toggle-cam-tilt', physicsConfig.CAM_TILT);
@@ -1269,19 +1276,39 @@ function showToast(msg, isError = false) {
   setTimeout(() => toast.classList.remove('show'), 3500);
 }
 
-function readAutoRigReport(response) {
-  const raw = response.headers.get('X-Autorig-Report');
+function decodeReportHeader(response, header) {
+  const raw = response.headers.get(header);
   if (!raw) return null;
+  if (response.headers.get(`${header}-Encoding`) === 'base64url') {
+    const base64 = raw.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(raw.length / 4) * 4, '=');
+    const bytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+  // Backward compatibility with servers from before v2.4.1.
+  return JSON.parse(raw);
+}
+
+function readAutoRigReport(response) {
   try {
-    if (response.headers.get('X-Autorig-Report-Encoding') === 'base64url') {
-      const base64 = raw.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(raw.length / 4) * 4, '=');
-      const bytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
-      return JSON.parse(new TextDecoder().decode(bytes));
-    }
-    // Backward compatibility with servers from before v2.4.1.
-    return JSON.parse(raw);
+    return decodeReportHeader(response, 'X-Autorig-Report');
   } catch (error) {
     console.warn('[autorig] Ignoring malformed quality report header:', error);
+    return null;
+  }
+}
+
+// Retarget diagnostics from /api/merge (root-motion scale, ground fixes,
+// quaternion repairs, dropped duplicate tracks, hierarchy differences).
+function readMergeReport(response) {
+  try {
+    const report = decodeReportHeader(response, 'X-Merge-Report');
+    if (report) {
+      lastMergeReport = report;
+      console.log('[merge] Retarget report:', report);
+    }
+    return report;
+  } catch (error) {
+    console.warn('[merge] Ignoring malformed retarget report header:', error);
     return null;
   }
 }
@@ -1355,12 +1382,133 @@ async function maybeConvertFbxFile(file) {
 // ═══════════════════════════════════════════════════════════
 // CHARACTER MESH LOADER (primary import)
 // ═══════════════════════════════════════════════════════════
+// True when the GLB's JSON chunk declares skins (read without parsing buffers).
+function glbDeclaresSkins(buffer) {
+  try {
+    const view = new DataView(buffer);
+    if (view.getUint32(0, true) !== 0x46546C67 || view.getUint32(16, true) !== 0x4E4F534A) return false;
+    const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 20, view.getUint32(12, true))));
+    return Array.isArray(json.skins) && json.skins.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Skinless meshes generated facing ±X, lying down or off-centre (Tripo, Meshy,
+// scans) are stood up facing +Z with their feet on the ground at the origin
+// before anything sees them, so the viewport, auto-rig markers, symmetric
+// editing, the controller capsule and the export share one frame.
+// Fail-open: any error keeps the original buffer.
+async function orientImportedMesh(buffer, name) {
+  if (!isServerAvailable || glbDeclaresSkins(buffer)) return buffer;
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([buffer], { type: 'model/gltf-binary' }), name);
+    const res = await fetch('/api/autorig-orient', { method: 'POST', body: formData });
+    if (res.status !== 200) return buffer;
+    const orientation = JSON.parse(res.headers.get('X-Autorig-Orientation') || '{}');
+    const oriented = await res.arrayBuffer();
+    const steps = [];
+    if (orientation.applied) steps.push(`faced ${orientation.facing || 'sideways'} — turned to face forward (+Z)`);
+    if (orientation.placement?.applied) steps.push('placed on the ground at the origin');
+    if (steps.length) showToast(`Model ${steps.join(', ')}.`);
+    return oriented;
+  } catch (e) {
+    console.warn('Orientation pre-flight failed, keeping the original mesh.', e);
+    return buffer;
+  }
+}
+
+function autoRigOnImportEnabled() {
+  return document.getElementById('autorig-on-import')?.checked !== false;
+}
+
+// New skeleton = new bind pose: stale posture offsets (arm spread/splay,
+// shoulder raise, leg spread, spine, hips tilt) no longer apply. Reset them
+// BEFORE reloading so the merge doesn't bake them into the new rig.
+function resetPostureForNewRig() {
+  charTransformConfig.ARM_SPREAD_ANGLE = 0;
+  charTransformConfig.ARM_SPLAY_ANGLE = 0;
+  charTransformConfig.SHOULDER_RAISE_ANGLE = 0;
+  charTransformConfig.LEG_SPREAD_ANGLE = 0;
+  charTransformConfig.SPINE_STRAIGHTEN_ANGLE = 0;
+  charTransformConfig.HIPS_TILT_ANGLE = 0;
+  charTransformConfig.HANDS_OPEN_CLOSE = 0;
+  syncCharTransformToUI();
+}
+
+// Rig a freshly imported skinless mesh with the analysed joints, no marker
+// review: the same server analysis and rig as Generate Skeleton → Apply.
+// Outcome: 'rigged' (rigged character reloaded), 'superseded' (a newer
+// import took over), 'review' (needs the joint editor) or 'failed'.
+async function autoRigImportedMesh(name) {
+  const baseBuffer = autoRigSourceGlbBuffer;
+  const layoutOptions = getAutoRigLayoutOptions();
+  const request = beginAutoRigRequest('apply');
+  showLoading(`Auto-rigging ${name}…`);
+  setLoaderStep('analyze', 'active');
+  try {
+    const analysis = new FormData();
+    analysis.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), name);
+    analysis.append('options', JSON.stringify(layoutOptions));
+    const guessRes = await fetch('/api/autorig-joints', { method: 'POST', body: analysis, signal: request.controller.signal });
+    if (!guessRes.ok) {
+      const err = await guessRes.json().catch(() => ({ error: guessRes.statusText }));
+      throw new Error(err.error || 'Joint analysis failed');
+    }
+    const guess = await guessRes.json();
+    if (!isCurrentAutoRigRequest(request)) return 'superseded';
+    if (guess.suggestedBodyPlan && guess.suggestedBodyPlan !== layoutOptions.bodyPlan) {
+      // The body plan is a judgement call: let the user confirm it.
+      showToast('This mesh looks like a quadruped — set Body plan: Animal, review the joints and apply the rig.');
+      return 'review';
+    }
+
+    showMergeProgress(true, 'Auto-rigging on server…');
+    const rig = new FormData();
+    rig.append('file', new Blob([baseBuffer], { type: 'model/gltf-binary' }), name);
+    const skeletonPreset = document.getElementById('autorig-skeleton-preset')?.value || 'mixamo';
+    const skinFingers = document.getElementById('autorig-skin-fingers')?.value === 'off' ? false : 'auto';
+    const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
+    const boneOrientation = document.getElementById('autorig-aligned-bones')?.checked === true ? 'aligned' : 'world';
+    rig.append('options', JSON.stringify({ joints: guess.joints, skeletonPreset, skinFingers, twistBones, boneOrientation, ...layoutOptions }));
+    const res = await fetch('/api/autorig', { method: 'POST', body: rig, signal: request.controller.signal });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Auto-rig failed');
+    }
+    const report = readAutoRigReport(res);
+    const riggedBuffer = await res.arrayBuffer();
+    if (!isCurrentAutoRigRequest(request)) return 'superseded';
+    lastAutoRigReport = report;
+    completeMergeProgress();
+    resetPostureForNewRig();
+    autoRigRequest = null;
+    await loadCharacterMeshFile(new File([riggedBuffer], name), riggedBuffer, true);
+    if (request.revision !== autoRigModelRevision) return 'superseded';
+    lastAppliedRig = { joints: JSON.parse(JSON.stringify(guess.joints)), forBuffer: baseBuffer, layoutOptions };
+    const review = guess.diagnostics?.status === 'review';
+    showToast(`✓ ${name} auto-rigged${Number.isFinite(report?.score) ? ` (skin quality ${report.score}/100)` : ''}` +
+      (review ? ' — check the joints in Generate Skeleton (Auto-Rig).' : '.'));
+    return 'rigged';
+  } catch (err) {
+    if (request.controller.signal.aborted || request.revision !== autoRigModelRevision) return 'superseded';
+    showMergeProgress(false);
+    console.error('[autorig] automatic rig failed:', err);
+    showToast(`Automatic rig failed: ${err.message} — use Generate Skeleton (Auto-Rig) to place the joints.`, true);
+    return 'failed';
+  } finally {
+    if (autoRigRequest === request) autoRigRequest = null;
+  }
+}
+
 async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigReload = false) {
   if (!internalRigReload) {
     autoRigModelRevision++;
     cancelAutoRigAdjust();
     autoRigBodyMeshIds = null;
     lastAutoRigReport = null;
+    lastMergeReport = null;
   }
   if (!preloadedBuffer && isFbxFile(file)) {
     try {
@@ -1387,7 +1535,8 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigRe
   }
   showLoading(`Importing ${file.name}…`);
 
-  const arrayBuffer = preloadedBuffer || await file.arrayBuffer();
+  let arrayBuffer = preloadedBuffer || await file.arrayBuffer();
+  if (!internalRigReload) arrayBuffer = await orientImportedMesh(arrayBuffer, file.name);
   characterGlbBuffer = arrayBuffer;
   originalCharacterGlbBuffer = arrayBuffer;
   characterFilename = file.name;
@@ -1396,8 +1545,19 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigRe
 
   try {
     await _loadGlbIntoScene(arrayBuffer, file.name);
-    if (!internalRigReload && (!scene.skeletons || scene.skeletons.length === 0)) {
+    let openRigEditor = false;
+    const staticImport = !internalRigReload && (!scene.skeletons || scene.skeletons.length === 0);
+    if (staticImport) {
       autoRigSourceGlbBuffer = arrayBuffer;
+      // No skeleton: rig it right away. The rigged reload runs the analysis
+      // and the animation merge, so this static mesh skips them.
+      if (isServerAvailable && autoRigOnImportEnabled()) {
+        setLoaderStep('import', 'completed');
+        const outcome = await autoRigImportedMesh(file.name);
+        if (outcome === 'rigged' || outcome === 'superseded') return;
+        openRigEditor = outcome === 'review';
+        showLoading(`Importing ${file.name}…`);
+      }
     }
     setLoaderStep('import', 'completed');
     setLoaderStep('analyze', 'active');
@@ -1441,12 +1601,14 @@ async function loadCharacterMeshFile(file, preloadedBuffer = null, internalRigRe
       }
     }
 
-    if (animationsGlbBuffer) {
+    // A static mesh has nothing to retarget onto: keep the library for the rig.
+    if (animationsGlbBuffer && !staticImport) {
       await applyPreloadedAnimations();
     } else {
       hideLoading();
       showToast(`✓ ${file.name} loaded!`);
     }
+    if (openRigEditor) await startAutoRigAdjust();
   } catch (err) {
     console.error(err);
     characterGlbBuffer = null;
@@ -1494,6 +1656,7 @@ async function applyPreloadedAnimations() {
       completeMergeProgress();
       showLoading('Loading merged character…');
 
+      readMergeReport(res);
       const mergedBuffer = await res.arrayBuffer();
       characterGlbBuffer = mergedBuffer;
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
@@ -1538,6 +1701,36 @@ async function loadAnimationBatchFile(file) {
     return;
   }
 
+  if (animationImportInProgress) return;
+  animationImportInProgress = true;
+  try {
+    const mode = detectedAnimations.length ? await chooseAnimationImportMode(file.name) : 'replace';
+    if (mode === 'cancel') return;
+    await importAnimationFile(file, mode);
+  } catch (err) {
+    hideLoading();
+    showToast('Failed to import animations: ' + err.message, true);
+  } finally {
+    animationImportInProgress = false;
+  }
+}
+
+function chooseAnimationImportMode(filename) {
+  const dialog = document.getElementById('animation-import-dialog');
+  document.getElementById('animation-import-message').textContent =
+    `Import "${filename}"? Your library currently contains ${detectedAnimations.length} animation(s).`;
+  dialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => {
+      resolve(['replace', 'merge'].includes(dialog.returnValue) ? dialog.returnValue : 'cancel');
+    }, { once: true });
+    dialog.showModal();
+  });
+}
+
+async function importAnimationFile(file, mode) {
+  const removeExistingAnimations = mode === 'replace';
+
   if (isFbxFile(file)) {
     try {
       file = await maybeConvertFbxFile(file);
@@ -1554,21 +1747,24 @@ async function loadAnimationBatchFile(file) {
   showLoading(`Reading ${file.name}…`);
 
   const animBuffer = await file.arrayBuffer();
-  animationsGlbBuffer = animBuffer;
-  animationsFilename = file.name;
   setLoaderStep('read', 'completed');
   setLoaderStep('merge', 'active');
 
   if (isServerAvailable) {
     showMergeProgress(true, `Merging ${file.name} on server…`);
     try {
-      const baseBuffer = originalCharacterGlbBuffer || characterGlbBuffer;
-      console.log(`[batch-import] Using ${originalCharacterGlbBuffer ? 'original' : 'current'} character buffer (${(baseBuffer.byteLength / 1024).toFixed(0)} KB) + anim file (${(animBuffer.byteLength / 1024).toFixed(0)} KB)`);
+      const baseBuffer = removeExistingAnimations
+        ? (originalCharacterGlbBuffer || characterGlbBuffer)
+        : characterGlbBuffer;
       const formData = new FormData();
       formData.append('character', new Blob([baseBuffer], { type: 'model/gltf-binary' }), 'character.glb');
       formData.append('animations', new Blob([animBuffer], { type: 'model/gltf-binary' }), file.name);
 
-      formData.append('options', JSON.stringify(getMergeOptions()));
+      formData.append('options', JSON.stringify(getMergeOptions({
+        removeExistingAnimations,
+        existingAnimationNames: detectedAnimations,
+        requireAnimations: true,
+      })));
 
       const res = await fetch('/api/merge', { method: 'POST', body: formData });
       if (!res.ok) {
@@ -1579,22 +1775,30 @@ async function loadAnimationBatchFile(file) {
       completeMergeProgress();
       showLoading('Loading merged character…');
 
+      readMergeReport(res);
       const mergedBuffer = await res.arrayBuffer();
       console.log(`[batch-import] Merged result: ${(mergedBuffer.byteLength / 1024).toFixed(0)} KB`);
-      characterGlbBuffer = mergedBuffer; // update stored char buffer to the merged one
       await _loadGlbIntoScene(mergedBuffer, 'merged.glb');
+      characterGlbBuffer = mergedBuffer;
+      // Retain the complete library for later exports and rig reloads, including
+      // animations kept by previous imports (not just the last imported file).
+      animationsGlbBuffer = mergedBuffer;
+      animationsFilename = 'character_animated.glb';
+      updateExportCode();
       await updateSkeletonInfoAfterMerge(mergedBuffer);
       console.log(`[batch-import] Detected animations after load: [${detectedAnimations.join(', ')}]`);
       setLoaderStep('merge', 'completed');
 
       hideLoading();
-      showToast(`✓ Merged! ${detectedAnimations.length} animations loaded.`);
+      showToast(`✓ Animations ${removeExistingAnimations ? 'replaced' : 'merged'}! ${detectedAnimations.length} animations loaded.`);
     } catch (err) {
       completeMergeProgress();
       console.error('Server merge failed, falling back to client-side load:', err);
       showToast('Server merge failed — falling back to client-side retargeting.', true);
       try {
-        await loadAnimationsOffline(animBuffer, file.name);
+        await loadAnimationsOffline(animBuffer, file.name, removeExistingAnimations);
+        animationsGlbBuffer = animBuffer;
+        animationsFilename = file.name;
       } catch (clientErr) {
         console.error('Client-side retargeting fallback failed:', clientErr);
         showToast('Client-side retargeting failed: ' + clientErr.message, true);
@@ -1606,7 +1810,9 @@ async function loadAnimationBatchFile(file) {
     // Offline fallback: load animation file directly with client retargeting
     showLoading(`Retargeting ${file.name} on client…`);
     try {
-      await loadAnimationsOffline(animBuffer, file.name);
+      await loadAnimationsOffline(animBuffer, file.name, removeExistingAnimations);
+      animationsGlbBuffer = animBuffer;
+      animationsFilename = file.name;
       showToast(`✓ Client-side retargeted animations! ${detectedAnimations.length} animations loaded.`);
     } catch (err) {
       console.error(err);
@@ -1621,171 +1827,64 @@ async function loadAnimationBatchFile(file) {
 // SINGLE ANIMATION MERGE
 // ═══════════════════════════════════════════════════════════
 async function addSingleAnimationFile(file) {
-  await loadAnimationBatchFile(file); // same pipeline — additive merge
+  await loadAnimationBatchFile(file);
 }
 
 // ═══════════════════════════════════════════════════════════
 // OFFLINE RUNTIME RETARGETING (Fallback via AnimatorAvatar)
 // ═══════════════════════════════════════════════════════════
-async function loadAnimationsOffline(arrayBuffer, filename) {
+async function loadAnimationsOffline(arrayBuffer, filename, removeExistingAnimations = false) {
   if (!activeCharacter) {
     throw new Error('Load a character mesh first!');
   }
 
-  const blob = new Blob([arrayBuffer]);
-  const blobUrl = URL.createObjectURL(blob);
-  const container = await BABYLON.SceneLoader.LoadAssetContainerAsync('', blobUrl, scene, null, '.glb');
-  URL.revokeObjectURL(blobUrl);
-
-  const sourceGroups = container.animationGroups;
-  if (!sourceGroups || sourceGroups.length === 0) {
-    throw new Error("No animation groups found in the animation file.");
-  }
-
-  const skeleton = scene.skeletons[0];
-  const characterRoot = activeCharacter.charRoot;
-
-  // Save and temporarily adjust Character Creator A-pose arms to T-pose for sampling rest matrices
-  const lUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_l_upperarm') : null;
-  const rUpperArm = skeleton ? skeleton.bones.find(b => b.name.toLowerCase() === 'cc_base_r_upperarm') : null;
-
-  let lOrigRot = null, rOrigRot = null;
-  if (lUpperArm) {
-    lOrigRot = lUpperArm.rotation.clone();
-    lUpperArm.rotate(BABYLON.Axis.Z, -Math.PI / 6, BABYLON.Space.LOCAL); // rotate left arm up by ~30 deg
-  }
-  if (rUpperArm) {
-    rOrigRot = rUpperArm.rotation.clone();
-    rUpperArm.rotate(BABYLON.Axis.Z, Math.PI / 6, BABYLON.Space.LOCAL); // rotate right arm up by ~30 deg
-  }
-
-  const avatar = new BABYLON.AnimatorAvatar("activeCharAvatar", characterRoot);
-
-  // Restore original rotations
-  if (lUpperArm && lOrigRot) lUpperArm.rotation.copyFrom(lOrigRot);
-  if (rUpperArm && rOrigRot) rUpperArm.rotation.copyFrom(rOrigRot);
-
-  const boneMap = new Map();
-  const targetBones = skeleton ? skeleton.bones : [];
-  const targetByName = new Map();
-  const targetByNorm = new Map();
-  targetBones.forEach(bone => {
-    targetByName.set(bone.name.toLowerCase(), bone.name);
-    const norm = normBone(bone.name);
-    if (norm) targetByNorm.set(norm, bone.name);
-  });
-
-  const boneAliases = {
-    'mixamorig:spine': 'cc_base_waist',
-    'mixamorig:spine1': 'cc_base_spine01',
-    'mixamorig:spine2': 'cc_base_spine02',
-    'mixamorig:neck': 'cc_base_necktwist01',
-    'mixamorig:neck1': 'cc_base_necktwist02',
-  };
-
-  sourceGroups.forEach(sg => {
-    sg.targetedAnimations.forEach(ta => {
-      const srcNode = ta.target;
-      if (!srcNode || !srcNode.name) return;
-      const srcName = srcNode.name;
-      if (boneMap.has(srcName)) return;
-
-      let matchedName = targetByName.get(srcName.toLowerCase());
-      if (!matchedName) {
-        const alias = boneAliases[srcName.toLowerCase()];
-        if (alias) {
-          matchedName = targetByName.get(alias);
-        }
-      }
-      if (!matchedName) {
-        const norm = normBone(srcName);
-        matchedName = targetByNorm.get(norm);
-      }
-      if (matchedName) {
-        boneMap.set(srcName, matchedName);
-      }
-    });
-  });
-
-  const findSourceNodeByNormalizedRole = (sg, role) => {
-    const roleNorms = {
-      hips: ['hips', 'pelvis', 'hip'],
-      leftfoot: ['leftfoot', 'footl', 'leftankle', 'ankle_l'],
-    };
-    const searchList = roleNorms[role] || [];
-    for (const ta of sg.targetedAnimations) {
-      const node = ta.target;
-      if (!node || !node.name) continue;
-      const norm = normBone(node.name);
-      if (searchList.some(s => norm.includes(s) || s.includes(norm))) return node.name;
+  // Shared with the standalone controller (character-controller.js): canonical
+  // bone roles, the source clip's saved reference pose and a target rest pose
+  // aligned to it (T- vs A-pose), BabylonJS 9 AnimatorAvatar retargeting, then
+  // rotation + root-translation tracks only and server-equivalent grounding.
+  const { container, json } = await loadRetargetSource(scene, arrayBuffer);
+  let retargetedGroups;
+  try {
+    if (!container.animationGroups.some(ag => !/t[\-_]?pose/i.test(ag.name))) {
+      throw new Error("No animation groups found in the animation file.");
     }
-    return null;
-  };
+    const { groups, report } = retargetAnimationGroupsClient(scene, activeCharacter.charRoot, container, { json });
+    console.log(`[offline-retarget] ${filename}:`, report);
+    if (!groups.length) throw new Error(`No matching animation tracks found in "${filename}".`);
+    if (report.skipped?.length) showToast(`Skipped clips without matching bones: ${report.skipped.join(', ')}`, true);
+    retargetedGroups = groups;
+  } finally {
+    container.dispose();
+  }
 
-  const retargetedGroups = [];
-  sourceGroups.forEach(sg => {
-    const cleanName = cleanAnimName(sg.name);
-    const srcRootName = findSourceNodeByNormalizedRole(sg, 'hips') || "Hips";
-    const srcGroundName = findSourceNodeByNormalizedRole(sg, 'leftfoot') || "LeftFoot";
-
-    const retargeted = avatar.retargetAnimationGroup(sg, {
-      animationGroupName: cleanName,
-      retargetAnimationKeys: true,
-      fixRootPosition: true,
-      fixGroundReference: true,
-      rootNodeName: srcRootName,
-      groundReferenceNodeName: srcGroundName,
-      mapNodeNames: boneMap,
-      fixGroundReferenceDynamicRefNode: true
-    });
-
-    // Filter retargeted animations in-place to prevent scaling and non-root translation deformations
-    const filteredAnims = retargeted.targetedAnimations.filter(ta => {
-      const targetNode = ta.target;
-      if (!targetNode || !targetNode.name) return true;
-      const property = ta.animation.targetProperty;
-
-      // 1. Remove scaling tracks entirely
-      if (property === 'scaling') return false;
-
-      // 2. Remove position/translation tracks for all nodes except the root bone (Hips)
-      if (property === 'position') {
-        const nameLower = targetNode.name.toLowerCase();
-        const isHips = nameLower.includes('hips') || nameLower.includes('pelvis') || nameLower.includes('hip');
-        if (!isHips) return false;
-      }
-
-      return true;
-    });
-    retargeted.targetedAnimations.length = 0;
-    retargeted.targetedAnimations.push(...filteredAnims);
-
-    retargeted.stop();
-    scene.addAnimationGroup(retargeted);
-    retargetedGroups.push(retargeted);
-  });
-
-  // Clean up original animation groups from the loaded file
-  container.dispose();
-
-  // Update detected animations list
-  const newAnimNames = retargetedGroups.map(ag => cleanAnimName(ag.name));
-  detectedAnimations = [...new Set([...detectedAnimations, ...newAnimNames])];
-
-  // Add/replace in rawAnimationGroups
-  retargetedGroups.forEach(ag => {
-    const cleanName = cleanAnimName(ag.name);
-    const oldIdx = activeCharacter.rawAnimationGroups.findIndex(g => cleanAnimName(g.name) === cleanName);
-    if (oldIdx !== -1) {
-      const oldAg = activeCharacter.rawAnimationGroups[oldIdx];
-      oldAg.stop();
-      oldAg.dispose();
-      activeCharacter.rawAnimationGroups.splice(oldIdx, 1);
+  // Commit only after retargeting succeeds. Rebuild the controller so removed
+  // groups and aliases cannot remain active after replacing or overwriting clips.
+  activeCharacter.animCtrl.destroy();
+  const newAnimNames = new Set(retargetedGroups.map(ag => cleanAnimName(ag.name)));
+  activeCharacter.rawAnimationGroups = activeCharacter.rawAnimationGroups.filter(group => {
+    if (removeExistingAnimations || newAnimNames.has(cleanAnimName(group.name))) {
+      group.stop();
+      group.dispose();
+      return false;
     }
-    activeCharacter.rawAnimationGroups.push(ag);
-    // Re-map it in animCtrl
-    activeCharacter.animCtrl.setAnimation(cleanName, ag);
+    return true;
   });
+  retargetedGroups.forEach(group => {
+    const previous = activeCharacter.rawAnimationGroups.findIndex(ag => cleanAnimName(ag.name) === cleanAnimName(group.name));
+    if (previous !== -1) activeCharacter.rawAnimationGroups.splice(previous, 1)[0].dispose();
+    activeCharacter.rawAnimationGroups.push(group);
+  });
+  activeCharacter.animCtrl = new AnimCtrl(activeCharacter.rawAnimationGroups, scene);
+  activeCharacter.animCtrl.charCtrl = activeCharacter.charCtrl;
+  activeCharacter.charCtrl.anim = activeCharacter.animCtrl;
+
+  detectedAnimations = [...new Set(activeCharacter.rawAnimationGroups.map(ag => cleanAnimName(ag.name)))];
+  autoMapAnimations();
+  renderAnimationLibrary();
+  renderAnimationsMappingTab();
+  renderCustomAnimationsTab();
+  renderAnimationEventsTab();
+  updateExportCode();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2136,7 +2235,6 @@ async function _loadGlbIntoScene(arrayBuffer, filename = 'model.glb', animOnly =
 
   // Refresh UI
   autoMapAnimations();
-  savedAnimMappings = null; // consumed — don't let stale saved None values block future loads
   renderAnimationsMappingTab();
   renderCustomAnimationsTab();
   renderAnimationLibrary();
@@ -2152,7 +2250,7 @@ function deleteAnimation(animName) {
   // Clear any mappings pointing to this animation
   Object.keys(animMappings).forEach(key => {
     if (animMappings[key] && animMappings[key].animName === animName) {
-      animMappings[key] = { animName: 'None', from: 0, to: 100 };
+      animMappings[key] = { animName: 'None', from: 0, to: 100, autoMapped: true };
     }
   });
   customAnimations.forEach(cust => {
@@ -2231,6 +2329,7 @@ function renderSkeletonHealth(health) {
     const tags = [
       r.geodesicWeights ? 'geodesic weights' : 'euclidean weights',
       r.twistBones ? 'twist bones' : null,
+      r.boneOrientation === 'aligned' ? 'bone-aligned joints' : null,
       r.symmetrized ? 'symmetrized' : null,
       r.propsAttached ? `${r.propsAttached} prop(s) attached` : null,
       r.guessMethod ? `guess: ${r.guessMethod}` : null,
@@ -2256,6 +2355,36 @@ function renderSkeletonHealth(health) {
         <strong>Rig adjusted: ${Number(r.adjustedJoints) || 0} joint(s) moved</strong>
         <p>${escapeHtml((r.notes || []).join(' ') || 'Original skin weights and rest shape preserved.')}</p>
       </div></div>`;
+  }
+
+  // Retarget report from the last animation merge (X-Merge-Report header)
+  let mergeReportHtml = '';
+  if (lastMergeReport) {
+    const r = lastMergeReport;
+    const warnings = (r.hierarchyMismatches?.length || 0) + (r.duplicateTracksDropped || 0) + (r.morph?.dropped || 0);
+    const clamped = (r.groundTop || []).some(c => c.clamped);
+    const tags = [
+      Number.isFinite(r.rootMotionScale) ? `root motion ×${Number(r.rootMotionScale).toFixed(3)}` : null,
+      r.groundCorrected ? `ground fixed on ${r.groundCorrected} clip(s), max ${(Number(r.groundMaxShift) * 100).toFixed(1)} cm` : 'ground unchanged',
+      r.quaternionRepairs ? `${r.quaternionRepairs} rotation glitch(es) repaired` : null,
+      r.duplicateTracksDropped ? `${r.duplicateTracksDropped} duplicate track(s) dropped` : null,
+      r.morph?.retargeted ? `${r.morph.retargeted} morph track(s)` : null,
+      r.morph?.dropped ? `${r.morph.dropped} unmatched morph track(s)` : null,
+    ].filter(Boolean).join(' · ');
+    const detail = [
+      ...(r.hierarchyMismatches || []).map(m => `Hierarchy: ${m}`),
+      ...Object.entries(r.groundSkipped || {}).map(([reason, count]) => `Ground skipped (${reason}): ${count}`),
+      ...(r.notes || []),
+    ].join(' ');
+    mergeReportHtml = `
+      <div class="health-check ${warnings || clamped ? 'warn' : 'pass'}">
+        <span class="health-dot"></span>
+        <div>
+          <strong>Retarget report</strong>
+          <p>${escapeHtml(tags)}</p>
+          ${detail ? `<p>${escapeHtml(detail)}</p>` : ''}
+        </div>
+      </div>`;
   }
 
   const mapping = skeletonInfo?.mapping;
@@ -2311,6 +2440,7 @@ function renderSkeletonHealth(health) {
         </div>
       `).join('')}
       ${rigReportHtml}
+      ${mergeReportHtml}
     </div>
     ${mappingHtml}
     <div class="health-actions">
@@ -2504,6 +2634,7 @@ function sameAutoRigLayout(a, b) {
 // swap or preset load. Restoring also re-derives the rest-space canonicals.
 const markerHistory = { undo: [], redo: [] };
 let lastAutoRigReport = null; // server skin-quality report from the last Apply Rig
+let lastMergeReport = null; // server retarget report from the last animation merge
 
 function snapshotMarkers() {
   const st = autoRigState;
@@ -2802,6 +2933,11 @@ function setupAutoRigControls() {
   };
   planSel?.addEventListener('change', onLayoutChange);
   fingerSel?.addEventListener('change', onLayoutChange);
+  const autoImport = document.getElementById('autorig-on-import');
+  if (autoImport) {
+    autoImport.checked = localStorage.getItem('builder_autorig_on_import') !== '0';
+    autoImport.addEventListener('change', () => localStorage.setItem('builder_autorig_on_import', autoImport.checked ? '1' : '0'));
+  }
   document.getElementById('btn-autorig-apply')?.addEventListener('click', applyAutoRig);
   document.getElementById('btn-autorig-cancel')?.addEventListener('click', cancelAutoRigAdjust);
   document.getElementById('btn-autorig-snap-body')?.addEventListener('click', snapAllMarkersToBody);
@@ -3753,6 +3889,9 @@ async function startAutoRigAdjust() {
   // exact finger spacing; symmetry is only a creation aid for skinless meshes.
   if (symmetric && guess.joints && !guess.reRig && !guess.restored) {
     Object.keys(guess.joints).forEach(name => {
+      // Digits are measured on each hand's own surface; mirroring them would
+      // pull markers off asymmetric hands (and off automatic finger skinning).
+      if (/^LeftHand(Thumb|Index|Middle|Ring|Pinky)/.test(name)) return;
       if (name.startsWith('Left')) {
         const leftPos = guess.joints[name];
         const rightName = 'Right' + name.slice(4);
@@ -4391,10 +4530,12 @@ async function runBatchAutoRig(files) {
     showMergeProgress(true, `Batch auto-rig: ${i + 1}/${glbs.length} — ${file.name}`);
     try {
       const formData = new FormData();
-      formData.append('file', new Blob([await file.arrayBuffer()], { type: 'model/gltf-binary' }), file.name);
+      const placed = await orientImportedMesh(await file.arrayBuffer(), file.name);
+      formData.append('file', new Blob([placed], { type: 'model/gltf-binary' }), file.name);
       // Batch files have no manually reviewed markers. Auto mode checks each hand.
       const skinFingers = document.getElementById('autorig-skin-fingers')?.value === 'off' ? false : 'auto';
-      formData.append('options', JSON.stringify({ skeletonPreset, twistBones, skinFingers, ...layoutOptions }));
+      const boneOrientation = document.getElementById('autorig-aligned-bones')?.checked === true ? 'aligned' : 'world';
+      formData.append('options', JSON.stringify({ skeletonPreset, twistBones, boneOrientation, skinFingers, ...layoutOptions }));
       const res = await fetch('/api/autorig', { method: 'POST', body: formData });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -4488,7 +4629,8 @@ async function applyAutoRig() {
     const skinFingers = fingerMode === 'manual' ? true : fingerMode === 'auto' ? 'auto' : false;
     const rebuild = document.getElementById('autorig-rebuild')?.checked === true;
     const twistBones = document.getElementById('autorig-twist-bones')?.checked === true;
-    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, twistBones, ...layoutOptions }));
+    const boneOrientation = document.getElementById('autorig-aligned-bones')?.checked === true ? 'aligned' : 'world';
+    formData.append('options', JSON.stringify({ joints, skeletonPreset, skinFingers, rebuild, twistBones, boneOrientation, ...layoutOptions }));
 
     const res = await fetch('/api/autorig', { method: 'POST', body: formData, signal: request.controller.signal });
     if (!res.ok) {
@@ -4500,22 +4642,21 @@ async function applyAutoRig() {
     const report = readAutoRigReport(res);
     const riggedBuffer = await res.arrayBuffer();
     if (!isCurrentAutoRigRequest(request)) return;
+    if (report?.mode === 'adjust' && report.adjustedJoints === 0) {
+      // The server returned the original rig byte-for-byte. Keep the current
+      // scene, animations and posture instead of reloading and retargeting it.
+      cancelAutoRigAdjust({ keepRequest: true });
+      completeMergeProgress();
+      hideLoading();
+      showToast('Rig unchanged. Current model and animations preserved.');
+      return;
+    }
     // Keep the editor intact until the server has returned a valid result.
     cancelAutoRigAdjust({ keepRequest: true });
     lastAutoRigReport = report;
     completeMergeProgress();
 
-    // New skeleton = new bind pose: stale posture offsets (arm spread/splay,
-    // shoulder raise, leg spread, spine, hips tilt) no longer apply. Reset
-    // them BEFORE reloading so the merge doesn't bake them into the new rig.
-    charTransformConfig.ARM_SPREAD_ANGLE = 0;
-    charTransformConfig.ARM_SPLAY_ANGLE = 0;
-    charTransformConfig.SHOULDER_RAISE_ANGLE = 0;
-    charTransformConfig.LEG_SPREAD_ANGLE = 0;
-    charTransformConfig.SPINE_STRAIGHTEN_ANGLE = 0;
-    charTransformConfig.HIPS_TILT_ANGLE = 0;
-    charTransformConfig.HANDS_OPEN_CLOSE = 0;
-    syncCharTransformToUI();
+    resetPostureForNewRig();
 
     // Reload through the normal character pipeline: re-analyze, then merge
     // default/preloaded animations against the freshly rigged skeleton.
@@ -4557,6 +4698,7 @@ function clearCharacter() {
   autoRigModelRevision++;
   cancelAutoRigAdjust();
   lastAutoRigReport = null;
+  lastMergeReport = null;
   autoRigBodyMeshIds = null;
   boneMapOverrides = {};
   preserveBoneOverridesOnNextImport = false;
@@ -4674,15 +4816,16 @@ function cleanAnimName(name) {
 }
 
 function autoMapAnimations() {
-  const previousMappings = savedAnimMappings || animMappings || {};
+  const previousMappings = { ...savedAnimMappings, ...animMappings };
+  savedAnimMappings = null;
   animMappings = {};
   STANDARD_ANIM_KEYS.forEach(stdKey => {
-    // Only restore a saved mapping if it actually points to an animation present in the model.
-    // Never restore 'None' from a previous session — let the keyword matcher retry.
-    if (previousMappings[stdKey.key] &&
-      previousMappings[stdKey.key].animName !== 'None' &&
-      detectedAnimations.includes(previousMappings[stdKey.key].animName)) {
-      animMappings[stdKey.key] = { ...previousMappings[stdKey.key] };
+    const previous = previousMappings[stdKey.key];
+    // Manual assignments (including None and legacy saved settings) survive
+    // temporarily missing clips. Apply Rig loads a bare rig before its clips.
+    // Only untouched automatic defaults may be replaced by keyword matching.
+    if (previous && (previous.autoMapped !== true || detectedAnimations.includes(previous.animName))) {
+      animMappings[stdKey.key] = { ...previous };
       return;
     }
 
@@ -4697,7 +4840,7 @@ function autoMapAnimations() {
     }
     // Note: if no keyword match is found, bestMatch stays 'None'.
     // The user can manually assign the animation in the Animations tab.
-    animMappings[stdKey.key] = { animName: bestMatch, from, to };
+    animMappings[stdKey.key] = { animName: bestMatch, from, to, autoMapped: true };
   });
 
   applyAnimationsToController();
@@ -4709,15 +4852,19 @@ function applyAnimationsToController() {
 
   STANDARD_ANIM_KEYS.forEach(stdKey => {
     const mapping = animMappings[stdKey.key];
-    if (mapping && mapping.animName !== 'None') {
-      const group = activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === mapping.animName);
-      if (group) {
-        activeCharacter.animCtrl.setAnimation(stdKey.key, group);
-        activeCharacter.animCtrl.setAnimationRanges(stdKey.key, mapping.from, mapping.to);
-      }
+    const group = mapping && mapping.animName !== 'None'
+      ? activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === mapping.animName)
+      : null;
+    if (group) {
+      activeCharacter.animCtrl.setAnimation(stdKey.key, group);
+      activeCharacter.animCtrl.setAnimationRanges(stdKey.key, mapping.from, mapping.to);
     } else {
       const oldAg = activeCharacter.animCtrl.g.get(stdKey.key);
-      if (oldAg && oldAg.__isSharedClone) { oldAg.stop(); oldAg.dispose(); }
+      if (oldAg) {
+        oldAg.stop();
+        oldAg.setWeightForAllAnimatables(0);
+        if (oldAg.__isSharedClone) oldAg.dispose();
+      }
       activeCharacter.animCtrl.g.delete(stdKey.key);
     }
   });
@@ -4740,7 +4887,7 @@ function renderAnimationsMappingTab() {
   const container = document.getElementById('animations-mapping-list');
   container.innerHTML = '';
 
-  if (detectedAnimations.length === 0) {
+  if (detectedAnimations.length === 0 && Object.keys(animMappings).length === 0) {
     container.innerHTML = `<p style="color:var(--text-muted);font-size:0.85rem;text-align:center;padding:20px;">No animations found. Please load a character first.</p>`;
     return;
   }
@@ -4751,10 +4898,13 @@ function renderAnimationsMappingTab() {
     const row = document.createElement('div');
     row.className = 'mapping-row';
 
-    let optionsHtml = `<option value="None">None</option>`;
+    let optionsHtml = `<option value="None" ${mapping.animName === 'None' ? 'selected' : ''}>None</option>`;
+    if (mapping.animName !== 'None' && !detectedAnimations.includes(mapping.animName)) {
+      optionsHtml += `<option value="${escapeHtml(mapping.animName)}" selected>${escapeHtml(mapping.animName)} (not loaded)</option>`;
+    }
     detectedAnimations.forEach(det => {
       const selected = det === mapping.animName ? 'selected' : '';
-      optionsHtml += `<option value="${det}" ${selected}>${det}</option>`;
+      optionsHtml += `<option value="${escapeHtml(det)}" ${selected}>${escapeHtml(det)}</option>`;
     });
 
     row.innerHTML = `
@@ -4779,8 +4929,9 @@ function renderAnimationsMappingTab() {
       const key = e.target.dataset.key;
       const animName = e.target.value;
       animMappings[key].animName = animName;
+      animMappings[key].autoMapped = false;
       if (animName !== 'None') {
-        const group = activeCharacter && activeCharacter.rawAnimationGroups.find(g => g.name.endsWith(animName) || g.name === animName);
+        const group = activeCharacter && activeCharacter.rawAnimationGroups.find(g => cleanAnimName(g.name) === animName);
         if (group) {
           animMappings[key].from = Math.round(group.from);
           animMappings[key].to = Math.round(group.to);
@@ -4798,6 +4949,7 @@ function renderAnimationsMappingTab() {
     input.addEventListener('change', (e) => {
       const key = e.target.dataset.key;
       const val = parseInt(e.target.value) || 0;
+      animMappings[key].autoMapped = false;
       if (e.target.classList.contains('frame-from')) animMappings[key].from = val;
       else animMappings[key].to = val;
       applyAnimationsToController();
@@ -4824,7 +4976,7 @@ function resetSingleAnimMapping(key) {
       break;
     }
   }
-  animMappings[key] = { animName: bestMatch, from, to };
+  animMappings[key] = { animName: bestMatch, from, to, autoMapped: true };
   applyAnimationsToController();
   renderAnimationsMappingTab();
   renderAnimationEventsTab();
@@ -5215,7 +5367,7 @@ function clearAllAnimations() {
 
       // Clear all mappings
       Object.keys(animMappings).forEach(key => {
-        animMappings[key] = { animName: 'None', from: 0, to: 100 };
+        animMappings[key] = { animName: 'None', from: 0, to: 100, autoMapped: true };
       });
       customAnimations = [];
       animationEvents = {};
@@ -5325,6 +5477,9 @@ function setupSidebarControls() {
 
   bindCheckbox('toggle-cam-follow-lock', 'CAM_FOLLOW_LOCK');
   bindCheckbox('toggle-cam-lock-pitch', 'CAM_LOCK_PITCH');
+  bindCheckbox('toggle-head-look', 'HEAD_LOOK');
+  bindCheckbox('toggle-stride-matching', 'STRIDE_MATCHING');
+  bindCheckbox('toggle-upper-body-actions', 'UPPER_BODY_ACTIONS');
   bindCheckbox('toggle-joystick-lock-x', 'JOYSTICK_LOCK_X');
   bindCheckbox('toggle-dynamic-fov', 'DYNAMIC_FOV');
   bindCheckbox('toggle-cam-tilt', 'CAM_TILT');
@@ -5440,6 +5595,7 @@ function setupSidebarControls() {
       localStorage.removeItem('builder_controller_preset');
 
       savedAnimMappings = null;
+      animMappings = {};
       activeControllerPreset = 'balanced';
       keyBindings = JSON.parse(JSON.stringify(DEFAULT_KEY_BINDINGS));
       physicsConfig = JSON.parse(JSON.stringify(DEFAULT_PHYSICS_CONFIG));
@@ -5460,6 +5616,7 @@ function setupSidebarControls() {
         activeCharacter.charCtrl.keyBindings = keyBindings;
         Object.keys(physicsConfig).forEach(key => { activeCharacter.charCtrl[key] = physicsConfig[key]; });
       }
+      updateExportCode();
       showToast('All configurations reset to defaults!');
     });
   }
@@ -5568,6 +5725,9 @@ function injectPhysicsResetButtons() {
 
   applyCheckbox('toggle-cam-follow-lock', 'CAM_FOLLOW_LOCK');
   applyCheckbox('toggle-cam-lock-pitch', 'CAM_LOCK_PITCH');
+  applyCheckbox('toggle-head-look', 'HEAD_LOOK');
+  applyCheckbox('toggle-stride-matching', 'STRIDE_MATCHING');
+  applyCheckbox('toggle-upper-body-actions', 'UPPER_BODY_ACTIONS');
   applyCheckbox('toggle-joystick-lock-x', 'JOYSTICK_LOCK_X');
   applyCheckbox('toggle-dynamic-fov', 'DYNAMIC_FOV');
   applyCheckbox('toggle-cam-tilt', 'CAM_TILT');
@@ -5730,6 +5890,7 @@ function jsString(value) {
 }
 
 function updateExportCode() {
+  savePreferences();
   const codeBox = document.getElementById('export-code');
   if (!codeBox) return;
 
@@ -5776,7 +5937,6 @@ function updateExportCode() {
   const configCode = `// 🎮 CUSTOM SETUP CONFIGURATION FOR YOUR APP.JS\n// Copy and paste this loadCharacter function replacement in your app.js:\n\nasync function loadCharacter(scene, shadow, camera, usePhysics) {\n  return setupCharacter(scene, camera, usePhysics, {\n    shadow,\n    assetsPath: "assets/",\n    filename: ${jsString(exportMode === 'runtime' ? (characterFilename || 'character.glb') : 'character_animated.glb')},${animFileOption}${mergeOptionsCode}\n    capsuleScale: { x: ${charTransformConfig.SCALE_X}, y: ${charTransformConfig.SCALE_Y}, z: ${charTransformConfig.SCALE_Z} },\n    keys: ${JSON.stringify(keyBindings, null, 4).replace(/\n/g, '\n    ')},\n    config: ${JSON.stringify(physicsConfig, null, 4).replace(/\n/g, '\n    ')},\n    configure: ({ animCtrl, charCtrl, filteredGroups }) => {\n${mappingsSnippet}${customsSnippet}${formatAnimationEventsForExport()}    }\n  });\n}`;
 
   codeBox.value = configCode;
-  savePreferences();
 }
 
 async function downloadCharacterGlbFile() {
@@ -5936,13 +6096,15 @@ function normalizeImportedAnimationMappings(value) {
   if (!value || typeof value !== 'object') return result;
   STANDARD_ANIM_KEYS.forEach(stdKey => {
     const incoming = value[stdKey.key];
-    const animName = incoming?.animName && (incoming.animName === 'None' || detectedAnimations.length === 0 || detectedAnimations.includes(incoming.animName))
+    if (!incoming || typeof incoming !== 'object') return;
+    const animName = typeof incoming.animName === 'string' && incoming.animName
       ? incoming.animName
       : 'None';
     result[stdKey.key] = {
       animName,
       from: Number.isFinite(Number(incoming?.from)) ? Number(incoming.from) : 0,
       to: Number.isFinite(Number(incoming?.to)) ? Number(incoming.to) : 100,
+      autoMapped: incoming.autoMapped === true,
     };
   });
   return result;
@@ -6030,10 +6192,11 @@ async function importBuilderConfigFile(file) {
 
     const importedAnimations = parsed.animations || {};
     animMappings = normalizeImportedAnimationMappings(importedAnimations.standardMappings);
-    savedAnimMappings = animMappings;
+    savedAnimMappings = null;
     customAnimations = normalizeImportedCustomActions(importedAnimations.customActions);
     animationEvents = normalizeImportedAnimationEvents(importedAnimations.events);
 
+    autoMapAnimations();
     refreshBuilderAfterConfigImport();
     showToast(warnings.length ? `Imported ${file.name} with ${warnings.length} corrected field(s)` : `Imported ${file.name}`);
     if (warnings.length) console.warn('[builder-config] corrected fields:', warnings);

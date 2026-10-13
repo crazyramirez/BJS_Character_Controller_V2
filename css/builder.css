@@ -3426,6 +3426,43 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-primary);
   box-shadow: 0 0 14px rgba(239, 68, 68, 0.25);
 }
+
+.animation-import-dialog {
+  margin: auto;
+  max-width: 460px;
+  color: var(--text-primary);
+  border-color: var(--border-active);
+  transform: none;
+}
+
+.animation-import-dialog::backdrop {
+  background: rgba(2, 2, 3, 0.75);
+  backdrop-filter: blur(8px);
+}
+
+.animation-import-dialog .custom-confirm-message {
+  overflow-wrap: anywhere;
+}
+
+.animation-import-dialog .custom-confirm-actions {
+  flex-wrap: wrap;
+}
+
+.animation-import-merge {
+  background: var(--accent-dim);
+  border: 1px solid var(--border-active);
+  color: var(--text-accent);
+}
+
+.animation-import-merge:hover {
+  background: var(--accent-glow);
+  color: var(--text-primary);
+}
+
+.animation-import-dialog button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 /* ── Animation events timeline ─────────────────────────────────────────── */
 .event-timeline {
   position: relative;
@@ -3471,4 +3508,19 @@ input[type="range"]::-moz-range-thumb {
   cursor: grabbing;
   box-shadow: 0 0 0 4px rgba(255, 179, 0, 0.35);
   z-index: 2;
+}
+
+.import-option-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.import-option-row input {
+  accent-color: var(--accent);
 }

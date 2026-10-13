@@ -73,7 +73,9 @@ const DEFAULT_CHAR_CONFIG = {
     JUMP_BUFFER: 0.15,         // Seconds a JUMP press taken in mid-air is remembered and fired on landing
     JUMP_CUT: true,            // Releasing JUMP while ascending shortens the jump (variable height)
     JUMP_CUT_MULT: 2.5,        // Extra downward acceleration multiplier applied on jump-cut (higher = snappier cut)
-    ACCEL_CURVE: true          // Apex-based acceleration: fast launch off rest, precise control near top speed
+    ACCEL_CURVE: true,         // Apex-based acceleration: fast launch off rest, precise control near top speed
+    STRIDE_MATCHING: true,     // true: tuned Walk/Sprint rates scaled to the character's leg length + phase-synced blend; 'full': feet locked to ground speed
+    UPPER_BODY_ACTIONS: false  // Punches play on the upper body while moving (legs keep walking/running)
   },
 
   // Mobile / Touch controls configuration
@@ -184,6 +186,615 @@ function cleanAnimName(raw) {
   return parts[parts.length - 1].trim();
 }
 
+// Weight a caller last assigned to a group (upper-body layering scales the
+// individual animatables, so animatables[0].weight may be lower).
+function groupWeight(group) {
+  if (!group) return 0;
+  if (Number.isFinite(group.__baseWeight)) return group.__baseWeight;
+  const a = group.animatables && group.animatables[0];
+  return a ? a.weight : 0;
+}
+
+// ═══════════════════════════════════════════════════════════
+// CLIENT-SIDE RETARGETING (BabylonJS 9 AnimatorAvatar)
+// ═══════════════════════════════════════════════════════════
+// Offline counterpart of the server retargeter (js/core/merge_api.mjs), kept in
+// this file so an exported standalone controller can load animation packs
+// without the server. AnimatorAvatar maps each clip relative to REST poses
+// (target = W_t·W_s⁻¹·L_s·P_s·P_t⁻¹), so before calling it we:
+//   1. map bones by the same canonical roles as the server (BONE_ROLE_ALIASES
+//      mirrors merge_api BONE_MAP; test/animation-mapping keeps them in sync),
+//   2. put the source rig in the reference pose its keys were authored against
+//      (a merged library's bjsRetargetPoses, else its T-pose clip),
+//   3. temporarily align the target's rest limbs to that pose (T- vs A-pose),
+// and afterwards keep only rotations + root translation, and ground clips the
+// same way the server does (hovering contact clips land on the floor).
+
+const BONE_ROLE_ALIASES = {
+  pelvis: ['hips', 'mixamorig:hips', 'hip', 'root', 'hips_joint', 'pelvis_joint'],
+  spine_01: ['spine', 'mixamorig:spine', 'spine_a', 'spinea', 'lower_back', 'lowerback', 'waist'],
+  spine_02: ['spine1', 'mixamorig:spine1', 'spine_b', 'spineb', 'midspine', 'chest'],
+  spine_03: ['spine2', 'mixamorig:spine2', 'upperchest', 'upper_chest', 'upperspine', 'upperbody'],
+  neck_01: ['neck', 'mixamorig:neck', 'necktwist01', 'necktwist'],
+  neck_02: ['neck1', 'mixamorig:neck1', 'necktwist02'],
+  head: ['head', 'mixamorig:head'],
+  clavicle_l: ['leftshoulder', 'mixamorig:leftshoulder', 'leftcollar', 'leftclavicle', 'collar_l', 'l_shoulder', 'shoulder_l', 'shoulderl', 'lclavicle'],
+  upperarm_l: ['leftarm', 'mixamorig:leftarm', 'leftupperarm', 'l_upperarm', 'upperarm_l', 'upperarml', 'arm_l', 'arml', 'left_arm', 'l_arm', 'lupperarm'],
+  lowerarm_l: ['leftforearm', 'mixamorig:leftforearm', 'leftlowerarm', 'l_lowerarm', 'lowerarm_l', 'lowerarml', 'forearm_l', 'forearml', 'left_forearm', 'lforearm'],
+  hand_l: ['lefthand', 'mixamorig:lefthand', 'l_hand', 'handl', 'hand_l', 'lhand'],
+  clavicle_r: ['rightshoulder', 'mixamorig:rightshoulder', 'rightcollar', 'rightclavicle', 'collar_r', 'r_shoulder', 'shoulder_r', 'shoulderr', 'rclavicle'],
+  upperarm_r: ['rightarm', 'mixamorig:rightarm', 'rightupperarm', 'r_upperarm', 'upperarm_r', 'upperarmr', 'arm_r', 'armr', 'right_arm', 'r_arm', 'rupperarm'],
+  lowerarm_r: ['rightforearm', 'mixamorig:rightforearm', 'rightlowerarm', 'r_lowerarm', 'lowerarm_r', 'lowerarmr', 'forearm_r', 'forearmr', 'right_forearm', 'rforearm'],
+  hand_r: ['righthand', 'mixamorig:righthand', 'r_hand', 'handr', 'hand_r', 'rhand'],
+  thigh_l: ['leftupleg', 'mixamorig:leftupleg', 'leftupperleg', 'l_thigh', 'thigh_l', 'thighl', 'l_upleg', 'leftthigh', 'left_upleg', 'hip_l', 'hipl', 'lthigh', 'l_upperleg', 'upperleg_l', 'l_leg'],
+  calf_l: ['leftleg', 'mixamorig:leftleg', 'leftlowerleg', 'l_calf', 'calf_l', 'calfl', 'shinl', 'shin_l', 'leftcalf', 'left_leg', 'l_knee', 'lcalf', 'l_lowerleg', 'lowerleg_l'],
+  foot_l: ['leftfoot', 'mixamorig:leftfoot', 'l_foot', 'footl', 'leftankle', 'ankle_l', 'lfoot'],
+  toe_l: ['lefttoebase', 'mixamorig:lefttoebase', 'l_toe', 'toel', 'lefttoe', 'lefttoes', 'ltoe0', 'ltoe', 'l_toebase', 'toebase_l', 'l_toes'],
+  ball_l: ['lefttoebase', 'mixamorig:lefttoebase', 'l_ball', 'balll'],
+  thigh_r: ['rightupleg', 'mixamorig:rightupleg', 'rightupperleg', 'r_thigh', 'thigh_r', 'thighr', 'r_upleg', 'rightthigh', 'right_upleg', 'hip_r', 'hipr', 'rthigh', 'r_upperleg', 'upperleg_r', 'r_leg'],
+  calf_r: ['rightleg', 'mixamorig:rightleg', 'rightlowerleg', 'r_calf', 'calf_r', 'calfr', 'shinr', 'shin_r', 'rightcalf', 'right_leg', 'r_knee', 'rcalf', 'r_lowerleg', 'lowerleg_r'],
+  foot_r: ['rightfoot', 'mixamorig:rightfoot', 'r_foot', 'footr', 'rightankle', 'ankle_r', 'rfoot'],
+  toe_r: ['righttoebase', 'mixamorig:righttoebase', 'r_toe', 'toer', 'righttoe', 'righttoes', 'rtoe0', 'rtoe', 'r_toebase', 'toebase_r', 'r_toes'],
+  ball_r: ['righttoebase', 'mixamorig:righttoebase', 'r_ball', 'ballr'],
+};
+(function addFingerRoles() {
+  // Unity-style names exist on the left side only (as in merge_api BONE_MAP).
+  const leftExtra = {
+    thumb_01_l: 'thumbproximall', thumb_02_l: 'thumbintermediatel', thumb_03_l: 'thumbdistall',
+    index_01_l: 'indexproximall', index_02_l: 'indexintermediatel', index_03_l: 'indexdistall',
+    pinky_01_l: 'littleproximal',
+  };
+  for (const [s, side] of [['l', 'left'], ['r', 'right']]) {
+    for (const finger of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+      for (let i = 1; i <= 3; i++) {
+        const key = `${finger}_0${i}_${s}`;
+        const aliases = [`${side}hand${finger}${i}`, `mixamorig:${side}hand${finger}${i}`, `${finger}${i}${s}`, `${s}_${finger}${i}`];
+        if (finger === 'middle') aliases.push(`${s}_mid${i}`, `mid${i}${s}`);
+        if (leftExtra[key]) aliases.push(leftExtra[key]);
+        BONE_ROLE_ALIASES[key] = aliases;
+      }
+    }
+  }
+})();
+
+function boneAliasNorm(name) {
+  if (!name) return '';
+  let n = String(name).toLowerCase();
+  if (n.includes(':')) n = n.split(':').pop();
+  n = n.replace(/^j_?bip_?c_?/i, '');
+  n = n.replace(/^j_?bip_?([lr])_?/i, '$1_');
+  n = n.replace(/^(valvebiped\.?bip\d+|cc_base|mixamorig\d*|armature|char|bip\d+|biped|def|root|gltf_created_\d+)[:_\-. ]+/i, '');
+  n = n.replace(/\.([lr])$/i, '$1');
+  return n.replace(/[:_\-.\s]/g, '');
+}
+
+const BONE_ROLE_BY_NORM = (() => {
+  const map = new Map();
+  for (const [key, aliases] of Object.entries(BONE_ROLE_ALIASES)) {
+    for (const alias of [key, ...aliases]) {
+      const n = boneAliasNorm(alias);
+      if (n && !map.has(n)) map.set(n, key);
+    }
+  }
+  return map;
+})();
+
+/** Canonical role (merge_api BONE_MAP key, e.g. 'upperarm_l') of a bone name. */
+function canonicalBoneRole(name) {
+  if (!name) return null;
+  const lo = String(name).toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(BONE_ROLE_ALIASES, lo)) return lo;
+  return BONE_ROLE_BY_NORM.get(boneAliasNorm(name))
+    || BONE_ROLE_BY_NORM.get(boneAliasNorm(String(name).replace(/_\d+$/, ''))) || null;
+}
+
+/** Parse the JSON chunk of a binary glTF (extras such as bjsRetargetPoses). */
+function readGlbJson(buffer) {
+  try {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(0, true) !== 0x46546C67 || view.getUint32(16, true) !== 0x4E4F534A) return null;
+    const length = view.getUint32(12, true);
+    return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + length)));
+  } catch (_) {
+    return null;
+  }
+}
+
+// BJS re-exports append _N to EVERY node name; only then is the suffix noise.
+// UE-style rigs legitimately use spine_01/neck_01 (same ≥80% rule as the server).
+function hasPervasiveSuffix(names) {
+  const named = names.filter(Boolean);
+  return named.length > 0 && named.filter(n => /_\d+$/.test(n)).length / named.length >= 0.8;
+}
+
+function nodeRole(node, stripSuffix = false) {
+  const canonical = node && node.metadata && node.metadata.gltf && node.metadata.gltf.extras
+    && node.metadata.gltf.extras.bjsCanonical;
+  const name = node && node.name && stripSuffix ? node.name.replace(/_\d+$/, '') : node && node.name;
+  return (canonical && canonicalBoneRole(canonical)) || canonicalBoneRole(name);
+}
+
+function nodeDepth(node) {
+  let depth = 0;
+  for (let p = node && node.parent; p; p = p.parent) depth++;
+  return depth;
+}
+
+/**
+ * Source node name → target bone (transform node) name. Exact names first,
+ * then canonical roles; duplicate claims on one target keep the source joint
+ * that carries translation, then the deepest (UE5 root+pelvis, CC Hip+Pelvis).
+ */
+function buildRetargetBoneMap(sourceNodes, skeleton, translatedSources = new Set()) {
+  const targets = skeleton.bones.map(bone => {
+    const node = bone.getTransformNode ? bone.getTransformNode() : null;
+    return { node, name: node ? node.name : bone.name };
+  });
+  const byLower = new Map(targets.map(t => [t.name.toLowerCase(), t.name]));
+  const stripTargets = hasPervasiveSuffix(targets.map(t => t.name));
+  const stripSources = hasPervasiveSuffix(sourceNodes.map(n => n && n.name));
+  const byRole = new Map();
+  for (const t of [...targets].sort((a, b) => nodeDepth(a.node) - nodeDepth(b.node))) {
+    const role = nodeRole(t.node || { name: t.name }, stripTargets);
+    if (role && !byRole.has(role)) byRole.set(role, t.name);
+  }
+  // CC/AccuRig three-bone spine (Waist→Spine01→Spine02) and numbered spines
+  // (Spine1→Spine2→Spine3) shift down one slot, as on the server.
+  const norms = new Map(targets.map(t => [boneAliasNorm(t.name.replace(/_\d+$/, '')), t.name]));
+  if (norms.has('waist') && norms.has('spine01') && norms.has('spine02') && !norms.has('spine03')) {
+    byRole.set('spine_01', norms.get('waist'));
+    byRole.set('spine_02', norms.get('spine01'));
+    byRole.set('spine_03', norms.get('spine02'));
+  } else if (!norms.has('spine') && norms.has('spine1') && norms.has('spine2') && norms.has('spine3')) {
+    byRole.set('spine_01', norms.get('spine1'));
+    byRole.set('spine_02', norms.get('spine2'));
+    byRole.set('spine_03', norms.get('spine3'));
+  }
+  const byLegacy = new Map();
+  for (const t of targets) { const n = normBone(t.name); if (n && !byLegacy.has(n)) byLegacy.set(n, t.name); }
+
+  const map = new Map();
+  const claimed = new Map();
+  const rank = node => (translatedSources.has(node) ? 1e6 : 0) + nodeDepth(node);
+  for (const node of sourceNodes) {
+    if (!node || !node.name) continue;
+    let target = byLower.get(node.name.toLowerCase());
+    if (!target) { const role = nodeRole(node, stripSources); if (role) target = byRole.get(role); }
+    if (!target) target = byLegacy.get(normBone(node.name));
+    if (!target) continue;
+    const previous = claimed.get(target);
+    if (previous) {
+      if (rank(node) <= rank(previous)) continue;
+      map.delete(previous.name);
+    }
+    claimed.set(target, node);
+    map.set(node.name, target);
+  }
+  return map;
+}
+
+/**
+ * Reference pose the source keys were authored against: a merged library's
+ * saved bjsRetargetPoses entry, else the first frame of its T-pose clip.
+ * Returns { nodes: { lowercaseName: { rotation, translation?, postRotation? } } }.
+ */
+function sourceReferencePose(json, group, containerGroups) {
+  const gltfAnimation = json && Array.isArray(json.animations)
+    ? json.animations.find(a => a && a.name === group.name) : null;
+  const id = gltfAnimation && gltfAnimation.extras ? gltfAnimation.extras.bjsRetargetPose : undefined;
+  const saved = id !== undefined && json.extras && json.extras.bjsRetargetPoses
+    ? json.extras.bjsRetargetPoses[id] : null;
+  if (saved && saved.nodes) return { kind: 'saved', nodes: saved.nodes };
+  const tpose = containerGroups.find(g => /t[\-_]?pose/i.test(g.name));
+  if (!tpose) return null;
+  const nodes = {};
+  for (const ta of tpose.targetedAnimations) {
+    if (ta.animation.targetProperty !== 'rotationQuaternion' || !ta.target || !ta.target.name) continue;
+    const key = ta.animation.getKeys()[0];
+    if (key && key.value) nodes[ta.target.name.toLowerCase()] = { rotation: key.value.asArray() };
+  }
+  return Object.keys(nodes).length ? { kind: 'tpose', nodes } : null;
+}
+
+function captureTRS(node) {
+  return {
+    position: node.position.clone(),
+    scaling: node.scaling.clone(),
+    rotationQuaternion: node.rotationQuaternion ? node.rotationQuaternion.clone() : null,
+    rotation: node.rotation.clone(),
+  };
+}
+
+function restoreTRS(node, state) {
+  node.position.copyFrom(state.position);
+  node.scaling.copyFrom(state.scaling);
+  if (state.rotationQuaternion) {
+    node.rotationQuaternion = node.rotationQuaternion || BABYLON.Quaternion.Identity();
+    node.rotationQuaternion.copyFrom(state.rotationQuaternion);
+  } else {
+    node.rotationQuaternion = null;
+    node.rotation.copyFrom(state.rotation);
+  }
+}
+
+function refreshWorld(node) {
+  const chain = [];
+  for (let n = node; n; n = n.parent) chain.unshift(n);
+  for (const n of chain) if (n.computeWorldMatrix) n.computeWorldMatrix(true);
+}
+
+/** Body frame (left, up, forward unit vectors) from hips/chest/thigh joints. */
+function bodyFrame(nodesByRole) {
+  const hips = nodesByRole.get('pelvis');
+  const chest = nodesByRole.get('neck_01') || nodesByRole.get('spine_03') || nodesByRole.get('head');
+  const left = nodesByRole.get('thigh_l') || nodesByRole.get('upperarm_l');
+  const right = nodesByRole.get('thigh_r') || nodesByRole.get('upperarm_r');
+  if (!hips || !chest || !left || !right) return null;
+  [hips, chest, left, right].forEach(refreshWorld);
+  const up = chest.getAbsolutePosition().subtract(hips.getAbsolutePosition()).normalize();
+  let lat = left.getAbsolutePosition().subtract(right.getAbsolutePosition());
+  lat = lat.subtract(up.scale(BABYLON.Vector3.Dot(lat, up)));
+  if (lat.lengthSquared() < 1e-10) return null;
+  lat.normalize();
+  const fwd = BABYLON.Vector3.Cross(lat, up).normalize();
+  return { left: lat, up, fwd };
+}
+
+// Arms only — the limbs that differ between T- and A-pose binds. Clavicles and
+// legs keep the character's authored rest (as the server's virtual T-pose does
+// for clavicles); aligning them moved shoulders/feet away from the server result.
+const REST_ALIGN_CHAIN = [
+  ['upperarm_l', 'lowerarm_l'], ['lowerarm_l', 'hand_l'],
+  ['upperarm_r', 'lowerarm_r'], ['lowerarm_r', 'hand_r'],
+];
+
+/**
+ * Rotate the target's rest limbs so each bone points where the source's
+ * reference pose points it (in body-frame coordinates, so facing and scale do
+ * not matter) and store that as the rest pose. Returns a restore function.
+ */
+function alignTargetRestPose(skeleton, sourceByRole, targetByRole, targetBoneByNode) {
+  const saved = skeleton.bones.map(bone => [bone, bone.getRestMatrix().clone()]);
+  const restore = () => {
+    saved.forEach(([bone, matrix]) => bone.setRestMatrix(matrix));
+    skeleton.returnToRest();
+  };
+  skeleton.returnToRest();
+  const srcFrame = bodyFrame(sourceByRole), tgtFrame = bodyFrame(targetByRole);
+  if (!srcFrame || !tgtFrame) return restore;
+  const toBody = (v, f) => [BABYLON.Vector3.Dot(v, f.left), BABYLON.Vector3.Dot(v, f.up), BABYLON.Vector3.Dot(v, f.fwd)];
+  const fromBody = (c, f) => f.left.scale(c[0]).add(f.up.scale(c[1])).add(f.fwd.scale(c[2]));
+  let changed = 0;
+  for (const [role, childRole] of REST_ALIGN_CHAIN) {
+    const s = sourceByRole.get(role), sc = sourceByRole.get(childRole);
+    const t = targetByRole.get(role), tc = targetByRole.get(childRole);
+    if (!s || !sc || !t || !tc || !t.rotationQuaternion) continue;
+    refreshWorld(sc); refreshWorld(tc);
+    const srcDir = sc.getAbsolutePosition().subtract(s.getAbsolutePosition());
+    const tgtDir = tc.getAbsolutePosition().subtract(t.getAbsolutePosition());
+    if (srcDir.lengthSquared() < 1e-12 || tgtDir.lengthSquared() < 1e-12) continue;
+    const desired = fromBody(toBody(srcDir.normalize(), srcFrame), tgtFrame).normalize();
+    tgtDir.normalize();
+    if (BABYLON.Vector3.Dot(desired, tgtDir) > 0.99985) continue; // < 1°
+    // Solve in the parent's local space: glTF scenes sit under a mirrored
+    // (z = -1) __root__, so decomposed world rotations are not composable;
+    // inverse-transformed directions are.
+    const toParent = t.parent ? t.parent.getWorldMatrix().clone().invert() : BABYLON.Matrix.Identity();
+    const from = BABYLON.Vector3.TransformNormal(tgtDir, toParent).normalize();
+    const to = BABYLON.Vector3.TransformNormal(desired, toParent).normalize();
+    const delta = new BABYLON.Quaternion();
+    BABYLON.Quaternion.FromUnitVectorsToRef(from, to, delta);
+    t.rotationQuaternion = delta.multiply(t.rotationQuaternion);
+    refreshWorld(t);
+    const bone = targetBoneByNode.get(t);
+    if (bone) bone.setRestMatrix(BABYLON.Matrix.Compose(t.scaling, t.rotationQuaternion, t.position));
+    changed++;
+  }
+  skeleton.returnToRest();
+  restore.changed = changed;
+  return restore;
+}
+
+/** Evaluate a group's animated transform components at `frame` (no scene side effects). */
+function evaluateGroupPose(group, frame) {
+  const pose = new Map();
+  for (const ta of group.targetedAnimations) {
+    const prop = ta.animation.targetProperty;
+    if (prop !== 'position' && prop !== 'rotationQuaternion' && prop !== 'scaling') continue;
+    const value = ta.animation.evaluate(frame);
+    if (!value) continue;
+    const entry = pose.get(ta.target) || {};
+    entry[prop] = value;
+    pose.set(ta.target, entry);
+  }
+  return pose;
+}
+
+/** Position of `node` relative to `root` under a pose (rest from `restOf`). */
+function posePosition(node, root, pose, restOf) {
+  let m = BABYLON.Matrix.Identity();
+  for (let n = node; n && n !== root; n = n.parent) {
+    const rest = restOf(n), p = pose && pose.get(n);
+    const local = BABYLON.Matrix.Compose(
+      (p && p.scaling) || rest.scaling,
+      (p && p.rotationQuaternion) || rest.rotationQuaternion,
+      (p && p.position) || rest.position);
+    m = m.multiply(local);
+  }
+  return m.getTranslation();
+}
+
+/**
+ * Lowest-foot clearance (min over the clip of lowest foot/toe height above the
+ * rest height), in leg lengths. Returns null without mapped hips + feet.
+ */
+function clipClearance(group, hips, feet, root, restOf) {
+  if (!hips || !feet.length) return null;
+  const restFeet = Math.min(...feet.map(f => posePosition(f, root, null, restOf).y));
+  const leg = posePosition(hips, root, null, restOf).y - restFeet;
+  if (!(leg > 1e-6)) return null;
+  const from = group.from, to = group.to;
+  const samples = Math.max(2, Math.min(90, Math.round(to - from) + 1));
+  let min = Infinity;
+  for (let i = 0; i < samples; i++) {
+    const pose = evaluateGroupPose(group, from + (to - from) * i / (samples - 1));
+    min = Math.min(min, ...feet.map(f => posePosition(f, root, pose, restOf).y));
+  }
+  return { clearance: (min - restFeet) / leg, leg };
+}
+
+function staticRestOf(node) {
+  return {
+    position: node.position.clone(),
+    scaling: node.scaling.clone(),
+    rotationQuaternion: node.rotationQuaternion ? node.rotationQuaternion.clone()
+      : BABYLON.Quaternion.FromEulerVector(node.rotation),
+  };
+}
+
+/**
+ * Retarget every clip of an AssetContainer onto `charRoot` (client side).
+ * options: { json (GLB JSON for saved reference poses), groundContactTolerance,
+ * fixGroundReference (default true), alignRestPose (default true) }.
+ * Returns { groups, report }.
+ */
+function retargetAnimationGroupsClient(scene, charRoot, container, options = {}) {
+  const avatar = new BABYLON.AnimatorAvatar('retargetAvatar', charRoot, false, false);
+  avatar.showWarnings = false;
+  const skeleton = [...avatar.skeletons][0] || scene.skeletons[0];
+  if (!skeleton) throw new Error('Character has no skeleton to retarget onto.');
+  const sourceGroups = container.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
+  if (!sourceGroups.length) throw new Error('No animation groups found in the animation file.');
+
+  const sourceNodes = [...new Set(container.animationGroups.flatMap(g => g.targetedAnimations.map(ta => ta.target))
+    .filter(t => t && t.getClassName && t.getClassName() === 'TransformNode'))];
+  const translated = new Set(sourceGroups.flatMap(g => g.targetedAnimations
+    .filter(ta => ta.animation.targetProperty === 'position').map(ta => ta.target)));
+  const boneMap = options.boneMap instanceof Map ? options.boneMap : buildRetargetBoneMap(sourceNodes, skeleton, translated);
+
+  const targetBoneByNode = new Map(skeleton.bones.filter(b => b.getTransformNode()).map(b => [b.getTransformNode(), b]));
+  const targetByName = new Map([...targetBoneByNode.keys()].map(n => [n.name, n]));
+  const sourceByRole = new Map(), targetByRole = new Map();
+  const stripTargets = hasPervasiveSuffix([...targetByName.keys()]);
+  for (const node of sourceNodes) {
+    const target = targetByName.get(boneMap.get(node.name));
+    const role = target ? nodeRole(target, stripTargets) : null;
+    if (!role || sourceByRole.has(role)) continue;
+    sourceByRole.set(role, node);
+    targetByRole.set(role, target);
+  }
+  const srcHips = sourceByRole.get('pelvis');
+  const srcFoot = sourceByRole.get('foot_l') || sourceByRole.get('foot_r');
+  const sourceByLower = new Map(sourceNodes.map(n => [n.name.toLowerCase(), n]));
+  const sourceByDepth = [...sourceNodes].sort((a, b) => nodeDepth(a) - nodeDepth(b));
+  const restStates = new Map(sourceNodes.map(n => [n, captureTRS(n)]));
+  const targetRestOf = (node) => {
+    const bone = targetBoneByNode.get(node);
+    if (!bone) return staticRestOf(node);
+    const s = new BABYLON.Vector3(), q = new BABYLON.Quaternion(), p = new BABYLON.Vector3();
+    bone.getRestMatrix().decompose(s, q, p);
+    return { position: p, rotationQuaternion: q, scaling: s };
+  };
+  const tgtFeet = ['foot_l', 'foot_r', 'toe_l', 'toe_r'].map(r => targetByRole.get(r)).filter(Boolean);
+  const srcFeet = ['foot_l', 'foot_r', 'toe_l', 'toe_r'].filter(r => targetByRole.get(r)).map(r => sourceByRole.get(r));
+  const tgtHips = targetByRole.get('pelvis');
+  const srcRoot = srcHips ? (() => { let n = srcHips; while (n.parent) n = n.parent; return n; })() : null;
+  const tolerance = Number.isFinite(options.groundContactTolerance) ? options.groundContactTolerance : 0.12;
+
+  const report = { mapped: boneMap.size, restAligned: 0, grounded: [], skipped: [] };
+  const groups = [];
+  try {
+    for (const sg of sourceGroups) {
+      // 1. Source reference pose (per clip: merged libraries may mix references).
+      restStates.forEach((state, node) => restoreTRS(node, state));
+      const reference = sourceReferencePose(options.json, sg, container.animationGroups);
+      if (reference) {
+        for (const [name, ref] of Object.entries(reference.nodes)) {
+          const node = sourceByLower.get(name);
+          if (!node || !Array.isArray(ref.rotation)) continue;
+          node.rotationQuaternion = BABYLON.Quaternion.FromArray(ref.rotation);
+          if (Array.isArray(ref.translation)) node.position.fromArray(ref.translation);
+          if (Array.isArray(ref.postRotation)) {
+            const inv = BABYLON.Quaternion.Inverse(BABYLON.Quaternion.FromArray(ref.postRotation));
+            for (const ta of sg.targetedAnimations) {
+              if (ta.target !== node || ta.animation.targetProperty !== 'rotationQuaternion') continue;
+              for (const key of ta.animation.getKeys()) key.value = key.value.multiply(inv);
+            }
+          }
+        }
+      }
+      sourceByDepth.forEach(n => n.computeWorldMatrix(true)); // parents first: no stale world matrices
+      // 2. Target rest aligned to that reference pose (T-pose vs A-pose arms/legs).
+      const restoreRest = options.alignRestPose === false ? null
+        : alignTargetRestPose(skeleton, sourceByRole, targetByRole, targetBoneByNode);
+      if (restoreRest && restoreRest.changed) report.restAligned = Math.max(report.restAligned, restoreRest.changed);
+      let retargeted;
+      try {
+        retargeted = avatar.retargetAnimationGroup(sg, {
+          animationGroupName: cleanAnimName(sg.name),
+          fixAnimations: true,
+          retargetAnimationKeys: true,
+          fixRootPosition: true,
+          fixGroundReference: false,
+          rootNodeName: srcHips ? srcHips.name : undefined,
+          groundReferenceNodeName: srcFoot ? srcFoot.name : undefined,
+          mapNodeNames: boneMap,
+        });
+      } finally {
+        if (restoreRest) restoreRest();
+      }
+      // 3. Rotations + root translation only (bone lengths stay the character's).
+      const kept = retargeted.targetedAnimations.filter(ta => {
+        const prop = ta.animation.targetProperty;
+        if (prop === 'scaling') return false;
+        if (prop === 'position') return ta.target === tgtHips;
+        return true;
+      });
+      retargeted.targetedAnimations.length = 0;
+      retargeted.targetedAnimations.push(...kept);
+      if (!kept.length) { retargeted.dispose(); report.skipped.push(cleanAnimName(sg.name)); continue; }
+      // 4. Ground reference, same rule as merge_api 'clip' mode.
+      if (options.fixGroundReference !== false && tgtHips && tgtFeet.length && srcRoot && srcFeet.every(Boolean)) {
+        const src = clipClearance(sg, srcHips, srcFeet, srcRoot, staticRestOf);
+        const tgt = clipClearance(retargeted, tgtHips, tgtFeet, charRoot, targetRestOf);
+        const hipsTrack = kept.find(ta => ta.target === tgtHips && ta.animation.targetProperty === 'position');
+        if (src && tgt && hipsTrack) {
+          const desired = src.clearance > 0 && src.clearance <= tolerance ? 0 : src.clearance * tgt.leg;
+          let shift = desired - tgt.clearance * tgt.leg;
+          shift = Math.max(-0.3 * tgt.leg, Math.min(0.3 * tgt.leg, shift));
+          if (Math.abs(shift) > 1e-4 * tgt.leg) {
+            let parentMatrix = BABYLON.Matrix.Identity();
+            for (let n = tgtHips.parent; n && n !== charRoot; n = n.parent) {
+              const rest = targetRestOf(n);
+              parentMatrix = parentMatrix.multiply(BABYLON.Matrix.Compose(rest.scaling, rest.rotationQuaternion, rest.position));
+            }
+            const local = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, shift, 0), parentMatrix.invert());
+            for (const key of hipsTrack.animation.getKeys()) key.value = key.value.add(local);
+            report.grounded.push({ clip: retargeted.name, shift: Number(shift.toFixed(4)) });
+          }
+        }
+      }
+      retargeted.stop();
+      if (!scene.animationGroups.includes(retargeted)) scene.addAnimationGroup(retargeted);
+      groups.push(retargeted);
+    }
+  } catch (error) {
+    groups.forEach(group => group.dispose());
+    throw error;
+  } finally {
+    restStates.forEach((state, node) => restoreTRS(node, state));
+    skeleton.returnToRest();
+  }
+  return { groups, report, boneMap };
+}
+
+/** Rest TRS lookup for the character under `root` (skeleton rest, else current TRS). */
+function characterRestOf(root) {
+  const mesh = root.getChildMeshes ? root.getChildMeshes(false).find(m => m.skeleton) : null;
+  const byNode = new Map();
+  if (mesh) for (const bone of mesh.skeleton.bones) { const n = bone.getTransformNode(); if (n) byNode.set(n, bone); }
+  return (node) => {
+    const bone = byNode.get(node);
+    if (!bone) return staticRestOf(node);
+    const s = new BABYLON.Vector3(), q = new BABYLON.Quaternion(), p = new BABYLON.Vector3();
+    bone.getRestMatrix().decompose(s, q, p);
+    return { position: p, rotationQuaternion: q, scaling: s };
+  };
+}
+
+/** Transform nodes under `root` by canonical role (shallowest wins). */
+function characterNodesByRole(root) {
+  const nodes = root.getDescendants(false).filter(n => n.getClassName && n.getClassName() === 'TransformNode');
+  const strip = hasPervasiveSuffix(nodes.map(n => n.name));
+  const byRole = new Map();
+  for (const node of nodes.sort((a, b) => nodeDepth(a) - nodeDepth(b))) {
+    const role = nodeRole(node, strip);
+    if (role && !byRole.has(role)) byRole.set(role, node);
+  }
+  return byRole;
+}
+
+/**
+ * Natural ground speed of a locomotion clip, measured from its feet: while a
+ * foot is planted it moves back at ground speed relative to the hips (in-place
+ * clips) or stays put while the hips advance (root motion). Returns
+ * { speed (root-local units/s at speedRatio 1), duration (s), leftStrike (0..1
+ * phase where the left foot takes over as the support foot) } or null.
+ */
+function measureLocomotionClip(group, root) {
+  if (!group || !root || !group.targetedAnimations || !group.targetedAnimations.length) return null;
+  const byRole = characterNodesByRole(root);
+  const hips = byRole.get('pelvis');
+  // Track the ball of the foot when present: it stays planted through toe-off.
+  const left = byRole.get('toe_l') || byRole.get('foot_l');
+  const right = byRole.get('toe_r') || byRole.get('foot_r');
+  if (!hips || !left || !right) return null;
+  const restOf = characterRestOf(root);
+  const fps = group.targetedAnimations[0].animation.framePerSecond || 30;
+  const frames = group.to - group.from;
+  if (!(frames > 0)) return null;
+  const n = Math.max(24, Math.min(160, Math.round(frames * 2)));
+  const dt = frames / n / fps;
+  const samples = [];
+  for (let i = 0; i <= n; i++) {
+    const pose = evaluateGroupPose(group, group.from + frames * i / n);
+    samples.push({
+      hips: posePosition(hips, root, pose, restOf),
+      left: posePosition(left, root, pose, restOf),
+      right: posePosition(right, root, pose, restOf),
+    });
+  }
+  // A foot is planted within 8% of leg length of its lowest height in the
+  // clip. While planted it slides back relative to the hips at ground speed
+  // (in-place clips) or the hips advance over it (root motion): both show up
+  // as foot-relative-to-hips displacement. Ratio of sums, not a per-sample
+  // median, so short stance phases of sprints still measure cleanly.
+  const leg = Math.max(1e-3, samples[0].hips.y - Math.min(samples[0].left.y, samples[0].right.y));
+  let distance = 0, time = 0, leftStrike = null;
+  for (const side of ['left', 'right']) {
+    const floor = Math.min(...samples.map(p => p[side].y));
+    const planted = samples.map(p => p[side].y <= floor + 0.08 * leg);
+    for (let i = 0; i < n; i++) {
+      if (!planted[i] || !planted[i + 1]) continue;
+      const a = samples[i], b = samples[i + 1];
+      distance += Math.hypot((b.hips.x - a.hips.x) - (b[side].x - a[side].x), (b.hips.z - a.hips.z) - (b[side].z - a[side].z));
+      time += dt;
+    }
+    if (side === 'left') {
+      const strike = planted.findIndex((p, i) => p && !planted[(i + n - 1) % n]);
+      leftStrike = strike >= 0 ? strike / n : 0;
+    }
+  }
+  if (time < 2 * dt) return null;
+  const speed = distance / time;
+  if (!(speed > 1e-4)) return null;
+  const restFeet = Math.min(posePosition(left, root, null, restOf).y, posePosition(right, root, null, restOf).y);
+  return { speed, duration: frames / fps, leftStrike, leg: posePosition(hips, root, null, restOf).y - restFeet };
+}
+
+// Hips-above-toes height of the stock character the legacy Walk/Sprint
+// playback rates were tuned on (animations.glb rig, metres).
+const REFERENCE_LEG_LENGTH = 1.04;
+
+/** Load an animation source (ArrayBuffer/Uint8Array/Blob/File/URL) as an AssetContainer + GLB JSON. */
+async function loadRetargetSource(scene, source) {
+  let bytes;
+  if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+    bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  } else if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    bytes = new Uint8Array(await source.arrayBuffer());
+  } else if (typeof source === 'string') {
+    const response = await fetch(source);
+    if (!response.ok) throw new Error(`Could not load animations: ${response.status} ${response.statusText}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } else {
+    throw new Error('Unsupported animation source.');
+  }
+  const container = await BABYLON.SceneLoader.LoadAssetContainerAsync('', bytes, scene, null, '.glb');
+  return { container, json: readGlbJson(bytes) };
+}
+
 
 // ═══════════════════════════════════════════════════════════
 // LOCOMOTION BLEND TREE
@@ -195,6 +806,88 @@ class LocoBlendGroup {
     this.speed = 0.0;
     this.animatables = [];
     this.isPlaying = false;
+    this._strideCache = new Map(); // AnimationGroup → measureLocomotionClip() result (or null)
+    this._inSyncBand = false;
+  }
+
+  // Natural ground speed/duration of a loop, measured once per group from its
+  // feet (see measureLocomotionClip). null → fall back to the tuned constants.
+  _stride(group) {
+    if (!group) return null;
+    if (!this._strideCache.has(group)) {
+      let info = null;
+      try {
+        const root = this.anim.charCtrl?.visualMesh;
+        if (root && typeof BABYLON !== 'undefined' && BABYLON.Matrix) info = measureLocomotionClip(group, root);
+      } catch (_) { info = null; }
+      this._strideCache.set(group, info);
+    }
+    return this._strideCache.get(group);
+  }
+
+  // Legacy playback rates tuned for the stock character (walk clip ≈ 1.6 m/s,
+  // sprint clip ≈ 5.5 m/s at speedRatio 1).
+  _legacyRatios(char) {
+    return {
+      walk: char.SPD_WALK * (1.5 / 2.4) * char.SPEED_MULTIPLIER,
+      sprint: char.SPD_SPRINT * (1.1 / 6.0) * char.SPEED_MULTIPLIER,
+    };
+  }
+
+  /**
+   * Measured playback rates (null → legacy constants).
+   * STRIDE_MATCHING true/'scale': the tuned rates, compensated for character
+   *   size (hips-above-feet vs the stock rig), so a 2× giant takes strides at
+   *   half the cadence instead of sliding. Stock-sized rigs play as before.
+   * STRIDE_MATCHING 'full': rate = ground speed / clip speed (feet locked);
+   *   best with SPD_* set to the clips' natural speeds (measureLocomotion()).
+   * Both: while Walk and Sprint blend they share one cycle period (sync group)
+   * and the joining loop starts in phase with the leading loop's support foot,
+   * so the feet never scissor mid-blend.
+   */
+  _strideRatios(char, walk, sprint, v) {
+    if (!char.STRIDE_MATCHING) return null;
+    const walkInfo = this._stride(walk), sprintInfo = this._stride(sprint);
+    if (!walkInfo || !sprintInfo) return null;
+    const root = char.visualMesh;
+    const scale = Math.abs((root && root.absoluteScaling && root.absoluteScaling.x) || 1);
+    const spdWalk = char.SPD_WALK * char.SPEED_MULTIPLIER, spdSprint = char.SPD_SPRINT * char.SPEED_MULTIPLIER;
+    let walkRatio, sprintRatio;
+    if (char.STRIDE_MATCHING === 'full') {
+      const clampRatio = r => Math.max(0.5, Math.min(2.5, r));
+      walkRatio = clampRatio(Math.max(v, 0.5 * spdWalk) / (walkInfo.speed * scale));
+      sprintRatio = clampRatio(Math.max(v, spdWalk) / (sprintInfo.speed * scale));
+    } else {
+      const legacy = this._legacyRatios(char);
+      const size = Math.max(0.25, Math.min(4, REFERENCE_LEG_LENGTH / Math.max(1e-3, walkInfo.leg * scale)));
+      walkRatio = legacy.walk * size;
+      sprintRatio = legacy.sprint * size;
+    }
+    const inBand = v > spdWalk && v < spdSprint && spdSprint > spdWalk;
+    if (inBand) {
+      const t = (v - spdWalk) / (spdSprint - spdWalk);
+      const period = (walkInfo.duration / walkRatio) * (1 - t) + (sprintInfo.duration / sprintRatio) * t;
+      walkRatio = walkInfo.duration / period;
+      sprintRatio = sprintInfo.duration / period;
+      if (!this._inSyncBand) this._alignPhase(walk, walkInfo, sprint, sprintInfo, t < 0.5);
+    }
+    this._inSyncBand = inBand;
+    return { walk: walkRatio, sprint: sprintRatio };
+  }
+
+  _alignPhase(walk, walkInfo, sprint, sprintInfo, walkLeads) {
+    const phaseOf = g => {
+      const a = g && g.animatables && g.animatables[0];
+      const span = g ? g.to - g.from : 0;
+      return a && span > 0 && Number.isFinite(a.masterFrame) ? ((a.masterFrame - g.from) / span) % 1 : null;
+    };
+    const [leader, leaderInfo, follower, followerInfo] = walkLeads
+      ? [walk, walkInfo, sprint, sprintInfo] : [sprint, sprintInfo, walk, walkInfo];
+    const phase = phaseOf(leader);
+    if (phase === null || !follower || !follower.isPlaying || typeof follower.goToFrame !== 'function') return;
+    let target = (phase - leaderInfo.leftStrike + followerInfo.leftStrike) % 1;
+    if (target < 0) target += 1;
+    follower.goToFrame(follower.from + target * (follower.to - follower.from));
   }
 
   start(loop = true, speedRatio = 1.0, from, to, falseArg = false) {
@@ -204,22 +897,19 @@ class LocoBlendGroup {
     const sprint = this.anim.g.get('Sprint_Loop');
 
     const char = this.anim.charCtrl;
-    const spdWalk = char ? char.SPD_WALK : 2.4;
-    const spdSprint = char ? char.SPD_SPRINT : 6.0;
-    const multiplier = char ? char.SPEED_MULTIPLIER : 1.0;
-
-    const walkRatio = spdWalk * (1.5 / 2.4) * multiplier;
-    const sprintRatio = spdSprint * (1.1 / 6.0) * multiplier;
+    const ratios = char ? (this._strideRatios(char, walk, sprint, this.speed) || this._legacyRatios(char))
+      : { walk: 2.4 * (1.5 / 2.4), sprint: 6.0 * (1.1 / 6.0) };
 
     if (idle && !idle.isPlaying) idle.start(true, 1.0, idle.from, idle.to, false);
-    if (walk && !walk.isPlaying) walk.start(true, walkRatio, walk.from, walk.to, false);
-    if (sprint && !sprint.isPlaying) sprint.start(true, sprintRatio, sprint.from, sprint.to, false);
+    if (walk && !walk.isPlaying) walk.start(true, ratios.walk, walk.from, walk.to, false);
+    if (sprint && !sprint.isPlaying) sprint.start(true, ratios.sprint, sprint.from, sprint.to, false);
 
     this.updateWeights();
   }
 
   stop() {
     this.isPlaying = false;
+    this._inSyncBand = false;
     const idle = this.anim.g.get('Idle_Loop');
     const walk = this.anim.g.get('Walk_Loop');
     const sprint = this.anim.g.get('Sprint_Loop');
@@ -251,22 +941,19 @@ class LocoBlendGroup {
     if (char) {
       const backward = char._isPressed('MOVE_BACKWARD') || (char.isTouch && char.touchVector.y < -0.2);
       const sign = (char.CAM_FOLLOW_LOCK && backward) ? -1 : 1;
+      const ratios = this._strideRatios(char, walk, sprint, this.speed) || this._legacyRatios(char);
 
       if (walk) {
         if (char.CAM_FOLLOW_LOCK && char.state === S.WALK && char.speed < 0.1) {
           // Turning in place shuffle speed
           walk.speedRatio = 2.2;
         } else {
-          // Normal walking speed ratio (scaled by speed multiplier)
-          const spdWalk = char.SPD_WALK;
-          walk.speedRatio = sign * spdWalk * (1.5 / 2.4) * char.SPEED_MULTIPLIER;
+          walk.speedRatio = sign * ratios.walk;
         }
       }
 
       if (sprint) {
-        // Normal sprinting speed ratio (scaled by speed multiplier)
-        const spdSprint = char.SPD_SPRINT;
-        sprint.speedRatio = sign * spdSprint * (1.1 / 6.0) * char.SPEED_MULTIPLIER;
+        sprint.speedRatio = sign * ratios.sprint;
       }
     }
 
@@ -346,6 +1033,18 @@ class AnimCtrl {
     this.locoGroup = new LocoBlendGroup(this);
     this.g.set('Locomotion', this.locoGroup);
 
+    // ── Layers ────────────────────────────────────────────────
+    // Upper-body layer: a masked clone of an action clip (AnimationGroupMask)
+    // blended over whatever plays underneath; base groups hand over their
+    // upper-body animatables by (1 - layer weight) so weights always sum to 1.
+    // Additive layers: AnimationGroup.MakeAnimationAdditive clones on top.
+    this._upperLayer = null;          // { group, source, name, weight, target, blend, onEnd }
+    this._upperLayerClones = new Map(); // source group → masked clone
+    this._upperTargets = null;        // Set<TransformNode> (lazy)
+    this._additiveLayers = new Map(); // name → additive clone
+    this._layerObserver = null;
+    for (const group of this.g.values()) this._trackGroup(group);
+
     // ── Animation events ──────────────────────────────────────
     // animationEvents: { [animName]: [{ type, frame, label }] }
     // onAnimationEvent: (evt, animName) => {} fired when playback crosses evt.frame
@@ -361,7 +1060,7 @@ class AnimCtrl {
   // Handles loop wrap-around (frame jumps back below the last seen frame).
   _updateAnimationEvents() {
     const events = this.animationEvents;
-    if (!events || !this.cur) { this._evtLastFrame.clear(); return; }
+    if (!events || (!this.cur && !this._upperLayer)) { this._evtLastFrame.clear(); return; }
 
     // Groups to watch: the current group, fading-out groups still blending
     // (so markers near a clip's end fire during the crossfade), plus the loco
@@ -375,7 +1074,7 @@ class AnimCtrl {
         for (const n of ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop']) {
           const sub = this.g.get(n);
           const a = sub?.animatables?.[0];
-          if (a && a.weight > 0.3 && !watched.has(n)) { watched.add(n); watch.push([n, sub]); }
+          if (a && groupWeight(sub) > 0.3 && !watched.has(n)) { watched.add(n); watch.push([n, sub]); }
         }
       } else {
         watch.push([name, ag]);
@@ -383,6 +1082,7 @@ class AnimCtrl {
     };
     addWatch(this.curName, this.cur);
     for (const t of this.activeTransitions) addWatch(t.outgoingName, t.outgoing);
+    if (this._upperLayer && this._upperLayer.weight > 0.3) addWatch(this._upperLayer.name, this._upperLayer.group);
 
     const seen = new Set();
     for (const [name, ag] of watch) {
@@ -567,7 +1267,7 @@ class AnimCtrl {
         outgoing.goToFrame(outgoing.to - 0.005);
       }
       let elapsed = 0;
-      const outgoingStartWeight = outgoing.animatables[0] ? outgoing.animatables[0].weight : targetWeight;
+      const outgoingStartWeight = outgoing.animatables[0] ? groupWeight(outgoing) : targetWeight;
       const transition = {
         incoming,
         outgoing,
@@ -653,6 +1353,7 @@ class AnimCtrl {
   dispose() {
     if (this._disposed) return;
     this._disposed = true;
+    this._disposeLayers();
     this.forceStop();
     if (this._eventObserver) this.scene.onBeforeRenderObservable.remove(this._eventObserver);
     for (const group of this._endObservers.keys()) this._clearEndObserver(group);
@@ -689,6 +1390,7 @@ class AnimCtrl {
     }
 
     this.g.set(name, animationGroup);
+    this._trackGroup(animationGroup);
     if (oldAg && oldAg.__isSharedClone && oldAg !== animationGroup) oldAg.dispose();
 
     // If the locomotion blend tree is active and we replaced one of its components
@@ -704,6 +1406,186 @@ class AnimCtrl {
 
     this.resetInactiveWeights();
     return true;
+  }
+
+  /**
+   * Register freshly retargeted groups (e.g. from CharCtrl.loadAnimations).
+   * Existing names are replaced when `replace` is true, otherwise kept.
+   * Returns the clean names that were registered.
+   */
+  addAnimationGroups(groups, { replace = true } = {}) {
+    const added = [];
+    for (const group of groups || []) {
+      const name = cleanAnimName(group.name);
+      if (!name || name === 'Locomotion') continue;
+      if (this.g.has(name)) {
+        if (!replace) continue;
+        this.setAnimation(name, group);
+      } else {
+        this.g.set(name, group);
+        this._trackGroup(group);
+        group.stop();
+      }
+      added.push(name);
+    }
+    if (this.locoGroup) this.locoGroup._strideCache.clear();
+    this.resetInactiveWeights();
+    return added;
+  }
+
+  // Wrap a group's weight setter so the upper-body layer can take over the
+  // upper-body animatables without every caller knowing about layers.
+  _trackGroup(group) {
+    if (!group || group === this.locoGroup || group.__layerTracked || typeof group.setWeightForAllAnimatables !== 'function') return;
+    const ctrl = this;
+    group.__layerTracked = true;
+    group.__baseWeight = group.animatables && group.animatables[0] ? group.animatables[0].weight : 0;
+    group.setWeightForAllAnimatables = function (weight) {
+      this.__baseWeight = weight;
+      const layer = ctrl._upperLayer;
+      const cut = layer && layer.group !== this ? layer.weight : 0;
+      const upper = cut > 0 ? ctrl._upperBodyTargets() : null;
+      for (const animatable of this.animatables) {
+        animatable.weight = upper && upper.has(animatable.target) ? weight * (1 - cut) : weight;
+      }
+      return this;
+    };
+  }
+
+  // Spine root and everything above it (arms, neck, head, props on the hands).
+  _upperBodyTargets() {
+    if (this._upperTargets) return this._upperTargets;
+    const set = new Set();
+    const root = this.charCtrl && this.charCtrl.visualMesh;
+    if (root && root.getDescendants) {
+      const byRole = characterNodesByRole(root);
+      const spine = byRole.get('spine_01') || byRole.get('spine_02') || byRole.get('spine_03');
+      if (spine) {
+        set.add(spine);
+        for (const node of spine.getDescendants(false)) set.add(node);
+      }
+    }
+    this._upperTargets = set;
+    return set;
+  }
+
+  _reapplyTrackedWeights() {
+    for (const group of new Set(this.g.values())) {
+      if (group.__layerTracked && group.isPlaying) group.setWeightForAllAnimatables(group.__baseWeight || 0);
+    }
+  }
+
+  _ensureLayerObserver() {
+    if (this._layerObserver) return;
+    this._layerObserver = this.scene.onBeforeRenderObservable.add(() => {
+      const layer = this._upperLayer;
+      if (!layer) return;
+      const dt = Math.min(0.1, this.scene.getEngine().getDeltaTime() / 1000);
+      const step = layer.blend > 0 ? dt / layer.blend : 1;
+      layer.weight = layer.target > layer.weight
+        ? Math.min(layer.target, layer.weight + step)
+        : Math.max(layer.target, layer.weight - step);
+      layer.group.setWeightForAllAnimatables(layer.weight);
+      this._reapplyTrackedWeights();
+      if (layer.target === 0 && layer.weight === 0) {
+        layer.group.stop();
+        this._upperLayer = null;
+        this._reapplyTrackedWeights();
+      }
+    });
+  }
+
+  /**
+   * Play `name` on the upper body only (AnimationGroupMask on a clone of the
+   * clip) over the current animation, e.g. punching while running. One-shots
+   * hold their last frame while fading out, then call onEnd.
+   */
+  playUpperBody(name, { loop = false, blend = 0.15, speedRatio = 1.0, onEnd = null } = {}) {
+    if (this._disposed || typeof BABYLON === 'undefined' || !BABYLON.AnimationGroupMask) return false;
+    const source = this.g.get(name);
+    if (!source || source === this.locoGroup || typeof source.clone !== 'function') { this._warnMissing(name); return false; }
+    const upper = this._upperBodyTargets();
+    if (!upper.size) return false;
+    let clone = this._upperLayerClones.get(source);
+    if (!clone) {
+      clone = source.clone(`${source.name}__upper`);
+      clone.mask = new BABYLON.AnimationGroupMask([...upper].map(node => node.name), BABYLON.AnimationGroupMaskMode.Include);
+      clone.removeUnmaskedAnimations(); // drop leg/hips tracks instead of carrying paused animatables
+      this._upperLayerClones.set(source, clone);
+    }
+    const previous = this._upperLayer;
+    if (previous && previous.group !== clone) previous.group.stop();
+    if (previous) previous.group.onAnimationGroupEndObservable.clear();
+    const layer = { group: clone, source, name, weight: previous ? previous.weight : 0, target: 1, blend, onEnd };
+    this._upperLayer = layer;
+    const ratio = speedRatio * (this.charCtrl ? this.charCtrl.SPEED_MULTIPLIER : 1);
+    clone.start(loop, ratio, clone.from, clone.to, false);
+    clone.setWeightForAllAnimatables(layer.weight);
+    if (Number.isFinite(clone.from)) this._evtLastFrame.set(name, clone.from - 0.001);
+    if (!loop) {
+      clone.onAnimationGroupEndObservable.addOnce(() => {
+        if (this._upperLayer !== layer) return;
+        // Keep writing the end pose during the fade (a stopped group would let
+        // Babylon fill the missing weight with the rest pose).
+        clone.start(false, 0.0001, Math.max(clone.from, clone.to - 0.01), clone.to, false);
+        clone.goToFrame(clone.to - 0.005);
+        clone.setWeightForAllAnimatables(layer.weight);
+        layer.target = 0;
+        if (typeof onEnd === 'function') onEnd();
+      });
+    }
+    this._ensureLayerObserver();
+    this._reapplyTrackedWeights();
+    return true;
+  }
+
+  stopUpperBody(blend = 0.15) {
+    if (!this._upperLayer) return;
+    this._upperLayer.target = 0;
+    this._upperLayer.blend = blend;
+  }
+
+  get upperBodyPlaying() {
+    return this._upperLayer && this._upperLayer.target > 0 ? this._upperLayer.name : null;
+  }
+
+  /** Additive layer (breathing, flinch, lean) on top of everything else. */
+  playAdditive(name, { weight = 1.0, loop = true, speedRatio = 1.0, referenceFrame } = {}) {
+    if (this._disposed || typeof BABYLON === 'undefined' || !BABYLON.AnimationGroup || !BABYLON.AnimationGroup.MakeAnimationAdditive) return false;
+    const source = this.g.get(name);
+    if (!source || source === this.locoGroup) { this._warnMissing(name); return false; }
+    let additive = this._additiveLayers.get(name);
+    if (!additive) {
+      additive = BABYLON.AnimationGroup.MakeAnimationAdditive(source, {
+        referenceFrame: Number.isFinite(referenceFrame) ? referenceFrame : source.from,
+        cloneOriginalAnimationGroup: true,
+        clonedAnimationGroupName: `${source.name}__additive`,
+      });
+      this._additiveLayers.set(name, additive);
+    }
+    additive.start(loop, speedRatio, additive.from, additive.to, true);
+    additive.setWeightForAllAnimatables(weight);
+    return true;
+  }
+
+  setAdditiveWeight(name, weight) {
+    const additive = this._additiveLayers.get(name);
+    if (additive) additive.setWeightForAllAnimatables(weight);
+  }
+
+  stopAdditive(name) {
+    const additive = this._additiveLayers.get(name);
+    if (additive) additive.stop();
+  }
+
+  _disposeLayers() {
+    if (this._layerObserver) this.scene.onBeforeRenderObservable.remove(this._layerObserver);
+    this._layerObserver = null;
+    this._upperLayer = null;
+    for (const clone of this._upperLayerClones.values()) { clone.stop(); clone.dispose(); }
+    for (const additive of this._additiveLayers.values()) { additive.stop(); additive.dispose(); }
+    this._upperLayerClones.clear();
+    this._additiveLayers.clear();
   }
 
   setWalkAnim(animationGroup) {
@@ -922,6 +1804,8 @@ class CharCtrl {
     this.JUMP_CUT = config.JUMP_CUT !== undefined ? config.JUMP_CUT : true;
     this.JUMP_CUT_MULT = config.JUMP_CUT_MULT !== undefined ? config.JUMP_CUT_MULT : 2.5;
     this.ACCEL_CURVE = config.ACCEL_CURVE !== undefined ? config.ACCEL_CURVE : true;
+    this.STRIDE_MATCHING = config.STRIDE_MATCHING !== undefined ? config.STRIDE_MATCHING : true;
+    this.UPPER_BODY_ACTIONS = config.UPPER_BODY_ACTIONS !== undefined ? config.UPPER_BODY_ACTIONS : false;
     this._coyoteTimer = 0;        // seconds since last grounded (jump still valid while < COYOTE_TIME)
     this._jumpBufferTimer = -1;   // seconds since last JUMP press (<0 = no buffered press); consumed on landing
     this._jumpCutApplied = false; // whether the current ascent has already been shortened by a release
@@ -994,6 +1878,7 @@ class CharCtrl {
     this.weapon = null; // null | 'spell'
     this.comboIdx = 0;
     this.comboT = 0;
+    this._comboLayered = false;
     this.moveDir = new BABYLON.Vector3(0, 0, 0);
 
     this.keys = {};
@@ -2103,6 +2988,38 @@ class CharCtrl {
     requestAnimationFrame(check);
   }
 
+  // Upper-body actions are allowed while grounded locomotion is playing.
+  _canLayerUpperBody() {
+    return !!this.UPPER_BODY_ACTIONS && this.grounded && !this.crouching && !this.sitting
+      && this.speed > 0.3 && this.anim.curName === 'Locomotion' && !this._isInAction();
+  }
+
+  // One combo hit. While moving with UPPER_BODY_ACTIONS the strike plays on the
+  // upper-body layer and the legs keep their locomotion (no action state).
+  _comboHit(name, state, index, label) {
+    this.comboIdx = index;
+    this.comboT = performance.now();
+    const layered = this._comboLayered || this._canLayerUpperBody();
+    const done = () => {
+      if (this.comboIdx !== index) return;
+      this.comboIdx = 0;
+      this._comboLayered = false;
+      if (!layered) {
+        this._setState(S.IDLE);
+        this._returnToLoco();
+      }
+      this._hideCombo();
+    };
+    if (layered && this.anim.playUpperBody(name, { speedRatio: 1.2, blend: 0.08, onEnd: done })) {
+      this._comboLayered = true;
+    } else {
+      this._comboLayered = false;
+      this._setState(state);
+      this.anim.play(name, false, 0.08, done, 1.2);
+    }
+    this._showCombo(label);
+  }
+
   _punch() {
     const now = performance.now();
     const hasPunch = this.anim.has('Punch');
@@ -2112,83 +3029,17 @@ class CharCtrl {
     if (this.comboIdx > 0 && (now - this.comboT) < 250 / this.SPEED_MULTIPLIER) {
       return;
     }
+    const chained = now - this.comboT < comboWindow;
 
     if (hasPunch) {
       // 3-hit combo: Punch -> Punch_Jab -> Punch_Cross
-      if (this.comboIdx === 1 && now - this.comboT < comboWindow) {
-        // Hit 2: Punch_Jab
-        this.comboIdx = 2;
-        this.comboT = now;
-        this._setState(S.PUNCH_JAB);
-        this.anim.play('Punch_Jab', false, 0.08, () => {
-          if (this.comboIdx === 2) {
-            this.comboIdx = 0;
-            this._setState(S.IDLE);
-            this._returnToLoco();
-            this._hideCombo();
-          }
-        }, 1.2);
-        this._showCombo('JAB');
-      } else if (this.comboIdx === 2 && now - this.comboT < comboWindow) {
-        // Hit 3: Punch_Cross
-        this.comboIdx = 3;
-        this.comboT = now;
-        this._setState(S.PUNCH_CROSS);
-        this.anim.play('Punch_Cross', false, 0.08, () => {
-          if (this.comboIdx === 3) {
-            this.comboIdx = 0;
-            this._setState(S.IDLE);
-            this._returnToLoco();
-            this._hideCombo();
-          }
-        }, 1.2);
-        this._showCombo('CROSS!');
-      } else {
-        // Hit 1: Punch
-        this.comboIdx = 1;
-        this.comboT = now;
-        this._setState(S.PUNCH);
-        this.anim.play('Punch', false, 0.08, () => {
-          if (this.comboIdx === 1) {
-            this.comboIdx = 0;
-            this._setState(S.IDLE);
-            this._returnToLoco();
-            this._hideCombo();
-          }
-        }, 1.2);
-        this._showCombo('PUNCH');
-      }
+      if (this.comboIdx === 1 && chained) this._comboHit('Punch_Jab', S.PUNCH_JAB, 2, 'JAB');
+      else if (this.comboIdx === 2 && chained) this._comboHit('Punch_Cross', S.PUNCH_CROSS, 3, 'CROSS!');
+      else this._comboHit('Punch', S.PUNCH, 1, 'PUNCH');
     } else {
       // 2-hit combo fallback: Punch_Jab -> Punch_Cross
-      if (this.comboIdx === 1 && now - this.comboT < comboWindow) {
-        // Hit 2: Punch_Cross
-        this.comboIdx = 2;
-        this.comboT = now;
-        this._setState(S.PUNCH_CROSS);
-        this.anim.play('Punch_Cross', false, 0.08, () => {
-          if (this.comboIdx === 2) {
-            this.comboIdx = 0;
-            this._setState(S.IDLE);
-            this._returnToLoco();
-            this._hideCombo();
-          }
-        }, 1.2);
-        this._showCombo('CROSS!');
-      } else {
-        // Hit 1: Punch_Jab
-        this.comboIdx = 1;
-        this.comboT = now;
-        this._setState(S.PUNCH_JAB);
-        this.anim.play('Punch_Jab', false, 0.08, () => {
-          if (this.comboIdx === 1) {
-            this.comboIdx = 0;
-            this._setState(S.IDLE);
-            this._returnToLoco();
-            this._hideCombo();
-          }
-        }, 1.2);
-        this._showCombo('JAB');
-      }
+      if (this.comboIdx === 1 && chained) this._comboHit('Punch_Cross', S.PUNCH_CROSS, 2, 'CROSS!');
+      else this._comboHit('Punch_Jab', S.PUNCH_JAB, 1, 'JAB');
     }
   }
 
@@ -2299,6 +3150,13 @@ class CharCtrl {
     if (this.state === s) return;
     this.state = s;
     this.stateT = 0;
+    // A full-body action (jump, roll, spell...) ends any layered upper-body strike.
+    if (this._comboLayered && ACTION_STATES.has(s) && this.anim && this.anim.stopUpperBody) {
+      this.anim.stopUpperBody(0.1);
+      this._comboLayered = false;
+      this.comboIdx = 0;
+      this._hideCombo();
+    }
     if (this.callbacks.onStateChange) {
       this.callbacks.onStateChange(s);
     } else {
@@ -2564,6 +3422,43 @@ class CharCtrl {
   /** Re-scan the skeleton nodes (call after swapping the character mesh). */
   refreshBoneDrivers() {
     this._boneDriversInit = false;
+    if (this.anim) this.anim._upperTargets = null;
+  }
+
+  /**
+   * Natural ground speed (world m/s at speedRatio 1) of the locomotion loops,
+   * measured from their planted feet. Set SPD_WALK/SPD_SPRINT to these (with
+   * STRIDE_MATCHING: 'full') for zero foot sliding.
+   */
+  measureLocomotion() {
+    const scale = Math.abs((this.visualMesh && this.visualMesh.absoluteScaling && this.visualMesh.absoluteScaling.x) || 1);
+    const out = {};
+    for (const name of ['Walk_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop', 'Crouch_Fwd_Loop']) {
+      const group = this.anim.g.get(name);
+      const info = group && group !== this.anim.locoGroup ? measureLocomotionClip(group, this.visualMesh) : null;
+      if (info) out[name] = Number((info.speed * scale).toFixed(3));
+    }
+    return out;
+  }
+
+  /**
+   * Load and retarget an animation pack at runtime, no server needed
+   * (BabylonJS 9 AnimatorAvatar + the shared bone-role mapping). `source` is a
+   * URL, ArrayBuffer/Uint8Array, Blob or File (.glb). Clips are registered on
+   * the AnimCtrl by clean name; `replace: false` keeps existing clips.
+   *   await charCtrl.loadAnimations('assets/emotes.glb');
+   *   charCtrl.anim.play('Wave', false);
+   */
+  async loadAnimations(source, { replace = true, ...options } = {}) {
+    const { container, json } = await loadRetargetSource(this.scene, source);
+    try {
+      const { groups, report } = retargetAnimationGroupsClient(this.scene, this.visualMesh, container, { json, ...options });
+      const added = this.anim.addAnimationGroups(groups, { replace });
+      for (const group of groups) if (!added.includes(cleanAnimName(group.name))) group.dispose();
+      return { added, report };
+    } finally {
+      container.dispose();
+    }
   }
 
   _initBoneDrivers() {
@@ -2584,13 +3479,20 @@ class CharCtrl {
       const twist = byNorm.get(side + 'forearmtwist');
       const hand = byNorm.get(side); // normBone('LeftHand') → 'left'
       if (twist && hand && hand.parent === twist.parent) {
-        // Twist axis: bone direction (hand local translation in forearm space).
-        // Autorig twist rigs bind with identity local rotations, so the same
-        // axis is valid in the rest frames used by the decomposition below.
-        const axis = hand.position.clone();
+        // Twist axis = forearm→hand bone direction, expressed in the hand's
+        // bind frame (identity for world-aligned auto-rigs, a real rotation for
+        // bone-aligned ones). Decomposition is relative to the bind rotations.
+        const restOf = characterRestOf(this.visualMesh);
+        const handRest = restOf(hand), twistRest = restOf(twist);
+        const axis = handRest.position.clone();
         if (axis.lengthSquared() > 1e-10) {
           axis.normalize();
-          this._twistDrivers.push({ twist, hand, axis, rest: null, twistRest: null });
+          const local = new BABYLON.Vector3();
+          axis.rotateByQuaternionToRef(BABYLON.Quaternion.Inverse(handRest.rotationQuaternion), local);
+          this._twistDrivers.push({
+            twist, hand, axis: local.normalize(),
+            rest: handRest.rotationQuaternion.clone(), twistRest: twistRest.rotationQuaternion.clone(),
+          });
         }
       }
     }
@@ -4195,79 +5097,14 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
   if (options.animationsFilename) {
     // Client-side fallback retargeting with AnimatorAvatar
     setLoad(80, 'Client retargeting animations...');
-    const animRes = await BABYLON.SceneLoader.LoadAssetContainerAsync(options.assetsPath || 'assets/', options.animationsFilename, scene);
-
-    const skeleton = mergedCharRes.skeletons[0] || scene.skeletons[0];
-    const avatar = new BABYLON.AnimatorAvatar('avatar', charRoot);
-
-    const boneMap = new Map();
-    const targetBones = skeleton ? skeleton.bones : [];
-    const targetByName = new Map();
-    const targetByNorm = new Map();
-    targetBones.forEach(bone => {
-      targetByName.set(bone.name.toLowerCase(), bone.name);
-      const norm = normBone(bone.name);
-      if (norm) targetByNorm.set(norm, bone.name);
-    });
-    const boneAliases = {
-      'mixamorig:spine': 'cc_base_waist',
-      'mixamorig:spine1': 'cc_base_spine01',
-      'mixamorig:spine2': 'cc_base_spine02',
-      'mixamorig:neck': 'cc_base_necktwist01',
-      'mixamorig:neck1': 'cc_base_necktwist02',
-    };
-    animRes.animationGroups.forEach(sg => {
-      sg.targetedAnimations.forEach(ta => {
-        const srcNode = ta.target;
-        if (!srcNode || !srcNode.name) return;
-        const srcName = srcNode.name;
-        if (boneMap.has(srcName)) return;
-        let matchedName = targetByName.get(srcName.toLowerCase());
-        if (!matchedName) {
-          const alias = boneAliases[srcName.toLowerCase()];
-          if (alias) matchedName = targetByName.get(alias);
-        }
-        if (!matchedName) {
-          const norm = normBone(srcName);
-          matchedName = targetByNorm.get(norm);
-        }
-        if (matchedName) boneMap.set(srcName, matchedName);
-      });
-    });
-    console.log('[setupCharacter] Client fallback — Bone map size:', boneMap.size);
-
-    const retargetedGroups = [];
-    // Helper: find the source node name that plays a given skeleton role
-    const findSrcRole = (sg, norms) => {
-      for (const ta of sg.targetedAnimations) {
-        const node = ta.target;
-        if (!node || !node.name) continue;
-        const n = normBone(node.name);
-        if (norms.some(s => n.includes(s) || s.includes(n))) return node.name;
-      }
-      return null;
-    };
-
-    animRes.animationGroups.forEach(sg => {
-      const cleanName = cleanAnimName(sg.name);
-      const srcRootName = findSrcRole(sg, ['hips', 'pelvis', 'hip']) || 'mixamorig:Hips';
-      const srcGroundName = findSrcRole(sg, ['leftfoot', 'footl', 'ankle_l']) || 'mixamorig:LeftFoot';
-      const retargeted = avatar.retargetAnimationGroup(sg, {
-        animationGroupName: cleanName,
-        retargetAnimationKeys: true,
-        fixRootPosition: true,
-        fixGroundReference: true,
-        rootNodeName: srcRootName,
-        groundReferenceNodeName: srcGroundName,
-        mapNodeNames: boneMap,
-        fixGroundReferenceDynamicRefNode: true
-      });
-      retargeted.stop();
-      scene.addAnimationGroup(retargeted);
-      retargetedGroups.push(retargeted);
-    });
-    animRes.dispose();
-    filteredGroups = retargetedGroups;
+    const { container, json } = await loadRetargetSource(scene, (options.assetsPath || 'assets/') + options.animationsFilename);
+    try {
+      const { groups, report } = retargetAnimationGroupsClient(scene, charRoot, container, { json });
+      console.log('[setupCharacter] Client fallback retarget:', report);
+      filteredGroups = groups;
+    } finally {
+      container.dispose();
+    }
   }
 
   charRoot.setParent(playerCapsule);
@@ -4313,6 +5150,10 @@ window.ACTION_STATES = ACTION_STATES;
 window.AnimCtrl = AnimCtrl;
 window.CharCtrl = CharCtrl;
 window.normBone = normBone;
+window.BJSRetarget = {
+  canonicalBoneRole, readGlbJson, buildRetargetBoneMap, loadRetargetSource,
+  retargetAnimationGroups: retargetAnimationGroupsClient,
+};
 window.cleanAnimName = cleanAnimName;
 window.lerp = lerp;
 window.lerpAngle = lerpAngle;

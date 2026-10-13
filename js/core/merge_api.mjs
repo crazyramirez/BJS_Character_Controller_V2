@@ -35,6 +35,18 @@ const DEFAULTS = {
   // Enabling this can corrupt the C matrix for characters re-exported from BabylonJS.
   AUTO_APOSE_CORRECTION: false,
   APOSE_THRESHOLD_DEG: 15,
+  // BabylonJS 9 AnimatorAvatar parity (see doc.babylonjs.com animationRetargeting):
+  // FIX_ROOT_POSITION  — scale root translation by the leg-length ratio of the rigs.
+  // FIX_GROUND_REFERENCE — hips height correction from the feet: true/'clip'
+  //   grounds clips that touch the floor (constant offset per clip); 'frame'
+  //   matches the source clearance every frame (BJS behaviour); false = off.
+  // GROUND_CONTACT_TOLERANCE — source lowest-joint height (in leg lengths)
+  //   below which a clip counts as touching the ground.
+  // FIX_ANIMATIONS — hemisphere-continuous quaternions + orthogonal-key repair.
+  FIX_ROOT_POSITION: true,
+  FIX_GROUND_REFERENCE: true,
+  GROUND_CONTACT_TOLERANCE: 0.12,
+  FIX_ANIMATIONS: true,
 };
 
 /// ── Bone name mapping ──────────────────────────────────────────────────────
@@ -145,6 +157,10 @@ function stripBJSSuffix(name) {
   if (!name) return name;
   return name.replace(/_\d+$/, '');
 }
+
+// Max angle between a finger bone's own change-of-basis and its hand's before
+// the finger is treated as a different convention (per-bone C instead of hand C).
+const FINGER_FRAME_DIVERGE_DEG = 12;
 
 /**
  * Canonical bone id: lowercase, remove common rig prefixes and separators.
@@ -985,6 +1001,20 @@ const NORM_TO_CANON = (() => {
   return map;
 })();
 
+/**
+ * Canonical role (BONE_MAP key) of a bone name, as used by findMatchingBone.
+ * character-controller.js mirrors this for offline retargeting; the test
+ * suite keeps both tables identical.
+ */
+export function canonicalBoneRole(name) {
+  if (!name) return null;
+  const lo = String(name).toLowerCase();
+  if (Object.hasOwn(BONE_MAP, lo)) return lo;
+  return NORM_TO_CANON.get(aliasNorm(name)) || NORM_TO_CANON.get(aliasNorm(stripBJSSuffix(name))) || null;
+}
+
+export { BONE_MAP };
+
 /** Side tag of a normalized bone name: 'l', 'r' or '' (center/unknown). */
 function sideOf(n) {
   if (n.includes('left')) return 'l';
@@ -1167,6 +1197,236 @@ function extractTPoseRestPose(doc) {
   for (const node of doc.getRoot().listNodes()) getWorld(node);
 
   return { localByName, worldByName };
+}
+
+// Retargeted clips are expressed in a reference pose that may differ from the
+// mesh's bind pose (virtual T-pose, IBM orientation, posture offsets). Keep that
+// reference with the GLB so a later import, export or Apply Rig does not treat
+// the already-corrected keys as unprocessed animation and correct them again.
+function animationRetargetPose(doc, animation) {
+  const id = animation.getExtras().bjsRetargetPose;
+  if (id === undefined) return null;
+  const pose = doc.getRoot().getExtras().bjsRetargetPoses?.[id];
+  if (!pose || pose.version !== 1 || !pose.nodes || typeof pose.nodes !== 'object') {
+    throw new Error(`Animation "${animation.getName()}" is missing its retarget reference pose.`);
+  }
+  for (const reference of Object.values(pose.nodes)) {
+    for (const [key, length] of [['rotation', 4], ['worldRotation', 4], ['translation', 3],
+      ['postRotation', 4], ['translationScale', 3]]) {
+      const values = reference?.[key];
+      if (values === undefined && (key === 'postRotation' || key === 'translationScale')) continue;
+      if (!Array.isArray(values) || values.length !== length || !values.every(Number.isFinite)) {
+        throw new Error(`Animation "${animation.getName()}" has an invalid retarget reference pose.`);
+      }
+    }
+  }
+  return pose;
+}
+
+function saveAnimationRetargetPose(doc, animations, nodes) {
+  const root = doc.getRoot(), extras = root.getExtras();
+  const poses = { ...extras.bjsRetargetPoses };
+  let index = 1;
+  while (Object.hasOwn(poses, `pose-${index}`)) index++;
+  const id = `pose-${index}`;
+  poses[id] = { version: 1, nodes };
+  for (const animation of animations) {
+    animation.setExtras({ ...animation.getExtras(), bjsRetargetPose: id });
+  }
+  const used = new Set(root.listAnimations().map(animation => animation.getExtras().bjsRetargetPose));
+  root.setExtras({ ...extras, bjsRetargetPoses: Object.fromEntries(
+    Object.entries(poses).filter(([key]) => used.has(key))) });
+}
+
+// ── Pose sampling / forward kinematics ───────────────────────────────────────
+// Used by the post-retarget passes that mirror BabylonJS 9 AnimatorAvatar
+// (fixRootPosition, fixGroundReference, fixAnimations): they need joint world
+// positions of both rigs at arbitrary clip times, with double precision so
+// repeated merges stay bit-for-bit stable.
+
+function composeTRS(t, r, s) {
+  const [x, y, z, w] = quatNormalize(r || [0, 0, 0, 1]);
+  const [sx, sy, sz] = s || [1, 1, 1];
+  const [tx, ty, tz] = t || [0, 0, 0];
+  return [
+    (1 - 2 * (y * y + z * z)) * sx, 2 * (x * y + z * w) * sx, 2 * (x * z - y * w) * sx, 0,
+    2 * (x * y - z * w) * sy, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z + x * w) * sy, 0,
+    2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz, 0,
+    tx, ty, tz, 1,
+  ];
+}
+
+function mat4MulD(a, b) {
+  const out = new Array(16);
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k * 4 + row] * b[col * 4 + k];
+      out[col * 4 + row] = s;
+    }
+  }
+  return out;
+}
+
+/** Solve M3·x = v for the upper 3×3 of a column-major mat4 (world→local vector). */
+function solveMat3(m, v) {
+  const a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10];
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(det) < 1e-12) return v.slice();
+  const inv = [
+    (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
+    (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
+    (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det,
+  ];
+  return [
+    inv[0] * v[0] + inv[1] * v[1] + inv[2] * v[2],
+    inv[3] * v[0] + inv[4] * v[1] + inv[5] * v[2],
+    inv[6] * v[0] + inv[7] * v[1] + inv[8] * v[2],
+  ];
+}
+
+function quatSlerp(a, b, t) {
+  let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  const sign = dot < 0 ? -1 : 1;
+  dot *= sign;
+  if (dot > 0.9995) {
+    return quatNormalize(a.map((value, i) => value + (sign * b[i] - value) * t));
+  }
+  const theta = Math.acos(Math.min(1, dot)), sin = Math.sin(theta);
+  const wa = Math.sin((1 - t) * theta) / sin, wb = sign * Math.sin(t * theta) / sin;
+  return a.map((value, i) => value * wa + b[i] * wb);
+}
+
+/** Evaluate a glTF animation sampler at `time` (LINEAR/STEP/CUBICSPLINE). */
+function sampleAnimationSampler(sampler, time, isRotation) {
+  const input = sampler?.getInput()?.getArray();
+  const output = sampler?.getOutput()?.getArray();
+  if (!input?.length || !output?.length) return null;
+  const n = input.length;
+  const interpolation = sampler.getInterpolation();
+  const cubic = interpolation === 'CUBICSPLINE';
+  const stride = output.length / n / (cubic ? 3 : 1);
+  const at = (k, part = 1) => {
+    const offset = (cubic ? k * 3 + part : k) * stride;
+    return Array.from(output.subarray(offset, offset + stride));
+  };
+  if (time <= input[0]) return at(0);
+  if (time >= input[n - 1]) return at(n - 1);
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (input[mid] <= time) lo = mid; else hi = mid;
+  }
+  if (interpolation === 'STEP') return at(lo);
+  const td = input[hi] - input[lo];
+  const s = td > 0 ? (time - input[lo]) / td : 0;
+  if (cubic) {
+    const v0 = at(lo), v1 = at(hi), b0 = at(lo, 2), a1 = at(hi, 0);
+    const s2 = s * s, s3 = s2 * s;
+    const h00 = 2 * s3 - 3 * s2 + 1, h10 = s3 - 2 * s2 + s, h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+    const value = v0.map((v, i) => h00 * v + h10 * td * b0[i] + h01 * v1[i] + h11 * td * a1[i]);
+    return isRotation ? quatNormalize(value) : value;
+  }
+  const a = at(lo), b = at(hi);
+  return isRotation ? quatSlerp(a, b, s) : a.map((v, i) => v + (b[i] - v) * s);
+}
+
+/**
+ * World matrix of `node` under a pose. `localOf(node)` returns the rest
+ * {t, r, s}; `overrides` (node → {t?, r?, s?}) replaces animated components.
+ */
+function poseWorldMatrix(node, parentMap, localOf, overrides, cache) {
+  if (cache.has(node)) return cache.get(node);
+  const rest = localOf(node);
+  const o = overrides?.get(node);
+  const local = composeTRS(o?.t || rest.t, o?.r || rest.r, o?.s || rest.s);
+  const parent = parentMap.get(node);
+  const world = parent ? mat4MulD(poseWorldMatrix(parent, parentMap, localOf, overrides, cache), local) : local;
+  cache.set(node, world);
+  return world;
+}
+
+function sortedUniqueTimes(arrays) {
+  const all = [];
+  for (const array of arrays) for (const t of array) all.push(t);
+  all.sort((a, b) => a - b);
+  const out = [];
+  for (const t of all) if (!out.length || t - out[out.length - 1] > 1e-6) out.push(t);
+  return out;
+}
+
+/**
+ * Canonical quaternion track: first key in the rest hemisphere, later keys
+ * continuous with their predecessor (safe for weighted-sum blending between
+ * clips), plus BabylonJS `fixAnimations`: a key orthogonal to its neighbour
+ * (a 180° flip within one short frame step) is a data error and is replaced
+ * by the previous key. Returns the number of orthogonal keys repaired.
+ */
+function canonicalizeRotationTrack(times, values, restRotation) {
+  const n = times.length;
+  if (!n || values.length !== n * 4) return 0;
+  let repaired = 0;
+  const rest = restRotation || [0, 0, 0, 1];
+  const dotAt = (i, q) => values[i * 4] * q[0] + values[i * 4 + 1] * q[1] + values[i * 4 + 2] * q[2] + values[i * 4 + 3] * q[3];
+  if (dotAt(0, rest) < 0) for (let k = 0; k < 4; k++) values[k] = -values[k];
+  for (let i = 1; i < n; i++) {
+    const prev = [values[i * 4 - 4], values[i * 4 - 3], values[i * 4 - 2], values[i * 4 - 1]];
+    const dot = dotAt(i, prev);
+    if (n >= 4 && Math.abs(dot) < 1e-3 && times[i] - times[i - 1] <= 0.1) {
+      for (let k = 0; k < 4; k++) values[i * 4 + k] = prev[k];
+      repaired++;
+    } else if (dot < 0) {
+      for (let k = 0; k < 4; k++) values[i * 4 + k] = -values[i * 4 + k];
+    }
+  }
+  return repaired;
+}
+
+function morphTargetNames(mesh) {
+  // glTF-Transform reads mesh.extras.targetNames into PrimitiveTarget names.
+  const targets = mesh?.listPrimitives()[0]?.listTargets() || [];
+  let names = targets.map(target => target.getName() || '');
+  if (!names.some(Boolean)) names = mesh?.getExtras()?.targetNames || [];
+  names = Array.isArray(names) ? names.map(name => String(name).toLowerCase()) : [];
+  return names.some(Boolean) ? names : [];
+}
+
+function morphTargetCount(mesh) {
+  return Math.max(0, ...(mesh?.listPrimitives() || []).map(primitive => primitive.listTargets().length));
+}
+
+/**
+ * Pick the character mesh node a morph-weights channel should drive
+ * (AnimatorAvatar matches by mesh + morph target name). Returns
+ * { node, map } where map[j] = source weight index for target j (-1 = keep
+ * the target's default weight), or null when nothing corresponds.
+ */
+function matchMorphTarget(srcNode, charMeshNodes) {
+  const srcMesh = srcNode.getMesh();
+  const srcCount = morphTargetCount(srcMesh);
+  if (!srcMesh || !srcCount) return null;
+  const srcNames = morphTargetNames(srcMesh);
+  const srcKey = stripBJSSuffix(srcNode.getName() || '').toLowerCase();
+  let best = null;
+  for (const node of charMeshNodes) {
+    const mesh = node.getMesh();
+    const count = morphTargetCount(mesh);
+    if (!count) continue;
+    const names = morphTargetNames(mesh);
+    const sameNode = stripBJSSuffix(node.getName() || '').toLowerCase() === srcKey
+      || (mesh.getName() || '').toLowerCase() === (srcMesh.getName() || '').toLowerCase();
+    let map;
+    if (names.length === count && srcNames.length === srcCount) {
+      map = names.map(name => srcNames.indexOf(name));
+    } else if (sameNode && count === srcCount) {
+      map = Array.from({ length: count }, (_, j) => j);
+    } else continue;
+    const hits = map.filter(i => i >= 0).length;
+    if (!hits) continue;
+    const score = hits + (sameNode ? 1000 : 0);
+    if (!best || score > best.score) best = { node, map, score };
+  }
+  return best && { node: best.node, map: best.map };
 }
 
 // ── Create shared IO instance ────────────────────────────────────────────────
@@ -1649,6 +1909,12 @@ export async function analyzeGLB(buffer) {
 export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   const cfg = { ...DEFAULTS, ...options };
   const io = await getIO();
+  // Retarget diagnostics (server → X-Merge-Report header → builder).
+  const mergeReport = cfg.reportSink && typeof cfg.reportSink === 'object' ? cfg.reportSink : {};
+  Object.assign(mergeReport, {
+    rootMotionScale: 1, groundCorrections: [], groundSkipped: {}, quaternionRepairs: 0,
+    duplicateTracksDropped: 0, hierarchyMismatches: [], morph: { retargeted: 0, dropped: 0 }, notes: [],
+  });
 
   const charDoc = await io.readBinary(new Uint8Array(charBuffer));
 
@@ -1684,6 +1950,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   if (cfg.removeExistingAnimations) {
     charDoc.getRoot().listAnimations().forEach(anim => anim.dispose());
+  } else if (Array.isArray(cfg.existingAnimationNames)) {
+    const keepNames = new Set(cfg.existingAnimationNames);
+    charDoc.getRoot().listAnimations().forEach(anim => {
+      if (!keepNames.has(anim.getName().split('|').pop().trim())) anim.dispose();
+    });
   }
 
   // ── Unify skeleton structure and apply scale/pivot shift to match character_animated.glb ────────────────
@@ -1739,17 +2010,24 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     const parentMap = buildParentMap(charDoc);
     let originalRootScale = [1, 1, 1];
     let originalRootRot = [0, 0, 0, 1];
+    let previousPivotOffset = [0, 0, 0];
+    let previousPivotRotation = [0, 0, 0, 1];
     const _qMulLocal = ([x1, y1, z1, w1], [x2, y2, z2, w2]) => [
       x1 * w2 + w1 * x2 + y1 * z2 - z1 * y2, y1 * w2 + w1 * y2 + z1 * x2 - x1 * z2,
       z1 * w2 + w1 * z2 + x1 * y2 - y1 * x2, w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
     ];
     let curr = parentMap.get(hipsNode);
     while (curr) {
-      // Skip nodes named 'RootNode' — they are output from a previous merge pass by this app
-      // and already encode the baked scale/rotation. Re-accumulating them would double the transform.
+      // Generated roots retain the authored unit scale separately from the
+      // builder's scale/pivot. Reuse the authored scale on subsequent merges:
+      // skipping this root used to turn centimeter rigs into meter rigs.
       const currName = (curr.getName() || '').toLowerCase();
-      if (currName === 'rootnode') { curr = parentMap.get(curr); continue; }
-      const s = curr.getScale() || [1, 1, 1];
+      const previousMerge = currName === 'rootnode' ? curr.getExtras().bjsMergeTransform : null;
+      const s = previousMerge?.sourceScale || curr.getScale() || [1, 1, 1];
+      if (previousMerge) {
+        previousPivotOffset = previousMerge.pivotOffset || [0, 0, 0];
+        previousPivotRotation = previousMerge.pivotRotation || [0, 0, 0, 1];
+      }
       // Use absolute scale — negative components are coordinate-system reflections
       // already baked into vertex data by tools like BJS Sandbox; don't flip skeleton.
       originalRootScale = [
@@ -1778,6 +2056,13 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     // Normalise accumulated ancestor rotation — will be baked into skeleton root below.
     const rotLen = Math.hypot(...originalRootRot);
     const normRot = rotLen > 0 ? originalRootRot.map(v => v / rotLen) : [0, 0, 0, 1];
+    const pivotRotation = qMul(normRot, previousPivotRotation);
+    const pivotOffset = rotateVec3([px / finalScale[0], py / finalScale[1], pz / finalScale[2]], pivotRotation);
+    rootNode.setExtras({ bjsMergeTransform: {
+      sourceScale: originalRootScale,
+      pivotOffset,
+      pivotRotation,
+    } });
 
     for (const scene of charDoc.getRoot().listScenes()) {
       scene.addChild(rootNode);
@@ -1856,12 +2141,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       // This keeps RootNode rotation-free so the BabylonJS scene root reset (charRoot.rotation=0)
       // does not discard the coordinate-system conversion (e.g. +90°X for Z-up Sketchfab exports).
       // World bind transform of every joint is unchanged, so IBMs remain valid.
-      const hipsTransAdjusted = [
-        hipsTrans[0] - px / finalScale[0],
-        hipsTrans[1] - py / finalScale[1],
-        hipsTrans[2] - pz / finalScale[2],
-      ];
-      hipsNode.setTranslation(rotateVec3(hipsTransAdjusted, normRot));
+      const hipsTransAdjusted = rotateVec3(hipsTrans.map((value, i) => value + previousPivotOffset[i]), normRot);
+      hipsNode.setTranslation(hipsTransAdjusted.map((value, i) => value - pivotOffset[i]));
       hipsNode.setRotation(qMul(normRot, hipsNode.getRotation() || [0, 0, 0, 1]));
       rootNode.addChild(hipsNode);
     }
@@ -1896,11 +2177,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       const mTrans = meshNode.getTranslation() || [0, 0, 0];
       // Mesh vertices are already in the correct coordinate space (pre-transformed by the
       // original exporter). Only apply the pivot offset — no coordinate rotation needed.
-      meshNode.setTranslation(rotateVec3([
-        mTrans[0] - px / finalScale[0],
-        mTrans[1] - py / finalScale[1],
-        mTrans[2] - pz / finalScale[2],
-      ], normRot));
+      const meshTransAdjusted = rotateVec3(mTrans.map((value, i) => value + previousPivotOffset[i]), normRot);
+      meshNode.setTranslation(meshTransAdjusted.map((value, i) => value - pivotOffset[i]));
       rootNode.addChild(meshNode);
     }
 
@@ -1938,6 +2216,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   }
 
   const animDoc = await io.readBinary(new Uint8Array(animBuffer));
+  if (cfg.requireAnimations && !animDoc.getRoot().listAnimations().some(anim =>
+    !/t[_-]?pose/i.test(anim.getName()) && !anim.getName().includes('mixamo.com') && anim.listChannels().length)) {
+    throw new Error('No usable animations found in the animation file.');
+  }
 
   const charByName = new Map();
   const charByNorm = new Map();
@@ -1957,6 +2239,17 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       const na = aliasNorm(name.toLowerCase());
       if (na && !charByNorm.has(na)) charByNorm.set(na, node);
     }
+  }
+  // Auto-rigged joints record their anatomical role (Mixamo-style canonical
+  // name) in extras. It is authoritative: exported names such as Blender's
+  // `spine.001` or `f_index.01.L` have no alias in BONE_MAP.
+  for (const node of charDoc.getRoot().listNodes()) {
+    const canonical = node.getExtras()?.bjsCanonical;
+    if (typeof canonical !== 'string' || !canonical) continue;
+    charByName.set(canonical, node);
+    charByName.set(canonical.toLowerCase(), node);
+    const norm = aliasNorm(canonical.toLowerCase());
+    if (norm) charByNorm.set(norm, node);
   }
   applyBoneMapOverrides(charDoc, cfg.boneMapOverrides, charByName, charByNorm);
   alignRetargetFacing(charDoc, charByName, charByNorm);
@@ -2114,6 +2407,15 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
     if (anim.getName() === 'A_TPose') anim.setName('TPose');
   }
 
+  // Match the builder's display names. Incoming clips replace name collisions,
+  // while unrelated existing clips retain their animation tracks.
+  const animationsByName = new Map();
+  for (const anim of charDoc.getRoot().listAnimations()) {
+    const name = anim.getName().split('|').pop().trim();
+    const previous = animationsByName.get(name);
+    if (previous) previous.dispose();
+    animationsByName.set(name, anim);
+  }
   const importedAnims = charDoc.getRoot().listAnimations().filter(a => !origAnims.has(a));
   // console.log(`[merge] importedAnims (${importedAnims.length}): ${importedAnims.map(a => a.getName()).join(', ')}`);
 
@@ -2217,19 +2519,235 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
+    const referenceNodes = Object.fromEntries([...origNodes].filter(node => node.getName()).map(node => {
+      const name = node.getName().toLowerCase();
+      return [name, {
+        rotation: charRestByName.get(name) || node.getRotation(),
+        worldRotation: charWorldByName.get(name) || charWorldByNode.get(node) || [0, 0, 0, 1],
+        translation: node.getTranslation(),
+        ...(postureOffsets.has(node) ? { postRotation: postureOffsets.get(node) } : {}),
+      }];
+    }));
+
+    // ── Source → character correspondence ─────────────────────────────────
+    const targetCache = new Map();
+    const targetOf = (node) => {
+      if (!targetCache.has(node)) targetCache.set(node, findMatchingBone(node, charByName, charByNorm));
+      return targetCache.get(node);
+    };
+    const depthOf = (node) => {
+      let depth = 0;
+      for (let c = charParentMap.get(node); c; c = charParentMap.get(c)) depth++;
+      return depth;
+    };
+    const ancestorsOf = (node) => {
+      const out = [];
+      for (let c = node; c; c = charParentMap.get(c)) out.push(c);
+      return out;
+    };
+
+    // Two source joints driving one character joint make an invalid glTF
+    // (one channel per node+path) and fight at runtime — e.g. UE5 `root` and
+    // `pelvis` both alias Hips, CC `Hip` and `Pelvis` likewise. Keep the joint
+    // that carries root translation, then the deepest (the real hips of UE5).
     for (const anim of importedAnims) {
+      const channels = anim.listChannels();
+      const translated = new Set(channels.filter(ch => ch.getTargetPath() === 'translation').map(ch => ch.getTargetNode()));
+      const rank = node => (translated.has(node) ? 1e6 : 0) + depthOf(node);
+      const owner = new Map();
+      for (const ch of channels) {
+        const src = ch.getTargetNode(), path = ch.getTargetPath();
+        if (!src || path === 'weights') continue;
+        const target = targetOf(src);
+        if (!target) continue;
+        const perTarget = owner.get(target) || new Map();
+        owner.set(target, perTarget);
+        const current = perTarget.get(path);
+        if (!current || (current !== src && rank(src) > rank(current))) perTarget.set(path, src);
+      }
+      for (const ch of channels) {
+        const src = ch.getTargetNode(), path = ch.getTargetPath();
+        if (!src || path === 'weights') continue;
+        const target = targetOf(src);
+        if (target && owner.get(target)?.get(path) !== src) {
+          ch.dispose();
+          mergeReport.duplicateTracksDropped++;
+        }
+      }
+    }
+
+    // ── Skeleton hierarchy check (AnimatorAvatar `checkHierarchy`, as a report) ──
+    // Compare nearest *mapped* ancestors on both rigs so extra helper/twist
+    // joints are tolerated; only genuine structural differences are listed.
+    {
+      const mappedTargets = new Set();
+      const importedJoints = charDoc.getRoot().listNodes().filter(node => !origNodes.has(node) && !node.getMesh());
+      for (const node of importedJoints) { const t = targetOf(node); if (t) mappedTargets.add(t); }
+      const seen = new Set();
+      for (const src of importedJoints) {
+        const target = targetOf(src);
+        if (!target || seen.has(target)) continue;
+        seen.add(target);
+        let expected = null;
+        for (let a = charParentMap.get(src); a && !expected; a = charParentMap.get(a)) expected = targetOf(a);
+        let actual = null;
+        for (let a = charParentMap.get(target); a && !actual; a = charParentMap.get(a)) if (mappedTargets.has(a)) actual = a;
+        if (expected && actual && expected !== actual && expected !== target) {
+          mergeReport.hierarchyMismatches.push(`${target.getName()}: animation parent ${expected.getName()}, character parent ${actual.getName()}`);
+        }
+      }
+    }
+
+    // ── Rig proportions (FIX_ROOT_POSITION / FIX_GROUND_REFERENCE) ─────────
+    const syntheticTarget = (name) => findMatchingBone({ getName: () => name }, charByName, charByNorm);
+    const tgtHips = syntheticTarget('hips');
+    const tgtFeet = [...new Set(['leftfoot', 'rightfoot'].map(syntheticTarget).filter(Boolean))];
+    const tgtToes = [...new Set(['lefttoebase', 'righttoebase'].map(syntheticTarget).filter(n => n && !tgtFeet.includes(n)))];
+    const charLocalOf = (node) => ({
+      t: node.getTranslation(),
+      r: (node.getName() && charRestByName.get(node.getName().toLowerCase())) || node.getRotation(),
+      s: node.getScale(),
+    });
+    const sourceLocalOf = (sourcePose) => (node) => {
+      const name = (node.getName() || '').toLowerCase();
+      const ref = sourcePose?.nodes[name];
+      return {
+        t: ref?.translation || node.getTranslation(),
+        r: ref?.rotation || tposeRestPose?.localByName.get(name) || node.getRotation(),
+        s: node.getScale(),
+      };
+    };
+    const worldPosition = (node, localOf, overrides, cache) =>
+      poseWorldMatrix(node, charParentMap, localOf, overrides, cache).slice(12, 15);
+    const legMetrics = (hips, feet, localOf) => {
+      if (!hips || !feet.length) return null;
+      const cache = new Map();
+      const hp = worldPosition(hips, localOf, null, cache);
+      let euclid = 0, vertical = 0;
+      for (const foot of feet) {
+        const fp = worldPosition(foot, localOf, null, cache);
+        euclid += vec3Length(vec3Subtract(hp, fp)) / feet.length;
+        vertical += (hp[1] - fp[1]) / feet.length;
+      }
+      return euclid > 1e-6 ? { euclid, vertical } : null;
+    };
+    const tgtLeg = legMetrics(tgtHips, tgtFeet, charLocalOf);
+
+    // Per-clip source context, computed BEFORE the clip's keys are rewritten.
+    const groundContexts = new Map();
+    const buildSourceContext = (anim, sourcePose) => {
+      const channels = anim.listChannels();
+      const srcFor = (target) => {
+        const animated = channels.find(ch => ch.getTargetNode() && targetOf(ch.getTargetNode()) === target);
+        if (animated) return animated.getTargetNode();
+        return charDoc.getRoot().listNodes().find(node => !origNodes.has(node) && !node.getMesh() && targetOf(node) === target) || null;
+      };
+      const srcHipsChannel = channels.find(ch => ch.getTargetPath() === 'translation' && ch.getTargetNode()
+        && targetOf(ch.getTargetNode()) === tgtHips);
+      const srcHips = srcHipsChannel?.getTargetNode() || (tgtHips && srcFor(tgtHips));
+      const localOf = sourceLocalOf(sourcePose);
+      const feetPairs = tgtFeet.map(t => [srcFor(t), t]).filter(([s]) => s);
+      const toePairs = tgtToes.map(t => [srcFor(t), t]).filter(([s]) => s);
+      const srcLeg = legMetrics(srcHips, feetPairs.map(([s]) => s), localOf);
+      let ratio = 1;
+      if (cfg.FIX_ROOT_POSITION && srcLeg && tgtLeg && feetPairs.length === tgtFeet.length) {
+        ratio = tgtLeg.euclid / srcLeg.euclid;
+        const clamped = Math.max(0.2, Math.min(5, ratio));
+        if (clamped !== ratio) mergeReport.notes.push(`${anim.getName()}: root scale ${ratio.toFixed(3)} clamped to ${clamped}`);
+        ratio = clamped;
+      }
+      const ctx = { ratio, srcLeg };
+
+      // Ground reference: the lowest foot/toe joint's height above its rest
+      // height, normalised by leg length, must match between the two rigs.
+      if (!cfg.FIX_GROUND_REFERENCE || !srcHipsChannel || !srcLeg || !tgtLeg || feetPairs.length !== tgtFeet.length) {
+        if (cfg.FIX_GROUND_REFERENCE) ctx.groundSkip = !srcHipsChannel ? 'no root track' : 'feet not mapped';
+        return ctx;
+      }
+      if (srcLeg.vertical < 0.5 * srcLeg.euclid || tgtLeg.vertical < 0.5 * tgtLeg.euclid) {
+        ctx.groundSkip = 'rig not upright';
+        return ctx;
+      }
+      const pairs = [...feetPairs, ...(toePairs.length === tgtToes.length ? toePairs : [])];
+      const chain = new Set(pairs.flatMap(([s]) => ancestorsOf(s)));
+      const srcChannels = channels.filter(ch => chain.has(ch.getTargetNode())
+        && ['rotation', 'translation', 'scale'].includes(ch.getTargetPath()));
+      const hipsSampler = srcHipsChannel.getSampler();
+      const times = hipsSampler.getInterpolation() === 'LINEAR'
+        ? sortedUniqueTimes(srcChannels.map(ch => ch.getSampler().getInput().getArray()))
+        : Array.from(hipsSampler.getInput().getArray());
+      const minJointY = (overrides) => {
+        const cache = new Map();
+        return Math.min(...pairs.map(([s]) => worldPosition(s, localOf, overrides, cache)[1]));
+      };
+      const restY = minJointY(null);
+      const clearance = times.map(time => {
+        const overrides = new Map();
+        for (const ch of srcChannels) {
+          const node = ch.getTargetNode(), path = ch.getTargetPath();
+          let value = sampleAnimationSampler(ch.getSampler(), time, path === 'rotation');
+          if (!value) continue;
+          const post = sourcePose?.nodes[(node.getName() || '').toLowerCase()]?.postRotation;
+          if (path === 'rotation' && post) value = qMul(value, qInvert(post));
+          const o = overrides.get(node) || {};
+          o[path === 'rotation' ? 'r' : path === 'translation' ? 't' : 's'] = value;
+          overrides.set(node, o);
+        }
+        return (minJointY(overrides) - restY) / srcLeg.vertical;
+      });
+      ctx.ground = { times, clearance, targets: pairs.map(([, t]) => t) };
+      return ctx;
+    };
+
+    for (const anim of importedAnims) {
+      const sourcePose = animationRetargetPose(animDoc, anim);
+      const animCtx = buildSourceContext(anim, sourcePose);
+      groundContexts.set(anim, animCtx);
+      if (animCtx.ratio !== 1) mergeReport.rootMotionScale = Number(animCtx.ratio.toFixed(4));
       for (const ch of anim.listChannels()) {
         const path = ch.getTargetPath();
         const src = ch.getTargetNode();
         if (!src || !src.getName()) { ch.dispose(); continue; }
         if (path === 'scale' && cfg.IGNORE_SCALE) { ch.dispose(); continue; }
 
-        const target = findMatchingBone(src, charByName, charByNorm);
+        // Morph target weights follow the mesh + morph-target NAME (never a
+        // bone): a mesh called "EyeLeft" must not land on the LeftEye joint.
+        if (path === 'weights') {
+          const match = matchMorphTarget(src, [...origNodes].filter(node => node.getMesh()));
+          const sampler = ch.getSampler();
+          const input = sampler?.getInput()?.getArray();
+          const arr = sampler?.getOutput()?.getArray();
+          if (!match || !input?.length || !arr) { ch.dispose(); mergeReport.morph.dropped++; continue; }
+          const srcCount = morphTargetCount(src.getMesh());
+          const tgtCount = match.map.length;
+          const parts = sampler.getInterpolation() === 'CUBICSPLINE' ? 3 : 1;
+          const defaults = match.node.getMesh().getWeights() || [];
+          const out = new Float32Array(input.length * parts * tgtCount);
+          for (let k = 0; k < input.length * parts; k++) {
+            const isValue = parts === 1 || k % 3 === 1;
+            for (let j = 0; j < tgtCount; j++) {
+              const i = match.map[j];
+              out[k * tgtCount + j] = i >= 0 ? arr[k * srcCount + i] : (isValue ? defaults[j] || 0 : 0);
+            }
+          }
+          const output = charDoc.createAccessor().setType('SCALAR').setArray(out)
+            .setBuffer(sampler.getOutput().getBuffer() || charDoc.getRoot().listBuffers()[0]);
+          const remapped = charDoc.createAnimationSampler().setInput(sampler.getInput())
+            .setOutput(output).setInterpolation(sampler.getInterpolation());
+          anim.addSampler(remapped);
+          ch.setSampler(remapped).setTargetNode(match.node);
+          if (!sampler.listParents().some(p => p.propertyType === 'AnimationChannel')) sampler.dispose();
+          mergeReport.morph.retargeted++;
+          continue;
+        }
+
+        const target = targetOf(src);
         if (process.env.DEBUG_MATCH) console.log(`[match] ${src.getName()} → ${target ? target.getName() : 'NULL'}`);
         if (!target) { ch.dispose(); continue; }
 
         const tgtName = target.getName().toLowerCase();
         const srcName = src.getName().toLowerCase();
+        const sourceReference = sourcePose?.nodes[srcName];
         // Root detection by normalized name too: CC/AccuRig root is 'CC_Base_Hip'
         // ('hip', no s) — substring checks alone would drop its translation track.
         const isRoot = tgtName.includes('hips') || tgtName.includes('pelvis') || tgtName === '__root__'
@@ -2238,9 +2756,9 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
         if (path === 'translation' && !isRoot && cfg.IGNORE_NON_ROOT_TRANSLATION) { ch.dispose(); continue; }
 
         if (path === 'rotation') {
-          const rAnim = animRestByName.get(srcName) || [0, 0, 0, 1];
+          const rAnim = sourceReference?.rotation || animRestByName.get(srcName) || [0, 0, 0, 1];
           const rChar = charRestByName.get(tgtName) || [0, 0, 0, 1];
-          const Wanim = animWorldByName.get(srcName) || [0, 0, 0, 1];
+          const Wanim = sourceReference?.worldRotation || animWorldByName.get(srcName) || [0, 0, 0, 1];
           let Wchar = charWorldByName.get(tgtName) || [0, 0, 0, 1];
 
           // ── A-pose correction ────────────────────────────────────────────
@@ -2320,9 +2838,19 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             
             if (handCharName && handAnimName) {
               const Wchar_hand = charWorldByName.get(handCharName) || [0, 0, 0, 1];
-              const Wanim_hand = animWorldByName.get(handAnimName) || [0, 0, 0, 1];
-              C_to_use = qMul(qInvert(Wchar_hand), Wanim_hand);
-              Cinv_to_use = qInvert(C_to_use);
+              const Wanim_hand = sourcePose?.nodes[handAnimName]?.worldRotation || animWorldByName.get(handAnimName) || [0, 0, 0, 1];
+              const C_hand = qMul(qInvert(Wchar_hand), Wanim_hand);
+              // Hand-space C is exact only when both rigs orient their finger
+              // frames alike relative to the hand (Mixamo↔Mixamo: 0–7.5°).
+              // Cross-convention rigs (UE fingers vs Mixamo: 90–176°, or
+              // bone-aligned auto-rigs) need the bone's own C, or the curl
+              // axis is wrong and the fingers twist.
+              const dotC = Math.abs(C[0] * C_hand[0] + C[1] * C_hand[1] + C[2] * C_hand[2] + C[3] * C_hand[3]);
+              const divergeDeg = 2 * Math.acos(Math.min(1, dotC)) * 180 / Math.PI;
+              if (divergeDeg <= FINGER_FRAME_DIVERGE_DEG) {
+                C_to_use = C_hand;
+                Cinv_to_use = qInvert(C_hand);
+              }
             }
           }
 
@@ -2337,7 +2865,8 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
               if (arr) {
                 const out = new Float32Array(arr.length);
                 for (let j = 0; j < arr.length; j += 4) {
-                  const qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
+                  let qKey = [arr[j], arr[j + 1], arr[j + 2], arr[j + 3]];
+                  if (sourceReference?.postRotation) qKey = qMul(qKey, qInvert(sourceReference.postRotation));
                   const delta = qMul(rAnimInv, qKey);
                   const rotated = qMul(qMul(C_to_use, delta), Cinv_to_use);
                   let final = qMul(rChar, rotated);
@@ -2359,13 +2888,24 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
         if (path === 'translation' && isRoot) {
           const srcParentName = animParentNameMap.get(srcName);
-          const WanimP = srcParentName ? (animWorldByName.get(srcParentName) || [0, 0, 0, 1]) : [0, 0, 0, 1];
+          const WanimP = srcParentName ? (sourcePose?.nodes[srcParentName]?.worldRotation || animWorldByName.get(srcParentName) || [0, 0, 0, 1]) : [0, 0, 0, 1];
           const charParent = charParentMap.get(target);
           const WcharP = charParent ? (charWorldByName.get(charParent.getName()?.toLowerCase()) || [0, 0, 0, 1]) : [0, 0, 0, 1];
           const Cp = qMul(qInvert(WcharP), WanimP);
-          const animRestLocal = src.getTranslation() || [0, 0, 0];
+          const animRestLocal = sourceReference?.translation || src.getTranslation() || [0, 0, 0];
           const charRest = target.getTranslation() || [0, 0, 0];
-          const animRestWorld = rotateVec3(animRestLocal, Cp);
+          // Source keys live in the source hips' parent space: include that
+          // parent's scale (UE/Unity exports carry ×0.01/×100 armatures) so the
+          // delta is in world units before the rig-proportion ratio applies.
+          let sourceScale = sourceReference?.translationScale;
+          if (!sourceScale) {
+            sourceScale = [1, 1, 1];
+            for (let c = charParentMap.get(src); c; c = charParentMap.get(c)) {
+              const s = c.getScale() || [1, 1, 1];
+              sourceScale = sourceScale.map((value, i) => value * s[i]);
+            }
+          }
+          const rootScale = animCtx.ratio;
           const output = ch.getSampler()?.getOutput();
           const arr = output?.getArray();
           if (arr) {
@@ -2379,13 +2919,18 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
             const spX = Math.abs(scaleP[0]) > 1e-7 ? scaleP[0] : 1.0;
             const spY = Math.abs(scaleP[1]) > 1e-7 ? scaleP[1] : 1.0;
             const spZ = Math.abs(scaleP[2]) > 1e-7 ? scaleP[2] : 1.0;
+            referenceNodes[tgtName].translationScale = [spX, spY, spZ];
 
             const out = new Float32Array(arr.length);
             for (let j = 0; j < arr.length; j += 3) {
-              const kw = rotateVec3([arr[j], arr[j + 1], arr[j + 2]], Cp);
-              out[j] = charRest[0] + (kw[0] - animRestWorld[0]) / spX;
-              out[j + 1] = charRest[1] + (kw[1] - animRestWorld[1]) / spY;
-              out[j + 2] = charRest[2] + (kw[2] - animRestWorld[2]) / spZ;
+              const delta = rotateVec3([
+                (arr[j] - animRestLocal[0]) * sourceScale[0],
+                (arr[j + 1] - animRestLocal[1]) * sourceScale[1],
+                (arr[j + 2] - animRestLocal[2]) * sourceScale[2],
+              ], Cp);
+              out[j] = charRest[0] + delta[0] * rootScale / spX;
+              out[j + 1] = charRest[1] + delta[1] * rootScale / spY;
+              out[j + 2] = charRest[2] + delta[2] * rootScale / spZ;
             }
             output.setArray(out);
           }
@@ -2434,6 +2979,130 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
       }
     }
 
+    // ── Ground reference (AnimatorAvatar fixGroundReference) ─────────────────
+    // Evaluate the retargeted clip on the character and move the hips so the
+    // lowest foot/toe joint sits where it should relative to the rest ground.
+    //   'clip' (default / true): one constant offset per clip. Clips whose
+    //     source touches the ground (lowest joint within GROUND_CONTACT_TOLERANCE
+    //     leg lengths of rest) are grounded exactly; airborne clips (swim, fall)
+    //     keep their clearance scaled by leg length. Motion shape is untouched,
+    //     and a source clip that itself floats or sinks (common in libraries
+    //     retargeted from other rigs) lands on the floor.
+    //   'frame': BabylonJS-style per-frame match of the source's clearance
+    //     (proportional), resampling the hips track onto the leg key times.
+    // Posture offsets are excluded on both sides so a re-export measures the
+    // same pose and changes nothing.
+    const groundMode = cfg.FIX_GROUND_REFERENCE === 'frame' ? 'frame' : cfg.FIX_GROUND_REFERENCE ? 'clip' : null;
+    const contactTolerance = Number.isFinite(cfg.GROUND_CONTACT_TOLERANCE) ? cfg.GROUND_CONTACT_TOLERANCE : 0.12;
+    for (const anim of importedAnims) {
+      const ctx = groundContexts.get(anim);
+      if (ctx?.groundSkip) mergeReport.groundSkipped[ctx.groundSkip] = (mergeReport.groundSkipped[ctx.groundSkip] || 0) + 1;
+      if (!groundMode || !ctx?.ground || !tgtLeg) continue;
+      const channels = anim.listChannels();
+      const hipsChannel = channels.find(ch => ch.getTargetNode() === tgtHips && ch.getTargetPath() === 'translation');
+      if (!hipsChannel) continue;
+      const chain = new Set(ctx.ground.targets.flatMap(ancestorsOf));
+      const tgtChannels = channels.filter(ch => chain.has(ch.getTargetNode())
+        && ['rotation', 'translation', 'scale'].includes(ch.getTargetPath()));
+      const minJointY = (overrides) => {
+        const cache = new Map();
+        return Math.min(...ctx.ground.targets.map(t => worldPosition(t, charLocalOf, overrides, cache)[1]));
+      };
+      const restY = minJointY(null);
+      const heights = ctx.ground.times.map(time => {
+        const overrides = new Map();
+        for (const ch of tgtChannels) {
+          const node = ch.getTargetNode(), path = ch.getTargetPath();
+          let value = sampleAnimationSampler(ch.getSampler(), time, path === 'rotation');
+          if (!value) continue;
+          if (path === 'rotation' && postureOffsets.has(node)) value = qMul(value, qInvert(postureOffsets.get(node)));
+          const o = overrides.get(node) || {};
+          o[path === 'rotation' ? 'r' : path === 'translation' ? 't' : 's'] = value;
+          overrides.set(node, o);
+        }
+        return minJointY(overrides) - restY;
+      });
+      const limit = 0.3 * tgtLeg.vertical;
+      let clamped = false;
+      const clampShift = (shift) => {
+        if (Math.abs(shift) <= limit) return shift;
+        clamped = true;
+        return Math.sign(shift) * limit;
+      };
+      let shifts;
+      if (groundMode === 'clip') {
+        // A source that hovers slightly (0 < min ≤ tolerance) is a library
+        // defect → ground it. Below rest (in-place jump/swim poses hang the
+        // feet under the capsule on purpose) or clearly airborne → keep the
+        // source clearance, proportional to leg length.
+        const srcMin = Math.min(...ctx.ground.clearance);
+        const desired = srcMin > 0 && srcMin <= contactTolerance ? 0 : srcMin * tgtLeg.vertical;
+        const shift = clampShift(desired - Math.min(...heights));
+        shifts = heights.map(() => shift);
+      } else {
+        shifts = heights.map((height, i) => clampShift(ctx.ground.clearance[i] * tgtLeg.vertical - height));
+      }
+      const maxShift = Math.max(...shifts.map(Math.abs));
+      if (maxShift < 1e-4 * tgtLeg.vertical) continue;
+
+      const parent = charParentMap.get(tgtHips);
+      const parentWorld = parent ? poseWorldMatrix(parent, charParentMap, charLocalOf, null, new Map()) : MAT4_IDENTITY;
+      const up = solveMat3(parentWorld, [0, 1, 0]);
+      const sampler = hipsChannel.getSampler();
+      const oldOutput = sampler.getOutput();
+      const buffer = oldOutput.getBuffer() || charDoc.getRoot().listBuffers()[0];
+      if (groundMode === 'clip') {
+        const values = oldOutput.getArray().slice();
+        const parts = sampler.getInterpolation() === 'CUBICSPLINE' ? 3 : 1;
+        for (let key = 0; key < values.length / 3; key++) {
+          if (parts === 3 && key % 3 !== 1) continue; // tangents are unaffected by a constant offset
+          for (let k = 0; k < 3; k++) values[key * 3 + k] += up[k] * shifts[0];
+        }
+        oldOutput.setArray(values);
+      } else if (sampler.getInterpolation() === 'LINEAR') {
+        const values = new Float32Array(ctx.ground.times.length * 3);
+        ctx.ground.times.forEach((time, i) => {
+          const v = sampleAnimationSampler(sampler, time, false);
+          for (let k = 0; k < 3; k++) values[i * 3 + k] = v[k] + up[k] * shifts[i];
+        });
+        const resampled = charDoc.createAnimationSampler().setInterpolation('LINEAR')
+          .setInput(charDoc.createAccessor().setType('SCALAR').setBuffer(buffer)
+            .setArray(new Float32Array(ctx.ground.times)))
+          .setOutput(charDoc.createAccessor().setType('VEC3').setBuffer(buffer).setArray(values));
+        anim.addSampler(resampled);
+        hipsChannel.setSampler(resampled);
+        if (!sampler.listParents().some(p => p.propertyType === 'AnimationChannel')) sampler.dispose();
+      } else {
+        const values = oldOutput.getArray().slice();
+        const parts = sampler.getInterpolation() === 'CUBICSPLINE' ? 3 : 1;
+        shifts.forEach((shift, i) => {
+          const offset = (i * parts + (parts === 3 ? 1 : 0)) * 3;
+          for (let k = 0; k < 3; k++) values[offset + k] += up[k] * shift;
+        });
+        oldOutput.setArray(values);
+      }
+      mergeReport.groundCorrections.push({ clip: anim.getName(), maxShift: Number(maxShift.toFixed(4)), ...(clamped ? { clamped } : {}) });
+    }
+
+    // ── Quaternion hygiene (AnimatorAvatar fixAnimations + hemisphere) ─────
+    if (cfg.FIX_ANIMATIONS) {
+      for (const anim of importedAnims) {
+        for (const ch of anim.listChannels()) {
+          const node = ch.getTargetNode();
+          const sampler = ch.getSampler();
+          if (ch.getTargetPath() !== 'rotation' || !origNodes.has(node) || sampler?.getInterpolation() === 'CUBICSPLINE') continue;
+          const values = sampler.getOutput()?.getArray();
+          const times = sampler.getInput()?.getArray();
+          if (!values || !times) continue;
+          const copy = values.slice();
+          mergeReport.quaternionRepairs += canonicalizeRotationTrack(times, copy, node.getRotation());
+          sampler.getOutput().setArray(copy);
+        }
+      }
+    }
+
+    saveAnimationRetargetPose(charDoc, importedAnims, referenceNodes);
+
     // Dispose imported nodes/meshes/skins
     for (const node of charDoc.getRoot().listNodes()) { if (!origNodes.has(node)) node.dispose(); }
     for (const mesh of charDoc.getRoot().listMeshes()) { if (!origMeshes.has(mesh)) mesh.dispose(); }
@@ -2444,6 +3113,10 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
   for (const scene of charDoc.getRoot().listScenes()) { if (!origScenes.has(scene)) scene.dispose(); }
 
   await charDoc.transform(prune());
+  if (cfg.requireAnimations && !charDoc.getRoot().listAnimations().some(anim =>
+    importedAnims.includes(anim) && !/t[_-]?pose/i.test(anim.getName()) && anim.listChannels().length)) {
+    throw new Error('No matching animation tracks found for this character.');
+  }
   // console.log(`[merge] Anims after prune: ${charDoc.getRoot().listAnimations().map(a => a.getName()).join(', ')}`);
   await charDoc.transform(unpartition());
 

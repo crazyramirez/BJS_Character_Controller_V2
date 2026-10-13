@@ -177,6 +177,9 @@ test('auto-rig transforms morph deltas together with baked mesh transforms', asy
 
   const modified = await io.writeBinary(doc);
   const guess = await guessJoints(modified, { fingerCount: 0 });
+  // The 90° node turn makes the body face +X; the rig is generated facing +Z.
+  assert.equal(guess.orientation.applied, true);
+  assert.equal(guess.orientation.facing, '+X');
   const output = await autoRigGLB(modified, {
     joints: guess.joints,
     fingerCount: 0,
@@ -185,9 +188,10 @@ test('auto-rig transforms morph deltas together with baked mesh transforms', asy
   const result = await io.readBinary(output);
   const target = result.getRoot().listMeshes().flatMap(mesh => mesh.listPrimitives())
     .find(prim => prim.listTargets().length)?.listTargets()[0].getAttribute('POSITION').getArray();
-  assert.ok(Math.abs(target[0]) < 1e-5);
+  // Delta (1,0,0) · scale 2 · node turn +90° → (0,0,-2) · facing fix -90° → (2,0,0).
+  assert.ok(Math.abs(target[0] - 2) < 1e-5);
   assert.ok(Math.abs(target[1]) < 1e-5);
-  assert.ok(Math.abs(target[2] + 2) < 1e-5);
+  assert.ok(Math.abs(target[2]) < 1e-5);
 });
 
 test('body mesh selection exposes its decision and leaves excluded scenery unskinned', async () => {

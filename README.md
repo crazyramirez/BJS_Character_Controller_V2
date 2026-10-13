@@ -98,6 +98,8 @@ The `config` object in the constructor accepts a wide range of physics, camera, 
 | `DOUBLE_JUMP_ENABLED` | `true` | *boolean* | If true, the character can perform a double jump in mid-air |
 | `SPEED_MULTIPLIER` | `1.0` | *number* | Speed multiplier for walking, running, and jogging |
 | `PLAY_PARTICLES` | `true` | *boolean* | Play procedural dust/smoke particles under the character's feet |
+| `STRIDE_MATCHING` | `true` | *boolean \| 'full'* | `true`: Walk/Sprint playback rates scale with the character's leg length and the two loops stay phase-synced while blending. `'full'`: playback rate = ground speed ÷ measured clip speed (feet locked; pair with `SPD_*` from `charCtrl.measureLocomotion()`) |
+| `UPPER_BODY_ACTIONS` | `false` | *boolean* | While walking/running, punches play on the upper body only and the legs keep moving |
 
 ---
 
@@ -133,6 +135,27 @@ charCtrl.anim.setInteractAnim(newInteract);
 // Remap any custom animation key
 charCtrl.anim.setAnimation('Custom_State_Name', myAnimGroup);
 ```
+
+### Runtime animation packs, layers and stride data
+
+```js
+// Load and retarget an animation pack at runtime (no server; Babylon.js 9 AnimatorAvatar)
+const { added, report } = await charCtrl.loadAnimations('assets/emotes.glb'); // URL, ArrayBuffer, Blob or File
+charCtrl.anim.play('Wave', false);
+
+// Upper-body layer (AnimationGroupMask) over whatever plays underneath
+charCtrl.anim.playUpperBody('Punch_Cross', { blend: 0.1, onEnd: () => {} });
+charCtrl.anim.stopUpperBody(0.2);
+
+// Additive layer (AnimationGroup.MakeAnimationAdditive), e.g. breathing or a flinch
+charCtrl.anim.playAdditive('Hit_Chest', { weight: 0.6, loop: false });
+charCtrl.anim.setAdditiveWeight('Hit_Chest', 0.3);
+
+// Natural ground speed of the locomotion loops (world m/s at speedRatio 1)
+console.log(charCtrl.measureLocomotion()); // { Walk_Loop: 1.02, Sprint_Loop: 8.79, ... }
+```
+
+`window.BJSRetarget` exposes the same client retargeter (`retargetAnimationGroups`, `loadRetargetSource`, `buildRetargetBoneMap`, `canonicalBoneRole`, `readGlbJson`). It maps bones with the same canonical roles as the server, restores the source clip's saved reference pose (`bjsRetargetPoses` of merged libraries, otherwise its T-pose clip), temporarily aligns the character's rest arms to that pose (T- vs A-pose), keeps only rotations plus root translation, and grounds hovering clips like the server.
 
 ### 2. Modifying Playback Keyframe Ranges
 Change the start/end frames of an animation without replacing the group:
@@ -291,6 +314,10 @@ Numbered humanoid rigs can also be recognized from their hierarchy and joint pos
 
 Weights are normalized before surface smoothing, and twist bones use their actual skin indices even when finger bones are unweighted. Generation checks every vertex against the exported bind matrices and aborts if the rest-position error exceeds `height × 0.00002` or the weights are invalid. Rebuild also accounts for individual vertex influences when an imported skeleton was saved away from its bind pose. The report exposes `restValidation`, placement `diagnostics` and active finger skinning; its influence score is a heuristic, **not an anatomical accuracy percentage**. The validation does not guarantee deformation quality in every animation or detect collisions.
 
+Applying an existing rig without moving its joints preserves the current scene, animation library and posture. Retargeted GLBs retain their animation reference poses in extras, so later rig reloads and exports do not accumulate orientation, posture or root-motion corrections when the source has no T-pose clip. Repeated merges also retain the original unit scale and pivot reference. Keep the original model and animation files: these references cannot recover a deformation already baked into an older export.
+
+**Joint orientation:** `boneOrientation: 'world'` (default) binds every joint with the world axes; `'aligned'` (builder checkbox *Bone-aligned joint orientation*) binds DCC/engine-style frames with +Y along the bone and +Z towards the front, which makes local roll meaningful for IK, twist drivers and external tools. Retargeted motion is identical for both. Every generated joint records its anatomical role in `extras.bjsCanonical`, so merges map naming presets such as Blender's `spine.001` or `f_index.01.L` exactly.
+
 Generate the skeleton in the mesh's actual pose. T/A-pose previews require an existing skin; they cannot reposition markers independently of an unskinned mesh. Asymmetric hand placement is preserved, and API symmetrization is explicitly enabled with `symmetrize: true`. Humanoid and quadruped templates still require inspection for unusual proportions, hidden anatomy or unsupported body plans.
 
 ### 🎭 Custom Actions & Animations
@@ -337,6 +364,19 @@ When using the builder, you can import assets in different ways:
 - **Separate Import:** Load a character in **Import & Rig**, then one or more external animation GLBs/FBXs in **Animate**.
 - **Embedded Animations:** A character's own animation groups are available immediately after import; no duplicate upload is required.
 
+After the per-bone change of basis, the merge applies the Babylon.js 9 `AnimatorAvatar` corrections server-side (all on by default, switchable per request):
+
+| Option | Default | Effect |
+|---|---|---|
+| `FIX_ROOT_POSITION` | `true` | Root translation is scaled by the hips-to-feet ratio of the two rigs (includes the source armature's unit scale, e.g. ×0.01 exports). |
+| `FIX_GROUND_REFERENCE` | `true` | `true`/`'clip'`: one hips offset per clip from the lowest foot/toe joint — clips whose source hovers slightly above the floor are grounded, in-place jump/airborne clips keep their clearance scaled by leg length. `'frame'`: per-frame proportional match (Babylon behaviour). |
+| `GROUND_CONTACT_TOLERANCE` | `0.12` | Source hover (in leg lengths) still treated as ground contact. |
+| `FIX_ANIMATIONS` | `true` | Hemisphere-continuous quaternion tracks and repair of orthogonal (180° flip) keys. |
+
+The merge also drops duplicate source joints that alias one character bone (UE5 `root` + `pelvis`, CC `Hip` + `Pelvis`), keeps finger chains on the hand's basis only when both rigs orient fingers alike (≤ 12°, otherwise per-bone), and retargets morph-target weight tracks by mesh and morph-target name. `/api/merge` returns the diagnostics in the `X-Merge-Report` header (root-motion scale, grounded clips, repaired keys, dropped tracks, hierarchy differences, morph tracks), shown in the builder's **Rig Health** panel.
+
+Edits in **Animate → Standard Animations** are saved automatically, including the selected clip, From/To frames, and explicit **None** selections. Applying a rig or reloading animations preserves these edits. If a selected clip is temporarily unavailable, it appears as **(not loaded)** with its saved range until the clip is loaded again. Use an action's `↺` button to return it to automatic mapping. These settings also travel with `builder-config.json`.
+
 ---
 
 ## 📥 Exporting & Downloading Options
@@ -353,7 +393,7 @@ When exporting your setup, you can choose between two integration architectures 
 *   **Runtime Retargeting (Client-Side Dynamic Retargeting)**:
     *   **How it works**: Keeps character meshes (`character.glb`) and animation libraries (`animations.glb`) separate. [setupCharacter](js/character-controller.js) requests the same canonical server merge used by the builder and falls back to client retargeting when the service is unavailable. Manual `boneMapOverrides` travel with the exported setup.
     *   **Best for**: Multi-character games, RPGs, or modular projects. Reuses one shared animation file across dozens of characters, drastically reducing download size and memory footprint.
-    *   **Note**: Requires Babylon.js 9+. Cross-convention rigs are most accurate with the local merge service available.
+    *   **Note**: Requires Babylon.js 9+. The client fallback uses the server's bone roles and reference poses; the server merge additionally straightens A-pose legs and is the reference result.
 
 ### 1. 📋 Export Code Snippet (Preview & Copy)
 This provides a complete, custom `loadCharacter` helper function matching your settings. Copy and paste it directly into your `app.js` entry file to replace the default loader. It automatically bakes in:

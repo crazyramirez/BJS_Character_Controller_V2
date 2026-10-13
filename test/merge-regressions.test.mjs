@@ -17,6 +17,23 @@ for (const filename of ['gang.glb', 'medieval_character_sample.glb', 'prisioner_
     assert.ok(ratio > 0.995 && ratio < 1.005,
       `${filename}: height changed from ${before.health.metrics.height} to ${after.health.metrics.height}`);
   });
+
+  test(`repeated merges preserve authored units, scale and pivot for ${filename}`, async () => {
+    const io = await createIO();
+    const source = await fs.readFile(new URL(filename, characterDir));
+    const options = { COMPRESS_OUTPUT: false, SCALE_X: 1.5, SCALE_Y: 0.75, SCALE_Z: 2,
+      PIVOT_X: 0.2, PIVOT_Y: -0.1, PIVOT_Z: 0.3 };
+    const first = await mergeGLBs(source, null, options);
+    const second = await mergeGLBs(first, null, options);
+    const expected = await io.readBinary(first), actual = await io.readBinary(second);
+    const before = new Map(expected.getRoot().listNodes().map(node => [node.getName(), node.getWorldMatrix()]));
+    for (const node of actual.getRoot().listNodes()) {
+      const matrix = before.get(node.getName());
+      assert.ok(matrix, `node preserved: ${node.getName()}`);
+      node.getWorldMatrix().forEach((value, i) => approx(value, matrix[i], 2e-5,
+        `${filename}: ${node.getName()} matrix component ${i}`));
+    }
+  });
 }
 
 test('merge preserves rigid attachments below skeleton joints', async () => {
@@ -69,6 +86,14 @@ test('merge preserves Z-up skin geometry when its armature supplies the Y-up rot
   assert.deepEqual([...result.getRoot().listMeshes()[0].listPrimitives()[0].getAttribute('POSITION').getArray()], [...positions.getArray()]);
   const actualHips = result.getRoot().listNodes().find(n => n.getName() === 'Hips');
   actualHips.getWorldMatrix().forEach((value, i) => approx(value, hips.getWorldMatrix()[i], 1e-5));
+
+  const pivotOptions = { COMPRESS_OUTPUT: false, PIVOT_X: 0.1, PIVOT_Y: 0.2, PIVOT_Z: 0.3 };
+  const shifted = await mergeGLBs(source, null, pivotOptions);
+  const shiftedDoc = await io.readBinary(shifted);
+  const repeatedDoc = await io.readBinary(await mergeGLBs(shifted, null, pivotOptions));
+  const expectedHips = shiftedDoc.getRoot().listNodes().find(n => n.getName() === 'Hips').getWorldMatrix();
+  repeatedDoc.getRoot().listNodes().find(n => n.getName() === 'Hips').getWorldMatrix()
+    .forEach((value, i) => approx(value, expectedHips[i], 1e-5, 'Z-up pivot remains stable'));
 });
 
 test('skinless meshes are not classified as Rigify from unrelated DEF prefixes', async () => {

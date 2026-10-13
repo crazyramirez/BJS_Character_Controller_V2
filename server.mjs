@@ -151,6 +151,7 @@ export function encodeAutoRigReport(report) {
     geodesicWeights: report.geodesicWeights === true,
     symmetrized: report.symmetrized === true,
     twistBones: report.twistBones === true,
+    boneOrientation: report.boneOrientation === 'aligned' ? 'aligned' : undefined,
     propsAttached: report.propsAttached,
     guessMethod: report.guessMethod,
     skeletonPreset: report.skeletonPreset,
@@ -163,6 +164,31 @@ export function encodeAutoRigReport(report) {
     notes: Array.isArray(report.notes)
       ? report.notes.slice(0, 8).map(note => String(note).slice(0, 512))
       : [],
+  };
+  return Buffer.from(JSON.stringify(compact), 'utf8').toString('base64url');
+}
+
+// Retarget diagnostics from mergeGLBs (root scale, ground fixes, quaternion
+// repairs, dropped duplicate tracks, hierarchy differences, morph channels).
+export function encodeMergeReport(report) {
+  if (!report || typeof report !== 'object') return null;
+  const finite = value => (Number.isFinite(value) ? value : undefined);
+  const text = (value, max = 200) => String(value).slice(0, max);
+  const corrections = Array.isArray(report.groundCorrections) ? report.groundCorrections : [];
+  const compact = {
+    rootMotionScale: finite(report.rootMotionScale),
+    groundCorrected: corrections.length,
+    groundMaxShift: corrections.length ? Math.max(...corrections.map(c => finite(c.maxShift) || 0)) : 0,
+    groundTop: [...corrections].sort((a, b) => (b.maxShift || 0) - (a.maxShift || 0)).slice(0, 5)
+      .map(c => ({ clip: text(c.clip, 80), maxShift: finite(c.maxShift), clamped: c.clamped === true || undefined })),
+    groundSkipped: Object.fromEntries(Object.entries(report.groundSkipped || {}).slice(0, 6)
+      .map(([reason, count]) => [text(reason, 40), finite(count)])),
+    quaternionRepairs: finite(report.quaternionRepairs),
+    duplicateTracksDropped: finite(report.duplicateTracksDropped),
+    hierarchyMismatches: (Array.isArray(report.hierarchyMismatches) ? report.hierarchyMismatches : [])
+      .slice(0, 8).map(item => text(item)),
+    morph: report.morph ? { retargeted: finite(report.morph.retargeted), dropped: finite(report.morph.dropped) } : undefined,
+    notes: (Array.isArray(report.notes) ? report.notes : []).slice(0, 6).map(note => text(note, 300)),
   };
   return Buffer.from(JSON.stringify(compact), 'utf8').toString('base64url');
 }
@@ -241,6 +267,11 @@ app.post('/api/merge', heavyJob, upload.fields([
     }, { signal: processingSignal(req) });
     const merged = Buffer.from(job.data);
 
+    const mergeReport = animFile ? encodeMergeReport(job.report) : null;
+    if (mergeReport) {
+      res.setHeader('X-Merge-Report', mergeReport);
+      res.setHeader('X-Merge-Report-Encoding', 'base64url');
+    }
     res.setHeader('Content-Type', 'model/gltf-binary');
     res.setHeader('Content-Disposition', 'attachment; filename="merged.glb"');
     res.setHeader('Content-Length', merged.length);
@@ -300,6 +331,33 @@ app.post('/api/autorig-joints', heavyJob, upload.single('file'), async (req, res
     res.json(result.data);
   } catch (err) {
     console.error('[autorig-joints] Error:', err);
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ── Auto-rig: import-time placement ─────────────────────────────────────────
+// POST /api/autorig-orient
+// Body: multipart with field "file" (GLB). Skinless meshes come back standing
+// up, facing +Z, feet on y = 0 and centred over the origin (200, binary GLB);
+// meshes already placed that way, or rigged, answer 204. Both carry the JSON
+// X-Autorig-Orientation header ({ ...orientation, placement }).
+app.post('/api/autorig-orient', heavyJob, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
+    assertGLB(req.file);
+    const job = await runProcessingJob('orient', { file: req.file.buffer, options: {} }, { signal: processingSignal(req) });
+    const info = job.kind === 'binary' ? job : job.data || {};
+    const orientation = { ...(info.orientation || { applied: false }), placement: info.placement || { applied: false } };
+    res.setHeader('X-Autorig-Orientation', JSON.stringify(orientation));
+    if (job.kind !== 'binary') return res.status(204).end();
+    const oriented = Buffer.from(job.data);
+    console.log(`[autorig-orient] ${req.file.originalname}: ${orientation.applied ? `faced ${orientation.facing}, stood up facing +Z` : 'facing kept'}` +
+      `${orientation.placement.applied ? `; moved by [${orientation.placement.offset.join(', ')}] onto the ground` : ''}.`);
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Length', oriented.length);
+    res.end(oriented);
+  } catch (err) {
+    console.error('[autorig-orient] Error:', err);
     res.status(err.statusCode || 500).json({ error: err.message });
   }
 });

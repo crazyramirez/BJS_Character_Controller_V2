@@ -117,6 +117,10 @@
                 Rigged Models</p>
               <input type="file" id="char-file-input" accept=".glb,.fbx" style="display:none;">
             </div>
+            <label class="import-option-row"
+              title="Meshes without a skeleton are stood up facing forward, placed on the ground, rigged and animated automatically. Use Generate Skeleton (Auto-Rig) afterwards to review the joints.">
+              <input type="checkbox" id="autorig-on-import" checked> Auto-rig &amp; place meshes without a skeleton
+            </label>
 
             <!-- Character status badge -->
             <!-- Character status badge -->
@@ -390,6 +394,10 @@
                     title="Add Left/RightForeArmTwist bones between elbow and wrist. The controller drives them from hand roll at runtime, removing the candy-wrapper wrist pinch.">
                     <input type="checkbox" id="autorig-twist-bones"> Forearm twist bones (smoother wrists)
                   </label>
+                  <label class="autorig-symmetry-row" style="margin-top: 6px;"
+                    title="Bind every joint with +Y along the bone and +Z towards the front (DCC/engine convention) instead of world axes. Retargeting is identical; local roll becomes meaningful for IK, twist drivers and external tools.">
+                    <input type="checkbox" id="autorig-aligned-bones"> Bone-aligned joint orientation
+                  </label>
                   <div class="autorig-btn-row" style="margin-top: 6px;">
                     <button id="btn-autorig-save-layout" class="btn-action btn-secondary"
                       title="Download the current marker positions as a reusable JSON layout preset.">💾 Save layout</button>
@@ -426,7 +434,7 @@
                     d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
                 </svg>
                 <p>Batch import animations <strong>.glb</strong> / <strong>.fbx</strong></p>
-                <span>Merges with current character</span>
+                <span>Choose to replace or merge current animations</span>
                 <input type="file" id="anim-file-input" accept=".glb,.fbx" style="display:none;">
               </div>
             </div>
@@ -582,6 +590,36 @@
               <span>Lock Pitch (Horizontal Cam)</span>
               <label class="switch">
                 <input type="checkbox" id="toggle-cam-lock-pitch">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group checkbox-group"
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"
+              title="Let the head follow the camera direction while idle, walking or running.">
+              <label for="toggle-head-look">Head Follows Camera</label>
+              <label class="switch">
+                <input type="checkbox" id="toggle-head-look" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group checkbox-group"
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"
+              title="Scale the Walk/Sprint playback rate to this character's leg length and keep both loops phase-synced while they blend, so bigger or smaller characters don't slide their feet.">
+              <label for="toggle-stride-matching">Stride Matching</label>
+              <label class="switch">
+                <input type="checkbox" id="toggle-stride-matching" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="control-group checkbox-group"
+              style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"
+              title="While walking or running, punches play on the upper body only (AnimationGroupMask) and the legs keep moving.">
+              <label for="toggle-upper-body-actions">Punch While Moving</label>
+              <label class="switch">
+                <input type="checkbox" id="toggle-upper-body-actions">
                 <span class="slider-round"></span>
               </label>
             </div>
@@ -1114,6 +1152,21 @@
   <script src="vendor/babylonjs.materials.min.js"></script>
   <script src="js/draco-config.js?v=2.4.1"></script>
 
+  <dialog id="animation-import-dialog" class="custom-confirm-card animation-import-dialog"
+    aria-labelledby="animation-import-title" aria-describedby="animation-import-message">
+    <form method="dialog">
+      <h4 class="custom-confirm-title" id="animation-import-title">Import Animations</h4>
+      <p class="custom-confirm-message" id="animation-import-message"></p>
+      <p class="custom-confirm-message">Replace removes the current animations. Merge keeps them and adds the new ones;
+        animations with the same name are replaced by the imported version.</p>
+      <div class="custom-confirm-actions">
+        <button class="custom-confirm-btn custom-confirm-btn-cancel" value="cancel">Cancel</button>
+        <button class="custom-confirm-btn custom-confirm-btn-danger" value="replace">Replace</button>
+        <button class="custom-confirm-btn animation-import-merge" value="merge" autofocus>Merge</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Custom Confirm Modal -->
   <div id="custom-confirm-modal" class="custom-confirm-overlay">
     <div class="custom-confirm-card">
@@ -1134,7 +1187,7 @@
 
   <!-- Builder & Controller Scripts -->
   <script src="js/character-controller.js?v=2.4.1"></script>
-  <script src="js/core/builder.js?v=2.4.1"></script>
+  <script src="js/core/builder.js?v=2.4.4"></script>
 
 </body>
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { encodeAutoRigReport, startServer } from '../server.mjs';
+import { encodeAutoRigReport, encodeMergeReport, startServer } from '../server.mjs';
 import { createIO } from './helpers.mjs';
 
 test('server exposes only public assets and sends security headers', async (t) => {
@@ -86,6 +86,42 @@ test('auto-rig response supports Unicode mesh names and returns a usable skin', 
   const riggedDocument = await io.readBinary(new Uint8Array(await response.arrayBuffer()));
   assert.ok(riggedDocument.getRoot().listSkins().length > 0);
   assert.ok(riggedDocument.getRoot().listSkins()[0].listJoints().length >= 20);
+});
+
+test('merge responses carry the retarget report produced in the worker', async (t) => {
+  const server = await startServer({ port: 0, host: '127.0.0.1' });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const { port } = server.address();
+  const form = new FormData();
+  const character = await fs.readFile(new URL('../assets/characters_test/prisioner_hostage.glb', import.meta.url));
+  const animations = await fs.readFile(new URL('../assets/animations.glb', import.meta.url));
+  form.append('character', new Blob([character], { type: 'model/gltf-binary' }), 'character.glb');
+  form.append('animations', new Blob([animations], { type: 'model/gltf-binary' }), 'animations.glb');
+  form.append('options', JSON.stringify({ COMPRESS_OUTPUT: false, removeExistingAnimations: true }));
+  const response = await fetch(`http://127.0.0.1:${port}/api/merge`, { method: 'POST', body: form });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-merge-report-encoding'), 'base64url');
+  const report = JSON.parse(Buffer.from(response.headers.get('x-merge-report'), 'base64url').toString('utf8'));
+  assert.ok(report.rootMotionScale > 0.9 && report.rootMotionScale < 1.2);
+  assert.ok(report.groundCorrected > 0);
+  assert.equal(report.duplicateTracksDropped, 0);
+  await response.arrayBuffer();
+});
+
+test('merge report encoding is bounded and header-safe', () => {
+  const encoded = encodeMergeReport({
+    rootMotionScale: 0.87, quaternionRepairs: 2, duplicateTracksDropped: 1,
+    groundCorrections: Array.from({ length: 40 }, (_, i) => ({ clip: `Clip_ñ_${i}`, maxShift: i / 100 })),
+    hierarchyMismatches: Array.from({ length: 30 }, (_, i) => `Bone${i}: x`),
+    morph: { retargeted: 3, dropped: 1 }, notes: ['🧍'],
+  });
+  assert.match(encoded, /^[A-Za-z0-9_-]+$/);
+  const report = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+  assert.equal(report.groundCorrected, 40);
+  assert.equal(report.groundTop.length, 5);
+  assert.equal(report.groundTop[0].clip, 'Clip_ñ_39');
+  assert.equal(report.hierarchyMismatches.length, 8);
+  assert.deepEqual(report.morph, { retargeted: 3, dropped: 1 });
 });
 
 test('auto-rig report encoding preserves non-ASCII fallback diagnostics', () => {

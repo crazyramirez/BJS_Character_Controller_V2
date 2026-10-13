@@ -365,27 +365,46 @@ function selectBodyMeshes(doc, skinXforms = new Map(), options = {}, reportSink 
     for (const e of entries) {
       if (e.count * e.height > main.count * main.height) main = e;
     }
-    const m = 0.25 * Math.max(main.height, 0.01); // margin around the body box
     // Fraction of [a,b] overlapping [c,d].
     const overlap1D = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
-    for (const e of entries) {
-      if (e === main) { keep.add(e.mesh); continue; }
-      const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
-      const inside =
-        cx > main.min[0] - m && cx < main.max[0] + m &&
-        cy > main.min[1] - m && cy < main.max[1] + m &&
-        cz > main.min[2] - m && cz < main.max[2] + m;
-      if (!inside) continue; // far prop / light gizmo
+    // Characters split into Body/Tops/Bottoms/Shoes (Fuse, Sketchfab, CC):
+    // the densest mesh may be only the exposed skin or the upper body, so the
+    // body is GROWN from it — every mesh touching the body assembled so far
+    // joins it (pants touch the torso, shoes touch the pants), except floors
+    // and scenery far larger than the body.
+    const body = { min: main.min.slice(), max: main.max.slice() };
+    keep.add(main.mesh);
+    for (let grew = true; grew;) {
+      grew = false;
+      const bodyHeight = Math.max(body.max[1] - body.min[1], 0.01);
+      const bodyFootprint = Math.max(1e-6, (body.max[0] - body.min[0]) * (body.max[2] - body.min[2]));
+      const m = 0.25 * bodyHeight; // margin around the body box
+      for (const e of entries) {
+        if (keep.has(e.mesh)) continue;
+        const cx = (e.min[0] + e.max[0]) / 2, cy = (e.min[1] + e.max[1]) / 2, cz = (e.min[2] + e.max[2]) / 2;
+        const inside =
+          cx > body.min[0] - m && cx < body.max[0] + m &&
+          cy > body.min[1] - m && cy < body.max[1] + m &&
+          cz > body.min[2] - m && cz < body.max[2] + m;
+        const touch = 0.04 * bodyHeight;
+        const touching = [0, 1, 2].every(k => e.min[k] <= body.max[k] + touch && e.max[k] >= body.min[k] - touch);
+        if (!inside && !touching) continue; // far prop / light gizmo
 
-      // A ground plane / pedestal is a FLAT SLAB: tiny vertical extent but a large
-      // footprint. Clothing (capes, coats, robes, armor) is tall and overlaps the
-      // body's vertical span heavily, so it must be kept even with a big footprint.
-      const flat = e.height < 0.12 * main.height;
-      const wide = e.footprint > 1.5 * main.footprint;
-      const vOverlap = overlap1D(e.min[1], e.max[1], main.min[1], main.max[1]) / Math.max(e.height, 1e-6);
-      const isGround = flat && wide;                       // floor / base disc
-      const tooDetached = vOverlap < 0.25 && e.footprint > main.footprint; // big & barely shares the body's height
-      if (!isGround && !tooDetached) keep.add(e.mesh);
+        // A ground plane / pedestal is a FLAT SLAB: tiny vertical extent but a large
+        // footprint. Clothing (capes, coats, robes, armor) is tall and overlaps the
+        // body's vertical span heavily, so it must be kept even with a big footprint.
+        const flat = e.height < 0.12 * bodyHeight;
+        const wide = e.footprint > 1.5 * bodyFootprint;
+        const vOverlap = overlap1D(e.min[1], e.max[1], body.min[1], body.max[1]) / Math.max(e.height, 1e-6);
+        const isGround = flat && wide;                       // floor / base disc
+        const tooDetached = vOverlap < 0.25 && e.footprint > bodyFootprint; // big & barely shares the body's height
+        // Garments extend the body; scenery dwarfs it.
+        const scenery = touching && !inside && (e.height > 2 * bodyHeight || e.footprint > 4 * bodyFootprint);
+        if (isGround || tooDetached || scenery) continue;
+        keep.add(e.mesh);
+        for (let k = 0; k < 3; k++) { body.min[k] = Math.min(body.min[k], e.min[k]); body.max[k] = Math.max(body.max[k], e.max[k]); }
+        grew = true;
+      }
     }
   }
 
@@ -428,7 +447,7 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
   // not the mean. A foot has a short heel and a long toe: the mean is dominated
   // by the dense heel/ankle mass and can point the wrong way, but the toe is the
   // farther-protruding tip — that is the real forward direction.
-  const footZ = [], faceZ = [];
+  const footZ = [], faceZ = [], torsoZ = [];
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
@@ -441,11 +460,18 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
         const p = transformPoint(world, [arr[i], arr[i + 1], arr[i + 2]]);
         if (p[1] <= footY) footZ.push(p[2]);
         else if (p[1] >= faceY) faceZ.push(p[2]);
+        else if (p[1] >= min[1] + 0.35 * H && p[1] <= min[1] + 0.75 * H) torsoZ.push(p[2]);
       }
     }
   }
-  const depth = max[2] - min[2] || 1;
-  const bodyCz = (min[2] + max[2]) / 2;
+  // Body centre and depth from the torso, not the bounding box: a held prop
+  // (crowbar, sword, staff) or a cape stretches the box and would outvote the
+  // feet.
+  const torsoOk = torsoZ.length >= 16;
+  const depth = (torsoOk
+    ? Math.max(percentileOf(torsoZ, 0.98) - percentileOf(torsoZ, 0.02), 0.05 * H)
+    : max[2] - min[2]) || 1;
+  const bodyCz = torsoOk ? median(torsoZ) : (min[2] + max[2]) / 2;
   // Two ways to read a foot's facing, combined:
   //  • offset:  how far the whole foot sits in front of the body centre — strong
   //    when the foot is displaced forward (sitting/running poses).
@@ -460,7 +486,10 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
     for (const z of zs) { if (z > zmax) zmax = z; if (z < zmin) zmin = z; sum += z; }
     const overhang = ((zmax - med) - (med - zmin)) / depth;
     const offset = ((sum / zs.length) - bodyCz) / depth;
-    return overhang + offset;
+    // Standing feet sit within body-shape noise of the torso (belly, jacket,
+    // backpack); only a clearly displaced foot (sitting, running) should
+    // outvote the toe overhang.
+    return overhang + 0.35 * offset;
   };
   const fVote = footVote(footZ);
   const faceVote = footVote(faceZ);
@@ -470,6 +499,268 @@ function detectForwardZ(doc, { min, max }, skinXforms = new Map(), bodyMeshes = 
   const combined = footStrong ? fVote : (2.0 * fVote + 1.0 * faceVote);
   if (combined === 0) return 1;
   return combined >= 0 ? 1 : -1;
+}
+
+// ── Facing canonicalization (yaw) ────────────────────────────────────────────
+// Every heuristic in this file assumes a Y-up body whose arms span X and which
+// faces ±Z. Generated meshes (Tripo, Meshy, scans) often face ±X or an
+// arbitrary yaw, which lays the arm chain across the chest. The bounding box
+// cannot tell (an A-pose is as deep as it is wide); bilateral symmetry can: a
+// body mirrors left↔right but never front↔back (face, toes, chest vs back).
+// Sweep the mirror-plane normal around Y and keep the best-matching one.
+const YAW_MIN_CORRECTION = 4 * Math.PI / 180; // smaller turns are pose asymmetry
+const YAW_MIN_GAIN = 0.08;                    // symmetry gain over the current X axis
+
+// Fraction of occupied surface cells whose mirror (across the plane with
+// horizontal normal at `angle` from +X toward +Z) is also occupied.
+function mirrorSymmetryScore(pts, angle, minY, cell) {
+  const nx = Math.cos(angle), nz = Math.sin(angle);
+  const us = new Float64Array(pts.length), ws = new Float64Array(pts.length);
+  let wSum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    us[i] = pts[i][0] * nx + pts[i][2] * nz;
+    ws[i] = pts[i][2] * nx - pts[i][0] * nz;
+    wSum += ws[i];
+  }
+  const uCenter = median(us), wCenter = wSum / pts.length;
+  const clamp = v => Math.max(-1023, Math.min(1023, v));
+  const key = (iu, iw, iy) => ((iu + 1024) * 2048 + (iw + 1024)) * 2048 + iy;
+  let best = 0;
+  // Plane on a cell border (cell k mirrors to −1−k) or through a cell centre
+  // (k mirrors to −k): the true plane rarely falls on just one of them.
+  for (const centred of [0, 1]) {
+    const cells = new Set();
+    for (let i = 0; i < pts.length; i++) {
+      const iu = clamp(Math.floor((us[i] - uCenter) / cell + 0.5 * centred));
+      const iw = clamp(Math.round((ws[i] - wCenter) / cell));
+      cells.add(key(iu, iw, Math.max(0, Math.min(2047, Math.round((pts[i][1] - minY) / cell)))));
+    }
+    let mirrored = 0;
+    for (const k of cells) {
+      const iy = k % 2048, rest = (k - iy) / 2048;
+      const iw = rest % 2048 - 1024, iu = (rest - rest % 2048) / 2048 - 1024;
+      if (cells.has(key((centred ? 0 : -1) - iu, iw, iy))) mirrored++;
+    }
+    best = Math.max(best, mirrored / cells.size);
+  }
+  return best;
+}
+
+// Yaw that maps the body's lateral (mirror-normal) axis onto X, or 0 when the
+// mesh is already lateral along X or carries no clear symmetry.
+function detectMirrorYaw(pts, minY, height) {
+  const deg = Math.PI / 180;
+  const cell = height / 56;
+  const score = angle => mirrorSymmetryScore(pts, angle, minY, cell);
+  let best = 0, bestScore = -1;
+  for (let d = 0; d < 180; d += 4) {
+    const s = score(d * deg);
+    if (s > bestScore) { best = d * deg; bestScore = s; }
+  }
+  for (const step of [1, 0.25]) {
+    const center = best;
+    for (let k = -3; k <= 3; k++) {
+      if (!k) continue;
+      const s = score(center + k * step * deg);
+      if (s > bestScore) { best = center + k * step * deg; bestScore = s; }
+    }
+  }
+  // The normal is an axis: fold into (−90°, 90°] and snap near-cardinal turns.
+  let yaw = Math.atan2(Math.sin(2 * best), Math.cos(2 * best)) / 2;
+  if (yaw <= -Math.PI / 2 + 1e-9) yaw += Math.PI;
+  for (const cardinal of [-90, 0, 90]) if (Math.abs(yaw - cardinal * deg) < 2 * deg) yaw = cardinal * deg;
+  if (yaw === -Math.PI / 2) yaw = Math.PI / 2;
+  const baseline = score(0);
+  // Flat geometry (cards, planar test meshes) mirrors trivially across its own
+  // plane; a body is always thick along its lateral axis.
+  const spread = pts.map(p => p[0] * Math.cos(yaw) + p[2] * Math.sin(yaw)).sort((a, b) => a - b);
+  const thick = spread[Math.floor(0.98 * (spread.length - 1))] - spread[Math.floor(0.02 * (spread.length - 1))] >= 0.05 * height;
+  const correct = thick && Math.abs(yaw) >= YAW_MIN_CORRECTION && bestScore - baseline >= YAW_MIN_GAIN;
+  return { yaw: correct ? yaw : 0, correct, score: bestScore, baseline };
+}
+
+const quatMul = (a, b) => [
+  a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+];
+const quatConjugate = q => [-q[0], -q[1], -q[2], q[3]];
+const yawQuat = yaw => [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)];
+function quatMatrix([x, y, z, w]) {
+  return Float64Array.from([
+    1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+    2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+    2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+    0, 0, 0, 1,
+  ]);
+}
+
+// Rotate the whole document about the world origin through its root nodes
+// (exact for any root TRS: R·T·Q·S = T(R·t)·(R·Q)·S). Skin-space transforms
+// derived from the old joint worlds are updated in place to stay consistent.
+function rotateScene(doc, q, skinXforms = new Map()) {
+  const parents = buildParentMap(doc);
+  const m = quatMatrix(q);
+  for (const node of doc.getRoot().listNodes()) {
+    if (parents.has(node)) continue;
+    node.setTranslation(transformPoint(m, node.getTranslation()));
+    node.setRotation(quatMul(q, node.getRotation()));
+  }
+  for (const [node, xf] of skinXforms) skinXforms.set(node, mat4Mul(m, xf));
+}
+
+function rotateJoints(joints, q) {
+  if (!joints || !q || Math.abs(q[3]) >= 1 - 1e-12) return joints;
+  const m = quatMatrix(q);
+  return Object.fromEntries(Object.entries(joints).map(([name, p]) => [name, transformPoint(m, p)]));
+}
+
+// Mirror match across the plane normal to world axis `axis` (through the
+// median): fraction of occupied cells whose mirror is also occupied.
+function axisMirrorScore(pts, axis, cell) {
+  const [a, b] = [0, 1, 2].filter(k => k !== axis);
+  const center = median(pts.map(p => p[axis]));
+  let ca = 0, cb = 0;
+  for (const p of pts) { ca += p[a]; cb += p[b]; }
+  ca /= pts.length; cb /= pts.length;
+  const clamp = v => Math.max(-1023, Math.min(1023, v));
+  const key = (iu, ia, ib) => ((iu + 1024) * 2048 + (ia + 1024)) * 2048 + (ib + 1024);
+  let best = 0;
+  for (const centred of [0, 1]) {
+    const cells = new Set();
+    for (const p of pts) {
+      cells.add(key(clamp(Math.floor((p[axis] - center) / cell + 0.5 * centred)),
+        clamp(Math.round((p[a] - ca) / cell)), clamp(Math.round((p[b] - cb) / cell))));
+    }
+    let mirrored = 0;
+    for (const k of cells) {
+      const ib = k % 2048, rest = (k - ib) / 2048, ia = rest % 2048, iu = (rest - ia) / 2048 - 1024;
+      if (cells.has(key((centred ? 0 : -1) - iu, ia - 1024, ib - 1024))) mirrored++;
+    }
+    best = Math.max(best, mirrored / cells.size);
+  }
+  return best;
+}
+
+// Which way is up? Bodies are thinnest front-to-back; of the two remaining
+// axes the lateral one is mirror-symmetric (left↔right) and the height one
+// is not (head↔feet). Feet sit at the end with a gap between the legs, else
+// the end without the arm span. Exports lying on their back, front or side,
+// or upside down, get the quarter/half turn that stands them on +Y. Null
+// when the mesh already stands up or the reading is not clearly humanoid.
+function detectUpAxis(pts) {
+  const extent = [0, 1, 2].map(k => {
+    const v = pts.map(p => p[k]);
+    return percentileOf(v, 0.98) - percentileOf(v, 0.02);
+  });
+  const order = [0, 1, 2].sort((i, j) => extent[i] - extent[j]);
+  const depth = order[0];
+  if (!(extent[depth] < 0.75 * extent[order[1]])) return null;
+  const [a, b] = [0, 1, 2].filter(k => k !== depth);
+  const cell = Math.max(extent[a], extent[b]) / 56;
+  const sa = axisMirrorScore(pts, a, cell), sb = axisMirrorScore(pts, b, cell);
+  const lateral = sa >= sb ? a : b, height = lateral === a ? b : a;
+  if (Math.max(sa, sb) < 0.6 || Math.abs(sa - sb) < 0.08 || extent[height] < 0.8 * Math.max(...extent)) return null;
+  const along = pts.map(p => p[height]);
+  const lo = percentileOf(along, 0.01), hi = percentileOf(along, 0.99), length = hi - lo;
+  const center = median(pts.map(p => p[lateral]));
+  const endStats = fromHigh => {
+    const reach = p => fromHigh ? hi - p[height] : p[height] - lo;
+    let rows = 0, gaps = 0;
+    for (let f = 0.08; f < 0.35; f += 0.03) {
+      const band = pts.filter(p => reach(p) >= f * length && reach(p) < (f + 0.03) * length);
+      if (band.length < 8) continue;
+      rows++;
+      const middle = band.some(p => Math.abs(p[lateral] - center) < 0.02 * length);
+      const left = band.some(p => p[lateral] - center > 0.03 * length);
+      const right = band.some(p => center - p[lateral] > 0.03 * length);
+      if (!middle && left && right) gaps++;
+    }
+    const near = pts.filter(p => reach(p) >= 0.12 * length && reach(p) < 0.28 * length).map(p => p[lateral]);
+    return { gap: rows ? gaps / rows : 0, spread: near.length >= 8 ? percentileOf(near, 0.95) - percentileOf(near, 0.05) : 0 };
+  };
+  const high = endStats(true), low = endStats(false);
+  let headAtHigh;
+  if (Math.abs(high.gap - low.gap) >= 0.3) headAtHigh = low.gap > high.gap;
+  else if (Math.max(high.spread, low.spread) > 1.25 * Math.min(high.spread, low.spread)) headAtHigh = high.spread > low.spread;
+  else return null;
+  const label = `${headAtHigh ? '+' : '-'}${'XYZ'[height]}`;
+  if (height === 1) {
+    if (headAtHigh) return null; // standing
+    // Upside down: half turn about the depth axis.
+    const axis = [0, 0, 0];
+    axis[depth] = 1;
+    return { q: [axis[0], axis[1], axis[2], 0], label };
+  }
+  const up = [0, 0, 0];
+  up[height] = headAtHigh ? 1 : -1;
+  // Quarter turn about up × Y takes the body's up onto +Y.
+  const axis = vec3Normalize([-up[2], 0, up[0]]);
+  const half = Math.sin(Math.PI / 4);
+  return { q: [axis[0] * half, axis[1] * half, axis[2] * half, Math.cos(Math.PI / 4)], label };
+}
+
+/**
+ * Turn the document so the body stands along +Y with its lateral axis on X,
+ * facing +Z. A standing mesh already lateral along X is left untouched (its ±Z
+ * facing keeps the existing handling). Returns the applied rotation; joints
+ * map back with rotateJoints(joints, quatConjugate(rotation)).
+ */
+function canonicalizeFacing(doc, skinXforms, bodyMeshes, options = {}) {
+  const none = { applied: false, rotation: [0, 0, 0, 1], yawDegrees: 0, upAxis: '+Y' };
+  if (options.autoOrient === false) return { ...none, reason: 'disabled' };
+  let pts = collectWorldVertices(doc, skinXforms, bodyMeshes, 40000);
+  if (pts.length < 64) return none;
+  let rotation = [0, 0, 0, 1], upAxis = '+Y';
+  if (options.bodyPlan !== 'quadruped') {
+    const lying = detectUpAxis(pts);
+    if (lying) {
+      rotateScene(doc, lying.q, skinXforms);
+      rotation = lying.q;
+      upAxis = lying.label;
+      const m = quatMatrix(lying.q);
+      pts = pts.map(p => transformPoint(m, p));
+    }
+  }
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of pts) { if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1]; }
+  if (!(maxY - minY > 0)) return none;
+  const mirror = detectMirrorYaw(pts, minY, maxY - minY);
+  const symmetry = +mirror.score.toFixed(3), baseline = +mirror.baseline.toFixed(3);
+  if (!mirror.correct && upAxis === '+Y') return { ...none, symmetry: baseline };
+  let yaw = mirror.correct ? mirror.yaw : 0;
+  if (yaw) {
+    rotateScene(doc, yawQuat(yaw), skinXforms);
+    rotation = quatMul(yawQuat(yaw), rotation);
+  }
+  let bounds;
+  try {
+    bounds = computeWorldBounds(doc, skinXforms, bodyMeshes);
+  } catch (_) {
+    // Strips/points (orientGLB skips geometry preparation): sampled bounds.
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (const p of collectWorldVertices(doc, skinXforms, bodyMeshes, 40000)) {
+      for (let k = 0; k < 3; k++) { if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k]; }
+    }
+    bounds = { min, max };
+  }
+  // Lateral is X now; a mesh that is being turned anyway finishes the turn to
+  // the +Z facing the controller and animation libraries expect.
+  if (detectForwardZ(doc, bounds, skinXforms, bodyMeshes) < 0) {
+    rotateScene(doc, yawQuat(Math.PI), skinXforms);
+    rotation = quatMul(yawQuat(Math.PI), rotation);
+    yaw += Math.PI;
+  }
+  yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+  const yawDegrees = +(yaw * 180 / Math.PI).toFixed(2);
+  // Original facing = R⁻¹·(+Z). ASCII labels: sent as an HTTP header.
+  const f = transformPoint(quatMatrix(quatConjugate(rotation)), [0, 0, 1]);
+  const dominant = f.findIndex(v => Math.abs(v) > 0.9995);
+  const facing = dominant >= 0 ? `${f[dominant] > 0 ? '+' : '-'}${'XYZ'[dominant]}`
+    : `${(Math.atan2(f[0], f[2]) * 180 / Math.PI).toFixed(1)} deg from +Z`;
+  console.log(`[autorig] Mesh faced ${facing}${upAxis !== '+Y' ? ` lying with up ${upAxis}` : ''} (mirror symmetry ${baseline} → ${symmetry}) — rotated upright facing +Z.`);
+  return { applied: true, rotation, yawDegrees, facing, upAxis, symmetry, baseline };
 }
 
 export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
@@ -548,6 +839,11 @@ function collectWorldVertices(doc, skinXforms = new Map(), bodyMeshes = null, ma
   return pts;
 }
 
+function percentileOf(values, q) {
+  const s = Float64Array.from(values).sort();
+  return s[Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))))];
+}
+
 function median(values) {
   if (!values.length) return NaN;
   const s = [...values].sort((a, b) => a - b);
@@ -568,7 +864,94 @@ function centroidOf(pts) {
  * shoulder height, hand positions (works for T- and A-poses), head centroid.
  * Falls back to the bounds guess for anything that can't be measured reliably.
  */
-export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
+// ── Front silhouette profile ─────────────────────────────────────────────────
+// Triangles rasterized onto the X-Y plane (rows of H/240). For every row, the
+// half-width of the solid run through the body centreline: the torso below
+// the armpits, the arm span where the arms attach, the neck above the
+// shoulders. Rasterizing triangles (not vertices) keeps sparse low-poly and
+// dense scanned meshes equivalent.
+function frontSilhouetteProfile(doc, skinXforms, bodyMeshes, { min, max }, cx, rows = 240) {
+  const H = max[1] - min[1];
+  if (!(H > 0) || !Number.isFinite(cx)) return null;
+  const cell = H / rows, cols = 2 * rows + 1, center = rows;
+  const grid = new Uint8Array(cols * (rows + 1));
+  const parentMap = buildParentMap(doc);
+  const cache = new Map();
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh || (bodyMeshes && !bodyMeshes.has(mesh))) continue;
+    const world = skinXforms.get(node) || worldMatrixOf(node, parentMap, cache);
+    for (const prim of mesh.listPrimitives()) {
+      const pos = prim.getAttribute('POSITION')?.getArray();
+      if (!pos || prim.getMode() !== 4) continue;
+      const count = pos.length / 3;
+      const px = new Float32Array(count), py = new Float32Array(count);
+      for (let v = 0; v < count; v++) {
+        const p = transformPoint(world, [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+        px[v] = (p[0] - cx) / cell + center;
+        py[v] = (p[1] - min[1]) / cell;
+      }
+      const indices = prim.getIndices()?.getArray();
+      const triCount = Math.floor((indices ? indices.length : count) / 3);
+      for (let t = 0; t < triCount; t++) {
+        const a = indices ? indices[t * 3] : t * 3, b = indices ? indices[t * 3 + 1] : t * 3 + 1, c = indices ? indices[t * 3 + 2] : t * 3 + 2;
+        const x0 = Math.max(0, Math.floor(Math.min(px[a], px[b], px[c]))), x1 = Math.min(cols - 1, Math.floor(Math.max(px[a], px[b], px[c])));
+        const y0 = Math.max(0, Math.floor(Math.min(py[a], py[b], py[c]))), y1 = Math.min(rows, Math.floor(Math.max(py[a], py[b], py[c])));
+        const area = (px[b] - px[a]) * (py[c] - py[a]) - (px[c] - px[a]) * (py[b] - py[a]);
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+          if (x0 === x1 || y0 === y1 || Math.abs(area) < 1e-9) { grid[y * cols + x] = 1; continue; }
+          const sx = x + 0.5, sy = y + 0.5;
+          const w0 = ((px[b] - sx) * (py[c] - sy) - (px[c] - sx) * (py[b] - sy)) / area;
+          const w1 = ((px[c] - sx) * (py[a] - sy) - (px[a] - sx) * (py[c] - sy)) / area;
+          if (w0 >= -0.05 && w1 >= -0.05 && 1 - w0 - w1 >= -0.05) grid[y * cols + x] = 1;
+        }
+      }
+    }
+  }
+  // Half-width of the centreline run per row (H units); 0 = empty centre.
+  const halfRun = new Float32Array(rows + 1);
+  for (let y = 0; y <= rows; y++) {
+    if (!grid[y * cols + center]) continue;
+    let l = center, r = center;
+    while (l > 0 && grid[y * cols + l - 1]) l--;
+    while (r < cols - 1 && grid[y * cols + r + 1]) r++;
+    halfRun[y] = (r - l + 1) / 2 / rows;
+  }
+  return { rows, halfRun };
+}
+
+// Landmarks read off the profile (heights as fractions of H): torso width,
+// armpit (where the arms join the run), shoulder top (where the run narrows
+// to the neck), neck pinch (narrowest row just above), crotch (highest row
+// with an empty centre below the pelvis).
+function profileLandmarks(profile) {
+  if (!profile) return null;
+  const { rows, halfRun } = profile;
+  const rowOf = f => Math.max(0, Math.min(rows, Math.floor(f * rows)));
+  const span = (a, b) => { const out = []; for (let r = rowOf(a); r <= rowOf(b); r++) if (halfRun[r] > 0) out.push(halfRun[r]); return out; };
+  const torso = span(0.5, 0.7);
+  if (torso.length < 6) return null;
+  const torsoW = percentileOf(torso, 0.25);
+  let armpit = null;
+  for (let r = rowOf(0.55); r <= rowOf(0.9); r++) if (halfRun[r] > 1.6 * torsoW) { armpit = r / rows; break; }
+  if (armpit === null) return null;
+  const below = span(armpit - 0.06, armpit - 0.01);
+  const chestW = below.length ? median(below) : torsoW;
+  let shoulderTop = null;
+  for (let r = rowOf(armpit); r <= rows; r++) if (halfRun[r] < 0.6 * chestW) { shoulderTop = r / rows; break; }
+  if (shoulderTop === null || shoulderTop > 0.97) return null;
+  let pinch = shoulderTop, pinchW = Infinity;
+  for (let r = rowOf(shoulderTop); r <= rowOf(Math.min(0.99, shoulderTop + 0.07)); r++) {
+    // Highest row of the narrowest plateau (the neck runs up to the skull).
+    if (halfRun[r] > 0 && halfRun[r] <= pinchW + 0.5 / rows) { if (halfRun[r] < pinchW) pinchW = halfRun[r]; pinch = (r + 0.5) / rows; }
+  }
+  let crotch = null;
+  for (let r = rowOf(Math.min(0.62, armpit - 0.1)); r >= rowOf(0.15); r--) if (halfRun[r] === 0) { crotch = (r + 1) / rows; break; }
+  const pelvis = crotch !== null ? span(crotch, crotch + 0.12) : [];
+  return { torsoW, chestW, armpit, shoulderTop, pinch, crotch, hipW: pelvis.length ? Math.max(...pelvis) : null };
+}
+
+export function guessJointsFromMesh(verts, bounds, forwardZ = 1, profile = null) {
   const base = guessJointsFromBounds(bounds, forwardZ);
   if (!verts || verts.length < 300) return base;
   const { min, max } = bounds;
@@ -805,7 +1188,88 @@ export function guessJointsFromMesh(verts, bounds, forwardZ = 1) {
 
   // Quality flags: when these fail the mesh is likely NOT in an upright
   // T/A-pose and the caller should try the pose-independent topology pass.
-  return { joints, height: H, bounds, fingerTips, flags: { crotch: crotchY !== null, arms: armsDetected, skirt: skirtMode } };
+  // ── Silhouette-landmark placement ─────────────────────────────────────────
+  // Offsets calibrated on nine Mixamo-rigged characters (T/A-pose, arms down,
+  // armour, robes): heights hang off the shoulder top (where the profile
+  // narrows to the neck), which predicts the pelvis better than the crotch or
+  // any fixed fraction of the height; Mixamo places Head at the skull base and
+  // Neck at the neck base, with the spine joints at 0.20/0.433/0.70 between.
+  const landmarks = profileLandmarks(profile);
+  if (landmarks) {
+    const lm = landmarks;
+    const yAt = f => groundY + f * H;
+    const back = -forwardZ; // joints sit behind the surface centre
+    const medianZ = (filter, fallback) => {
+      const zs = verts.filter(filter).map(p => p[2]);
+      return zs.length >= 4 ? median(zs) : fallback;
+    };
+    const neckY = yAt(lm.shoulderTop - 0.020);
+    const hipsY = yAt(lm.shoulderTop - 0.284);
+    if (hipsY > groundY + 0.25 * H && neckY - hipsY > 0.12 * H) {
+      // Feet first: heel→toe extent per side gives the ankle, and a standing
+      // pelvis sits 2.5% of the height in front of the ankles (props and
+      // bellies skew any vertex median).
+      const feet = {};
+      for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+        const s = sgn * forwardZ;
+        const footPts = verts.filter(p => s * (p[0] - cx) > 0.005 * H && p[1] < groundY + 0.06 * H);
+        if (footPts.length < 4) continue;
+        const zs = footPts.map(p => p[2] * forwardZ);
+        const heel = Math.min(...zs) * forwardZ, toe = Math.max(...zs) * forwardZ;
+        feet[side] = { x: median(footPts.map(p => p[0])), heel, toe, ankleZ: heel + 0.24 * (toe - heel) };
+      }
+      const hipsZ = feet.Left && feet.Right
+        ? (feet.Left.ankleZ + feet.Right.ankleZ) / 2 + forwardZ * 0.025 * H
+        : joints.Hips[2];
+      joints.Hips = [cx, hipsY, hipsZ];
+      const neckZ = medianZ(p => Math.abs(p[0] - cx) < 0.05 * H && Math.abs(p[1] - neckY) < 0.02 * H, joints.Neck[2]) + back * 0.031 * H;
+      const spineAt = t => [cx, hipsY + (neckY - hipsY) * t, hipsZ + (neckZ - hipsZ) * t];
+      joints.Spine = spineAt(0.20);
+      joints.Spine1 = spineAt(0.433);
+      joints.Spine2 = spineAt(0.70);
+      joints.Neck = [cx, neckY, neckZ];
+      const topY = groundY + H;
+      const headY = Math.min(Math.max((yAt(lm.pinch + 0.003) + neckY + 0.27 * (topY - neckY)) / 2, neckY + 0.02 * H), topY - 0.04 * H);
+      joints.Head = [cx, headY, medianZ(p => Math.abs(p[0] - cx) < 0.06 * H && p[1] > headY, joints.Head[2]) + back * 0.042 * H];
+
+      // Legs: hip sockets just below Hips, ankle and ball of the foot from the
+      // heel→toe extent of each foot.
+      const upLegY = hipsY - 0.029 * H;
+      const upLegLat = (lm.hipW ? (0.467 * lm.hipW + 0.053) / 2 : 0.053) * H;
+      for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+        const s = sgn * forwardZ;
+        const onSide = p => s * (p[0] - cx) > 0.005 * H;
+        const foot = feet[side] || { x: joints[side + 'Foot'][0], heel: hipsZ - forwardZ * 0.05 * H, toe: hipsZ + forwardZ * 0.12 * H };
+        const footX = foot.x, heel = foot.heel, toe = foot.toe;
+        const footY = groundY + 0.058 * H;
+        joints[side + 'UpLeg'] = [cx + s * upLegLat, upLegY, hipsZ];
+        const kneeY = (upLegY + footY) / 2;
+        const kneeX = joints[side + 'Leg'][0];
+        joints[side + 'Leg'] = [kneeX, kneeY, medianZ(p => onSide(p) && Math.abs(p[0] - kneeX) < 0.06 * H && Math.abs(p[1] - kneeY) < 0.03 * H, joints[side + 'Leg'][2])];
+        joints[side + 'Foot'] = [footX, footY, heel + 0.24 * (toe - heel)];
+        joints[side + 'ToeBase'] = [footX, groundY + 0.009 * H, heel + 0.69 * (toe - heel)];
+      }
+
+      // Arms: socket under the shoulder top at the chest width, clavicle a
+      // third of the way in, elbow just short of halfway to the wrist.
+      if (armsDetected) {
+        const armY = yAt(lm.shoulderTop - 0.052);
+        const armLat = ((lm.chestW + 0.007 + 0.106) / 2) * H;
+        const armZ = hipsZ + back * 0.024 * H;
+        for (const [side, sgn] of [['Left', 1], ['Right', -1]]) {
+          const s = sgn * forwardZ;
+          const arm = [cx + s * armLat, armY, armZ];
+          const tip = fingerTips[side];
+          const hand = tip ? arm.map((v, k) => v + (tip[k] - v) * 0.78) : joints[side + 'Hand'];
+          joints[side + 'Shoulder'] = [cx + s * 0.325 * armLat, armY + 0.018 * H, armZ];
+          joints[side + 'Arm'] = arm;
+          joints[side + 'ForeArm'] = arm.map((v, k) => v + (hand[k] - v) * 0.484);
+          joints[side + 'Hand'] = hand;
+        }
+      }
+    }
+  }
+  return { joints, height: H, bounds, fingerTips, landmarks, flags: { crotch: crotchY !== null, arms: armsDetected, skirt: skirtMode } };
 }
 
 // ── Pose-independent topology pass (voxel curve-skeleton) ───────────────────
@@ -1272,7 +1736,8 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, b
   }
 
   const verts = collectWorldVertices(doc, skinXforms, bodyMeshes);
-  const sliced = guessJointsFromMesh(verts, bounds, forwardZ);
+  const profile = frontSilhouetteProfile(doc, skinXforms, bodyMeshes, bounds, median(verts.map(p => p[0])));
+  const sliced = guessJointsFromMesh(verts, bounds, forwardZ, profile);
   sliced.method = sliced.flags ? 'slicing' : 'bounds';
 
   let topo = null;
@@ -1483,6 +1948,76 @@ function applySeedChainAliases(worldByNorm, seeded) {
   }
 }
 
+// Feet on y = 0 and the pelvis over the origin (like Mixamo exports: a
+// standing pelvis sits 2.5% of the height in front of the ankles), so the
+// controller's root sits under the character. Translates the scene roots.
+function groundAndCenter(doc, bodyMeshes) {
+  const parents = buildParentMap(doc), cache = new Map();
+  let minY = Infinity, maxY = -Infinity;
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh || (bodyMeshes && !bodyMeshes.has(mesh))) continue;
+    const world = worldMatrixOf(node, parents, cache);
+    for (const prim of mesh.listPrimitives()) {
+      const arr = prim.getAttribute('POSITION')?.getArray();
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i += 3) {
+        const y = world[1] * arr[i] + world[5] * arr[i + 1] + world[9] * arr[i + 2] + world[13];
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const H = maxY - minY;
+  if (!(H > 0)) return { applied: false };
+  const pts = collectWorldVertices(doc, new Map(), bodyMeshes, 60000);
+  const cx = median(pts.map(p => p[0]));
+  const min = [Infinity, minY, Infinity], max = [-Infinity, maxY, -Infinity];
+  for (const p of pts) for (const k of [0, 2]) { if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k]; }
+  const forward = detectForwardZ(doc, { min, max }, new Map(), bodyMeshes);
+  // Ankle of each foot from its heel→toe extent (see guessJointsFromMesh).
+  const ankles = [1, -1].map(side => {
+    const zs = pts.filter(p => p[1] < minY + 0.06 * H && side * (p[0] - cx) > 0.005 * H).map(p => p[2] * forward);
+    if (zs.length < 8) return null;
+    const heel = Math.min(...zs), toe = Math.max(...zs);
+    return (heel + 0.24 * (toe - heel)) * forward;
+  });
+  const feet = pts.filter(p => p[1] < minY + 0.08 * H);
+  const cz = ankles.every(z => z !== null)
+    ? (ankles[0] + ankles[1]) / 2 + forward * 0.025 * H
+    : median((feet.length >= 16 ? feet : pts).map(p => p[2]));
+  if (Math.max(Math.abs(cx), Math.abs(minY), Math.abs(cz)) < 0.005 * H) return { applied: false };
+  const offset = [-cx, -minY, -cz];
+  for (const node of doc.getRoot().listNodes()) {
+    if (parents.has(node)) continue;
+    const t = node.getTranslation();
+    node.setTranslation([t[0] + offset[0], t[1] + offset[1], t[2] + offset[2]]);
+  }
+  return { applied: true, offset: offset.map(v => +v.toFixed(5)), height: +H.toFixed(5) };
+}
+
+/**
+ * Import-time placement for skinless meshes: stands the body up facing +Z
+ * (see canonicalizeFacing), puts the feet on y = 0 and centres it over the
+ * origin. Only scene-root transforms change (geometry untouched), so the
+ * viewport, markers, symmetry, the controller capsule and the exported file
+ * all share one frame. Rigged files are left alone — their skeleton defines
+ * the frame. Returns { buffer: null } when nothing changes.
+ */
+export async function orientGLB(buffer, options = {}) {
+  const io = await getIO();
+  const doc = await io.readBinary(new Uint8Array(buffer));
+  const root = doc.getRoot();
+  if (root.listSkins().length) return { buffer: null, orientation: { applied: false, reason: 'rigged' } };
+  const bodyMeshes = selectBodyMeshes(doc, new Map(), options);
+  const { applied, yawDegrees, facing, upAxis, symmetry, baseline } = canonicalizeFacing(doc, new Map(), bodyMeshes, options);
+  const placement = options.ground === false ? { applied: false } : groundAndCenter(doc, bodyMeshes);
+  const orientation = applied ? { applied, yawDegrees, facing, upAxis, symmetry, baseline } : { applied, yawDegrees, symmetry };
+  if (!applied && !placement.applied) return { buffer: null, orientation, placement };
+  root.listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression')?.dispose();
+  return { buffer: await io.writeBinary(doc), orientation, placement };
+}
+
 export async function guessJoints(buffer, options = {}) {
   const layout = buildRigLayout(options);
   const io = await getIO();
@@ -1492,7 +2027,11 @@ export async function guessJoints(buffer, options = {}) {
   const skinXf = skinWorldXforms(doc);
   const selectionReport = {};
   const bodyMeshes = selectBodyMeshes(doc, skinXf, options, selectionReport);
-  const bounds = computeWorldBounds(doc, skinXf, bodyMeshes);
+  const inputBounds = computeWorldBounds(doc, skinXf, bodyMeshes);
+  // Analyze in the canonical frame (lateral X, facing ±Z); results are mapped
+  // back so markers land on the mesh exactly as the caller displays it.
+  const orientation = canonicalizeFacing(doc, skinXf, bodyMeshes, options);
+  const bounds = orientation.applied ? computeWorldBounds(doc, skinXf, bodyMeshes) : inputBounds;
   const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
   const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, layout.bodyPlan);
   if (guess.method === 'slicing' && options.symmetrize === true) symmetrizeGuess(guess.joints);
@@ -1567,6 +2106,14 @@ export async function guessJoints(buffer, options = {}) {
   guess.supportedFingerCounts = Object.keys(FINGER_SETS).map(Number);
   guess.meshSelection = selectionReport.meshSelection;
   guess.diagnostics = jointDiagnostics(guess, layout);
+  if (orientation.applied) {
+    const back = quatConjugate(orientation.rotation);
+    guess.joints = rotateJoints(guess.joints, back);
+    if (guess.fingerTips) guess.fingerTips = rotateJoints(guess.fingerTips, back);
+    guess.bounds = inputBounds;
+  }
+  const { applied, yawDegrees, facing, upAxis, symmetry, baseline } = orientation;
+  guess.orientation = { applied, yawDegrees, facing, upAxis, symmetry, baseline };
   return guess;
 }
 
@@ -1873,10 +2420,13 @@ function fitFingerJoints(doc, skinXforms, bodyMeshes, guess, forwardZ, layout) {
   guess.fingerDetection = {};
   for (const side of ['Left', 'Right']) {
     const result = detectHandFingers(primitives, guess.joints[`${side}Hand`], guess.joints[`${side}ForeArm`], {
-      height: guess.height, fingers: layout.fingers, tip: guess.fingerTips?.[side],
+      height: guess.height, fingers: layout.fingers, tip: guess.fingerTips?.[side], forward: [0, 0, forwardZ],
     });
-    const { joints: fingerJoints, tips, ...report } = result;
+    // Unresolved hands still get markers that follow the measured hand shape
+    // (estimate); only detected digits are skinned automatically.
+    const { joints: detectedJoints, estimate, tips, ...report } = result;
     guess.fingerDetection[side] = report;
+    const fingerJoints = detectedJoints || estimate;
     if (fingerJoints) for (const [name, chain] of Object.entries(fingerJoints)) {
       chain.forEach((point, i) => { guess.joints[`${side}Hand${name}${i + 1}`] = point; });
     }
@@ -2217,67 +2767,116 @@ function buildVertexAdjacency(positions, indices, weldEps) {
     if (rep === undefined) { rep = v; keyToRep.set(key, v); }
     repOf[v] = rep;
   }
-  // Adjacency over representatives (Set per rep, then flatten).
-  const adjSet = new Map();
-  const link = (a, b) => {
-    if (a === b) return;
-    let s = adjSet.get(a);
-    if (!s) { s = new Set(); adjSet.set(a, s); }
-    s.add(b);
+  // Compressed adjacency over representatives (typed arrays: million-vertex
+  // meshes would otherwise need a Set per vertex).
+  const triCount = Math.floor((indices ? indices.length : count) / 3);
+  const corner = i => repOf[indices ? indices[i] : i];
+  const degree = new Int32Array(count);
+  const eachEdge = visit => {
+    for (let t = 0; t < triCount; t++) {
+      const a = corner(t * 3), b = corner(t * 3 + 1), c = corner(t * 3 + 2);
+      if (a !== b) visit(a, b);
+      if (b !== c) visit(b, c);
+      if (c !== a) visit(c, a);
+    }
   };
-  const triCount = indices ? indices.length / 3 : count / 3;
-  for (let t = 0; t < triCount; t++) {
-    const i0 = repOf[indices ? indices[t * 3] : t * 3];
-    const i1 = repOf[indices ? indices[t * 3 + 1] : t * 3 + 1];
-    const i2 = repOf[indices ? indices[t * 3 + 2] : t * 3 + 2];
-    link(i0, i1); link(i1, i0);
-    link(i1, i2); link(i2, i1);
-    link(i2, i0); link(i0, i2);
+  eachEdge((a, b) => { degree[a]++; degree[b]++; });
+  const offsets = new Int32Array(count + 1);
+  for (let v = 0; v < count; v++) offsets[v + 1] = offsets[v] + degree[v];
+  const neighbors = new Int32Array(offsets[count]);
+  const cursor = offsets.slice(0, count);
+  eachEdge((a, b) => { neighbors[cursor[a]++] = b; neighbors[cursor[b]++] = a; });
+  // Deduplicate each row in place (rows only shrink, writes trail reads).
+  const start = new Int32Array(count + 1);
+  let w = 0;
+  for (let v = 0; v < count; v++) {
+    start[v] = w;
+    const row = neighbors.subarray(offsets[v], offsets[v + 1]).sort();
+    let last = -1;
+    for (const n of row) if (n !== last) { neighbors[w++] = n; last = n; }
   }
-  return { repOf, adjSet, count };
+  start[count] = w;
+  return { repOf, start, neighbors, count };
 }
 
-// Laplacian-smooth a dense per-vertex weight matrix (count × nBones) over the
-// welded vertex graph. Uniform weights, in place, `iters` passes, `lambda`
-// blend. Operates on representatives; non-representative duplicates copy their
-// rep afterwards so seams stay watertight.
-function smoothWeightField(W, nBones, adjacency, iters, lambda) {
-  const { repOf, adjSet, count } = adjacency;
-  // Collapse onto representatives first (average duplicates into their rep row).
-  const repCount = new Int32Array(count);
-  for (let v = 0; v < count; v++) {
-    const r = repOf[v];
-    if (r === v) continue;
-    repCount[r]++;
-    for (let b = 0; b < nBones; b++) W[r * nBones + b] += W[v * nBones + b];
+// Sparse per-vertex weights: the strongest `slots` bones per vertex. Dense
+// count × bones fields do not fit million-vertex meshes with finger chains.
+function createSparseWeights(count, slots, nBones) {
+  return {
+    slots, nBones,
+    cols: nBones <= 256 ? new Uint8Array(count * slots) : new Uint16Array(count * slots),
+    vals: new Float32Array(count * slots),
+    acc: new Float64Array(nBones),
+    touched: new Uint16Array(nBones),
+    touchedCount: 0,
+  };
+}
+function sparseAdd(field, b, w) {
+  if (!(w > 0)) return;
+  if (field.acc[b] === 0) field.touched[field.touchedCount++] = b;
+  field.acc[b] += w;
+}
+function sparseAddRow(field, cols, vals, v, scale) {
+  const base = v * field.slots;
+  for (let k = 0; k < field.slots; k++) sparseAdd(field, cols[base + k], vals[base + k] * scale);
+}
+// Write the accumulated bones (strongest first) into row v and reset.
+function sparseFlush(field, cols, vals, v) {
+  const { slots, acc, touched } = field;
+  const n = field.touchedCount;
+  const order = Array.from(touched.subarray(0, n)).sort((a, b) => acc[b] - acc[a] || a - b);
+  const base = v * slots;
+  for (let k = 0; k < slots; k++) {
+    const b = order[k];
+    cols[base + k] = b === undefined ? 0 : b;
+    vals[base + k] = b === undefined ? 0 : acc[b];
   }
+  for (let i = 0; i < n; i++) acc[touched[i]] = 0;
+  field.touchedCount = 0;
+}
+
+// Laplacian-smooth the sparse weights over the welded vertex graph. Uniform
+// weights, `iters` Jacobi passes, `lambda` blend. Operates on representatives;
+// duplicates copy their rep afterwards so seams stay watertight.
+function smoothSparseWeights(field, adjacency, iters, lambda) {
+  const { repOf, start, neighbors, count } = adjacency;
+  const { cols, vals, slots } = field;
+  // Collapse duplicates onto their representative (average of the group).
+  const groupSize = new Int32Array(count);
+  for (let v = 0; v < count; v++) groupSize[repOf[v]]++;
+  const firstDup = new Int32Array(count + 1);
+  for (let v = 0; v < count; v++) firstDup[v + 1] = firstDup[v] + (groupSize[v] > 1 ? groupSize[v] - 1 : 0);
+  const dups = new Int32Array(firstDup[count]);
+  const fill = firstDup.slice(0, count);
+  for (let v = 0; v < count; v++) if (repOf[v] !== v) dups[fill[repOf[v]]++] = v;
   for (let r = 0; r < count; r++) {
-    if (repCount[r] === 0) continue;
-    const inv = 1 / (repCount[r] + 1);
-    for (let b = 0; b < nBones; b++) W[r * nBones + b] *= inv;
+    if (groupSize[r] <= 1 || repOf[r] !== r) continue;
+    const scale = 1 / groupSize[r];
+    sparseAddRow(field, cols, vals, r, scale);
+    for (let i = firstDup[r]; i < firstDup[r + 1]; i++) sparseAddRow(field, cols, vals, dups[i], scale);
+    sparseFlush(field, cols, vals, r);
   }
-  const tmp = new Float32Array(W.length);
+  const tmpCols = cols.slice(), tmpVals = vals.slice();
   for (let it = 0; it < iters; it++) {
-    for (const [r, nbrs] of adjSet) {
-      const n = nbrs.size;
+    for (let r = 0; r < count; r++) {
+      const n = start[r + 1] - start[r];
       if (n === 0) continue;
-      const base = r * nBones;
-      for (let b = 0; b < nBones; b++) {
-        let acc = 0;
-        for (const nb of nbrs) acc += W[nb * nBones + b];
-        tmp[base + b] = W[base + b] * (1 - lambda) + (acc / n) * lambda;
-      }
+      sparseAddRow(field, cols, vals, r, 1 - lambda);
+      for (let i = start[r]; i < start[r + 1]; i++) sparseAddRow(field, cols, vals, neighbors[i], lambda / n);
+      sparseFlush(field, tmpCols, tmpVals, r);
     }
-    for (const [r] of adjSet) {
-      const base = r * nBones;
-      for (let b = 0; b < nBones; b++) W[base + b] = tmp[base + b];
+    for (let r = 0; r < count; r++) {
+      if (start[r + 1] === start[r]) continue;
+      cols.set(tmpCols.subarray(r * slots, (r + 1) * slots), r * slots);
+      vals.set(tmpVals.subarray(r * slots, (r + 1) * slots), r * slots);
     }
   }
   // Broadcast representative rows back to their duplicates (watertight seams).
   for (let v = 0; v < count; v++) {
     const r = repOf[v];
     if (r === v) continue;
-    for (let b = 0; b < nBones; b++) W[v * nBones + b] = W[r * nBones + b];
+    cols.copyWithin(v * slots, r * slots, (r + 1) * slots);
+    vals.copyWithin(v * slots, r * slots, (r + 1) * slots);
   }
 }
 
@@ -2335,6 +2934,94 @@ function addTwistBones(layout, joints) {
   return { ...layout, hierarchy, order, bodyOrder: order.filter(n => !isFinger(n)) };
 }
 
+// ── Joint bind orientations ──────────────────────────────────────────────────
+// 'world' (default): every joint binds with the world axes (R180y for -Z
+// characters) — retargeting is exact either way because it works from world
+// bind rotations. 'aligned': DCC/engine-style frames with local +Y along the
+// bone towards its main child and +Z towards the character's front (feet and
+// toes use world up as the secondary axis). Bone-aligned frames make local
+// roll/twist about Y meaningful for IK, twist drivers and external tools.
+// Frames are 3×3 column-major rotation matrices [x | y | z].
+const PRIMARY_CHILD = {
+  Hips: 'Spine', Spine2: 'Neck', LeftForeArm: 'LeftHand', RightForeArm: 'RightHand',
+  LeftHand: 'LeftHandMiddle1', RightHand: 'RightHandMiddle1',
+};
+
+function frameQuat(m) {
+  const [m00, m10, m20, m01, m11, m21, m02, m12, m22] = m;
+  const trace = m00 + m11 + m22;
+  let q;
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    q = [(m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s, 0.25 / s];
+  } else if (m00 > m11 && m00 > m22) {
+    const s = 2 * Math.sqrt(1 + m00 - m11 - m22);
+    q = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s];
+  } else if (m11 > m22) {
+    const s = 2 * Math.sqrt(1 + m11 - m00 - m22);
+    q = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s];
+  } else {
+    const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
+    q = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s];
+  }
+  const len = Math.hypot(...q) || 1;
+  return q.map(v => v / len);
+}
+
+/** Rᵀ·v for a 3×3 column-major rotation. */
+function frameInvApply(m, v) {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
+}
+
+/** Aᵀ·B (parent-relative rotation) for 3×3 column-major rotations. */
+function frameRelative(a, b) {
+  const out = new Array(9);
+  for (let col = 0; col < 3; col++) {
+    const column = frameInvApply(a, [b[col * 3], b[col * 3 + 1], b[col * 3 + 2]]);
+    out[col * 3] = column[0]; out[col * 3 + 1] = column[1]; out[col * 3 + 2] = column[2];
+  }
+  return out;
+}
+
+export function jointBindFrames(rigLayout, joints, fwdSign = 1, mode = 'world') {
+  const flip = fwdSign === -1;
+  const base = flip ? [-1, 0, 0, 0, 1, 0, 0, 0, -1] : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const frames = new Map();
+  if (mode !== 'aligned') {
+    for (const name of rigLayout.order) frames.set(name, base);
+    return frames;
+  }
+  const children = new Map();
+  for (const name of rigLayout.order) {
+    const parent = rigLayout.hierarchy[name];
+    if (!parent) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(name);
+  }
+  const fwd = [0, 0, flip ? -1 : 1];
+  const up = [0, 1, 0];
+  for (const name of rigLayout.order) {
+    const kids = (children.get(name) || []).filter(kid => !/Twist$/.test(kid));
+    const child = kids.includes(PRIMARY_CHILD[name]) ? PRIMARY_CHILD[name] : kids[0];
+    const parent = rigLayout.hierarchy[name];
+    const inherited = parent ? frames.get(parent) : base;
+    const d = child && joints[child] ? vec3Subtract(joints[child], joints[name]) : null;
+    if (!d || vec3Length(d) < 1e-6) { frames.set(name, inherited); continue; }
+    const y = vec3Normalize(d);
+    let ref = /(Foot|ToeBase)$/.test(name) ? up : fwd;
+    if (Math.abs(ref[0] * y[0] + ref[1] * y[1] + ref[2] * y[2]) > 0.95) ref = ref === up ? fwd : up;
+    const along = ref[0] * y[0] + ref[1] * y[1] + ref[2] * y[2];
+    const z = vec3Normalize([ref[0] - y[0] * along, ref[1] - y[1] * along, ref[2] - y[2] * along]);
+    const x = [y[1] * z[2] - y[2] * z[1], y[2] * z[0] - y[0] * z[2], y[0] * z[1] - y[1] * z[0]];
+    frames.set(name, [...x, ...y, ...z]);
+  }
+  return frames;
+}
+
 // ── Geodesic bone distances (voxel BFS) ──────────────────────────────────────
 // Euclidean point→segment distance leaks across gaps the surface never
 // bridges: closed thighs pull each other, a relaxed hand pulls the hip, a
@@ -2344,15 +3031,11 @@ function addTwistBones(layout, joints) {
 // agree; across an air gap the geodesic explodes and the influence dies.
 // Returns Map(prim → Float32Array(count·nB)) with 0 = "no data, use euclidean"
 // (vertex outside the voxel shell or in a disconnected component).
+// Distances live on the solid voxels (one Uint16 per voxel and bone), and each
+// vertex only stores its voxel: memory scales with the grid, not with mesh
+// density, so million-vertex scans and AI meshes keep geodesic weighting.
+const GEO_UNREACHED = 0xffff;
 function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
-  let requestedElements = 0;
-  for (const mesh of bakedMeshes) {
-    for (const prim of mesh.listPrimitives()) requestedElements += (prim.getAttribute('POSITION')?.getCount() || 0) * segList.length;
-  }
-  if (requestedElements > 12_000_000) {
-    console.warn('[autorig] Geodesic weights disabled for this high-density mesh to stay within the memory budget.');
-    return null;
-  }
   let vox = null;
   try {
     // Geometry is baked to world. Ignore the entire mesh ancestry, including
@@ -2386,9 +3069,18 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
     return -1;
   };
 
+  // Compact ids for solid voxels.
+  const compact = new Int32Array(grid.length).fill(-1);
+  let solidCount = 0;
+  for (let i = 0; i < grid.length; i++) if (grid[i] === 1) compact[i] = solidCount++;
+  const nB = segList.length;
+  if (solidCount * nB > 64_000_000) {
+    console.warn('[autorig] Geodesic weights disabled: voxel field exceeds the memory budget.');
+    return null;
+  }
+
   // Per-vertex voxel snap (surface verts sit on the shell; r≤2 covers the rest)
-  const prims = [];
-  const geoPerPrim = new Map();
+  const voxelOf = new Map();
   let mapped = 0, totalVerts = 0;
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
@@ -2398,12 +3090,11 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
       const count = arr.length / 3;
       const vidx = new Int32Array(count).fill(-1);
       for (let v = 0; v < count; v++) {
-        vidx[v] = nearestSolid([arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]], 2);
-        if (vidx[v] >= 0) mapped++;
+        const i = nearestSolid([arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]], 2);
+        if (i >= 0) { vidx[v] = compact[i]; mapped++; }
       }
       totalVerts += count;
-      prims.push({ prim, count, vidx });
-      geoPerPrim.set(prim, new Float32Array(count * segList.length)); // 0 = no data
+      voxelOf.set(prim, vidx);
     }
   }
   if (totalVerts === 0 || mapped / totalVerts < 0.5) {
@@ -2423,21 +3114,27 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
     return [...seeds];
   };
 
-  const nB = segList.length;
+  const fields = new Uint16Array(solidCount * nB).fill(GEO_UNREACHED);
   for (let b = 0; b < nB; b++) {
     const seeds = segmentSeeds(segList[b]);
     if (!seeds.length) continue;
     const { dist } = voxelBFS(vox, seeds);
-    for (const { prim, count, vidx } of prims) {
-      const geo = geoPerPrim.get(prim);
-      for (let v = 0; v < count; v++) {
-        const gi = vidx[v];
-        if (gi >= 0 && dist[gi] >= 0) geo[v * nB + b] = dist[gi] * cell;
-      }
+    for (let i = 0; i < grid.length; i++) {
+      const c = compact[i];
+      if (c >= 0 && dist[i] >= 0) fields[c * nB + b] = Math.min(dist[i], GEO_UNREACHED - 1);
     }
   }
   console.log(`[autorig] Geodesic weight fields ready (${(100 * mapped / totalVerts).toFixed(0)}% voxel coverage).`);
-  return geoPerPrim;
+  // Geodesic distance from vertex v of `prim` to bone b, or 0 (no data).
+  return {
+    voxelOf,
+    distance(vidx, v, b) {
+      const c = vidx[v];
+      if (c < 0) return 0;
+      const steps = fields[c * nB + b];
+      return steps === GEO_UNREACHED ? 0 : steps * cell;
+    },
+  };
 }
 
 // ── Rigid props (glasses, weapons, hats, backpacks) ──────────────────────────
@@ -2446,7 +3143,7 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
 // re-parented under that joint node (world transform preserved via
 // local' = inv(jointBindWorld)·world), so they follow the skeleton rigidly.
 // Large or distant meshes (ground, backdrop, light gizmos) stay untouched.
-function attachRigidProps(doc, bodyMeshes, jointNodes, segNames, segList, joints, H, flip) {
+function attachRigidProps(doc, bodyMeshes, jointNodes, segNames, segList, joints, H, frames) {
   if (!bodyMeshes) return 0; // single-mesh character: nothing was excluded
   const parentMap = buildParentMap(doc);
   const cache = new Map();
@@ -2484,9 +3181,8 @@ function attachRigidProps(doc, bodyMeshes, jointNodes, segNames, segList, joints
     const jointNode = jointNodes.get(bestName);
     if (!jointNode) continue;
     const [px, py, pz] = joints[bestName];
-    const bind = MAT4_IDENTITY.slice();
-    if (flip) { bind[0] = -1; bind[10] = -1; }
-    bind[12] = px; bind[13] = py; bind[14] = pz;
+    const r = frames.get(bestName);
+    const bind = [r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, px, py, pz, 1];
     jointNode.addChild(node);
     node.setMatrix(Array.from(mat4Mul(invertRigidMat4(bind), world)));
     attached++;
@@ -2536,6 +3232,11 @@ export async function autoRigGLB(buffer, options = {}) {
   await prepareRigGeometry(doc);
   const selectionReport = {};
   const bodyMeshes = selectBodyMeshes(doc, previouslySkinned, options, selectionReport);
+  // Same canonical frame as guessJoints (deterministic on the same input), so
+  // its markers map in with the same yaw. The generated rig faces +Z.
+  const orientation = canonicalizeFacing(doc, previouslySkinned, bodyMeshes, options);
+  const markerJoints = options.joints ? rotateJoints(options.joints, orientation.rotation) : null;
+  sourceJoints = rotateJoints(sourceJoints, orientation.rotation);
   const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
   const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
   const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes, layout.bodyPlan);
@@ -2544,8 +3245,8 @@ export async function autoRigGLB(buffer, options = {}) {
   if (guess.method === 'slicing' && options.symmetrize === true) symmetrizeGuess(guess.joints);
   fitFingerJoints(doc, previouslySkinned, bodyMeshes, guess, forwardZ, layout);
   if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
-  validateJointLayout(options.joints || {}, guess.height, { partial: true });
-  const joints = { ...guess.joints, ...sourceJoints, ...(options.joints || {}) };
+  validateJointLayout(markerJoints || {}, guess.height, { partial: true });
+  const joints = { ...guess.joints, ...sourceJoints, ...(markerJoints || {}) };
   for (const name of Object.keys(joints)) {
     if (!layout.order.includes(name)) delete joints[name];
   }
@@ -2701,23 +3402,29 @@ export async function autoRigGLB(buffer, options = {}) {
   // mesh faces -Z and we bind with identity rotations, every animation lands
   // 180° off the body (crossed arms, twisted limbs). So for -Z characters the
   // whole skeleton binds with a 180° Y rotation (on the root; children inherit).
-  const flip = fwdSign === -1;
+  // options.boneOrientation === 'aligned' binds DCC-style bone frames instead
+  // (see jointBindFrames); retargeting stays exact for both.
+  const boneOrientation = options.boneOrientation === 'aligned' ? 'aligned' : 'world';
+  const frames = jointBindFrames(rigLayout, joints, fwdSign, boneOrientation);
   const glbBuffer = root.listBuffers()[0] || doc.createBuffer();
   const jointNodes = new Map();
   for (const name of rigLayout.order) {
     const parentName = rigLayout.hierarchy[name];
     const world = joints[name];
-    let localT;
+    const frame = frames.get(name);
+    let localT, localR;
     if (parentName) {
-      const p = joints[parentName];
-      const d = [world[0] - p[0], world[1] - p[1], world[2] - p[2]];
-      // Parent world rotation is R180y when flipped: local = R180⁻¹ · Δworld
-      localT = flip ? [-d[0], d[1], -d[2]] : d;
+      // local = R_parentᵀ · (Δworld, R_world)
+      const parentFrame = frames.get(parentName);
+      localT = frameInvApply(parentFrame, vec3Subtract(world, joints[parentName]));
+      localR = frameQuat(frameRelative(parentFrame, frame));
     } else {
       localT = world.slice();
+      localR = frameQuat(frame);
     }
-    const node = doc.createNode(exportedJointName(presetId, preset, name)).setTranslation(localT);
-    if (!parentName && flip) node.setRotation([0, 1, 0, 0]); // 180° about Y
+    const node = doc.createNode(exportedJointName(presetId, preset, name)).setTranslation(localT)
+      .setExtras({ bjsCanonical: name });
+    if (Math.abs(localR[3]) < 1 - 1e-9) node.setRotation(localR);
     jointNodes.set(name, node);
     if (parentName) jointNodes.get(parentName).addChild(node);
   }
@@ -2725,18 +3432,17 @@ export async function autoRigGLB(buffer, options = {}) {
   scene.addChild(jointNodes.get('Hips'));
 
   // ── 3. Inverse bind matrices ───────────────────────────────────────────────
-  // W_bind = T(p)·R, with R = identity or R180y. IBM = inv(W_bind) = R⁻¹·T(-p).
+  // W_bind = T(p)·R. IBM = inv(W_bind) = [Rᵀ | -Rᵀ·p].
   const ibmData = new Float32Array(rigLayout.order.length * 16);
   rigLayout.order.forEach((name, i) => {
-    const [px, py, pz] = joints[name];
-    const m = MAT4_IDENTITY.slice();
-    if (flip) {
-      m[0] = -1; m[10] = -1;             // diag(-1, 1, -1) = R180y
-      m[12] = px; m[13] = -py; m[14] = pz; // -R180y·p
-    } else {
-      m[12] = -px; m[13] = -py; m[14] = -pz;
-    }
-    ibmData.set(m, i * 16);
+    const r = frames.get(name);
+    const t = frameInvApply(r, joints[name]);
+    ibmData.set([
+      r[0], r[3], r[6], 0,
+      r[1], r[4], r[7], 0,
+      r[2], r[5], r[8], 0,
+      -t[0], -t[1], -t[2], 1,
+    ], i * 16);
   });
   const ibmAcc = doc.createAccessor('autorig_ibm')
     .setType('MAT4')
@@ -2757,11 +3463,12 @@ export async function autoRigGLB(buffer, options = {}) {
   //     with a small blend zone around the centerline.
   const segments = boneSegments(joints, H);
   // Automatic weighting only includes hands resolved from actual branches and
-  // still at their analyzed positions. Manual placement can opt in explicitly.
+  // still near their analyzed positions (a symmetrized wrist or a nudge keeps
+  // them; a hand re-placed by hand does not). Manual placement can opt in.
   const activeFingerSides = ['Left', 'Right'].filter(side => options.skinFingers === true ||
     (options.skinFingers === 'auto' && guess.fingerDetection[side]?.status === 'detected' &&
       (!options.joints || [`${side}Hand`, ...layout.fingers.flatMap(f => [1, 2, 3].map(n => `${side}Hand${f}${n}`))]
-        .every(name => vec3Length(vec3Subtract(joints[name], guess.joints[name])) < H * 1e-5))));
+        .every(name => vec3Length(vec3Subtract(joints[name], guess.joints[name])) < H * 0.01))));
   const weightedJointOrder = rigLayout.order.filter(name => rigLayout.bodyOrder.includes(name) ||
     activeFingerSides.some(side => name.startsWith(`${side}Hand`)));
   // The palm ends at the knuckles. A hand segment extending to the fingertips
@@ -2845,9 +3552,11 @@ export async function autoRigGLB(buffer, options = {}) {
   // Geodesic distance fields: kill influences that would have to jump through
   // air (closed thighs, hand-near-hip, cross-body arms). 0 entries fall back
   // to plain euclidean distance.
-  const geoPerPrim = options.geodesicWeights !== false
+  const geodesic = options.geodesicWeights !== false
     ? buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList)
     : null;
+  // Strongest bones kept per vertex through smoothing (top-4 are exported).
+  const WEIGHT_SLOTS = 10;
 
   // Quality report accumulators (see reportSink below)
   let qaVerts = 0, qaCross = 0, qaDistant = 0;
@@ -2860,16 +3569,17 @@ export async function autoRigGLB(buffer, options = {}) {
       const count = arr.length / 3;
       const indices = prim.getIndices()?.getArray() || null;
 
-      if (count * nB > 24_000_000) {
-        throw new Error(`Auto-Rig memory budget exceeded for a ${count.toLocaleString('en-US')}-vertex primitive and ${nB} deform bones. Split or decimate the mesh, or reduce fingers/twist bones.`);
+      if (count > 8_000_000) {
+        throw new Error(`Auto-Rig memory budget exceeded for a ${count.toLocaleString('en-US')}-vertex primitive. Split or decimate the mesh.`);
       }
 
-      // Dense per-vertex weight field (count × nB), built from proximity with a
-      // SOFT side gate, then Laplacian-smoothed across the mesh graph, then
-      // reduced to the glTF 4-influence limit.
-      const field = new Float32Array(count * nB);
+      // Sparse per-vertex weight field (strongest WEIGHT_SLOTS bones), built
+      // from proximity with a SOFT side gate, then Laplacian-smoothed across
+      // the mesh graph, then reduced to the glTF 4-influence limit.
+      const field = createSparseWeights(count, WEIGHT_SLOTS, nB);
       const dists = new Float32Array(nB);
-      const geoArr = geoPerPrim ? geoPerPrim.get(prim) : null;
+      const weights = new Float64Array(nB);
+      const voxelIndex = geodesic ? geodesic.voxelOf.get(prim) : null;
 
       for (let v = 0; v < count; v++) {
         const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
@@ -2886,8 +3596,8 @@ export async function autoRigGLB(buffer, options = {}) {
           // gap the geodesic explodes and the influence dies. 26-conn BFS
           // underestimates true length, so it can only ever REMOVE bad
           // influences, never starve a legitimate nearby bone.
-          if (geoArr) {
-            const g = geoArr[v * nB + b];
+          if (voxelIndex) {
+            const g = geodesic.distance(voxelIndex, v, b);
             if (g > d) d = g;
           }
           dists[b] = d;
@@ -2896,8 +3606,8 @@ export async function autoRigGLB(buffer, options = {}) {
         const dMax = dMin * CUTOFF;
 
         let total = 0;
-        const base = v * nB;
         for (let b = 0; b < nB; b++) {
+          weights[b] = 0;
           const d = dists[b];
           if (d > dMax) continue;
           const relativeDistance = d / H;
@@ -2913,7 +3623,7 @@ export async function autoRigGLB(buffer, options = {}) {
             const gate = g <= 0 ? 0 : g >= 1 ? 1 : g * g * (3 - 2 * g); // smoothstep
             w *= gate;
           }
-          field[base + b] = w;
+          weights[b] = w;
           total += w;
         }
         // Fallback: no bone survived the gate (vertex far off to one side) →
@@ -2921,32 +3631,33 @@ export async function autoRigGLB(buffer, options = {}) {
         if (total <= 0) {
           let nb = 0, nd = Infinity;
           for (let b = 0; b < nB; b++) if (dists[b] < nd) { nd = dists[b]; nb = b; }
-          field[base + nb] = 1;
+          sparseAdd(field, nb, 1);
         } else {
           // Diffuse probabilities, not inverse-distance magnitudes. Without
           // this, a vertex close to a bone can overwhelm an entire joint ring.
-          for (let b = 0; b < nB; b++) field[base + b] /= total;
+          for (let b = 0; b < nB; b++) sparseAdd(field, b, weights[b] / total);
         }
+        sparseFlush(field, field.cols, field.vals, v);
       }
 
       // ── Laplacian weight smoothing (crease-free joints) ────────────────────
       const weldEps = 1e-4 * H;
       const adjacency = buildVertexAdjacency(arr, indices, weldEps);
-      smoothWeightField(field, nB, adjacency, 5, 0.6);
+      smoothSparseWeights(field, adjacency, 5, 0.6);
 
       // ── Reduce to top-4 influences + normalize ─────────────────────────────
       const jointsOut = new Uint8Array(count * 4);
       const weightsOut = new Float32Array(count * 4);
       for (let v = 0; v < count; v++) {
-        const base = v * nB;
+        const base = v * WEIGHT_SLOTS;
         const point = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
         const domain = fingerDomain(point);
         const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
-        for (let b = 0; b < nB; b++) {
+        for (let k = 0; k < WEIGHT_SLOTS; k++) {
+          const b = field.cols[base + k], w = field.vals[base + k];
+          if (w <= 0) continue;
           // Smoothing must not reconnect separated fingers through the palm.
           if (domain && fingerFamily[b] !== domain.family && weightedJointOrder[b] !== domain.hand) continue;
-          const w = field[base + b];
-          if (w <= 0) continue;
           for (let k = 0; k < 4; k++) {
             if (w > best[k][1]) { best.splice(k, 0, [b, w]); best.pop(); break; }
           }
@@ -3004,7 +3715,7 @@ export async function autoRigGLB(buffer, options = {}) {
   // Re-parent small nearby props (glasses, weapons, hats) under their nearest
   // joint so they follow the animation instead of freezing in world space.
   const propsAttached = options.attachProps !== false
-    ? attachRigidProps(doc, bodyMeshes, jointNodes, weightedJointOrder, segList, joints, H, flip)
+    ? attachRigidProps(doc, bodyMeshes, jointNodes, weightedJointOrder, segList, joints, H, frames)
     : 0;
 
   // ── Skinning quality report ────────────────────────────────────────────────
@@ -3019,8 +3730,9 @@ export async function autoRigGLB(buffer, options = {}) {
     notes.push(...diagnostics.issues);
     if (crossPct > 0.01) notes.push(`${(crossPct * 100).toFixed(1)}% of vertices carry cross-side limb weight.`);
     if (distantPct > 0.01) notes.push(`${(distantPct * 100).toFixed(1)}% of vertices are influenced by a distant bone.`);
-    if (!geoPerPrim && options.geodesicWeights !== false) notes.push('Geodesic weighting unavailable (voxelization failed) — euclidean fallback used.');
+    if (!geodesic && options.geodesicWeights !== false) notes.push('Geodesic weighting unavailable (voxelization failed) — euclidean fallback used.');
     if (propsAttached > 0) notes.push(`${propsAttached} prop mesh(es) rigidly attached to the skeleton.`);
+    if (orientation.applied) notes.push(`Mesh faced ${orientation.facing}${orientation.upAxis !== '+Y' ? ` (up ${orientation.upAxis})` : ''} — rigged output rotated upright facing +Z.`);
     if (preset.compatibility === 'naming-convention') {
       notes.push(`${preset.label} changes deform-bone names only; engine avatar/control-rig validation is still required.`);
     }
@@ -3035,11 +3747,13 @@ export async function autoRigGLB(buffer, options = {}) {
       vertices: qaVerts,
       crossSidePct: +(crossPct * 100).toFixed(2),
       distantInfluencePct: +(distantPct * 100).toFixed(2),
-      geodesicWeights: !!geoPerPrim,
+      geodesicWeights: !!geodesic,
       symmetrized: guess.method === 'slicing' && options.symmetrize === true,
       twistBones: rigLayout !== layout,
+      boneOrientation,
       propsAttached,
       guessMethod: guess.method,
+      orientation: { applied: orientation.applied, yawDegrees: orientation.yawDegrees, facing: orientation.facing, upAxis: orientation.upAxis },
       skeletonPreset: presetId,
       presetCompatibility: preset.compatibility,
       meshSelection: selectionReport.meshSelection,
