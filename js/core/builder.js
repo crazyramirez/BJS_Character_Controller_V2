@@ -3697,11 +3697,11 @@ function renderAutoRigDiagnostics(guess) {
   panel.innerHTML = `<strong>${diagnostics.status === 'ready' ? 'Analysis complete' : 'Check joint placement'}</strong>
     <p>1. Review joints &nbsp; 2. Check hands &nbsp; 3. Apply Rig</p>
     ${['Left', 'Right'].map(side => {
-      const hand = guess.fingerDetection?.[side];
-      if (!hand) return '';
-      return `<div class="autorig-hand-result"><span>${side} hand: ${escapeHtml(labels[hand.status] || 'Review needed')}</span>
+    const hand = guess.fingerDetection?.[side];
+    if (!hand) return '';
+    return `<div class="autorig-hand-result"><span>${side} hand: ${escapeHtml(labels[hand.status] || 'Review needed')}</span>
         <button type="button" class="btn-action btn-secondary" aria-label="Inspect ${side.toLowerCase()} hand" data-rig-hand="${side}">Inspect</button></div>`;
-    }).join('')}
+  }).join('')}
     ${diagnostics.issues.length ? `<details open><summary>Placement notes (${diagnostics.issues.length})</summary><ul>${diagnostics.issues.map(issue => `<li>${escapeHtml(issue)}</li>`).join('')}</ul></details>` : ''}
     <p>Automatic finger skinning keeps unresolved hands solid. You can place the markers and choose reviewed finger skinning.</p>`;
   panel.style.display = 'block';
