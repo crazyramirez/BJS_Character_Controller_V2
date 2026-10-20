@@ -49,13 +49,17 @@ export function detectHandFingers(primitives, wrist, forearm, { height, fingers,
     const local = new Int32Array(positions.length / 3).fill(-1);
     const beyondSphere = new Uint8Array(positions.length / 3);
     for (let v = 0; v < local.length; v++) {
-      const p = Array.from(positions.subarray(v * 3, v * 3 + 3));
-      const delta = sub(p, wrist);
-      if (dot(delta, delta) > radius * radius) {
-        if (dot(delta, back) > 0.2 * guessReach) beyondSphere[v] = 1;
+      // Scalar pre-filter: million-vertex meshes have a few thousand hand
+      // vertices, so only those allocate.
+      const dx = positions[v * 3] - wrist[0], dy = positions[v * 3 + 1] - wrist[1], dz = positions[v * 3 + 2] - wrist[2];
+      const along = dx * back[0] + dy * back[1] + dz * back[2];
+      if (dx * dx + dy * dy + dz * dz > radius * radius) {
+        if (along > 0.2 * guessReach) beyondSphere[v] = 1;
         continue;
       }
-      if (dot(delta, back) < -0.12 * guessReach) continue;
+      if (along < -0.12 * guessReach) continue;
+      const p = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+      const delta = [dx, dy, dz];
       const key = delta.map(x => Math.round(x / weld)).join(',');
       let id = byPosition.get(key);
       if (id === undefined) {
@@ -67,6 +71,8 @@ export function detectHandFingers(primitives, wrist, forearm, { height, fingers,
     }
     const count = indices?.length ?? local.length;
     for (let i = 0; i + 2 < count; i += 3) {
+      if (local[indices ? indices[i] : i] < 0 && local[indices ? indices[i + 1] : i + 1] < 0 &&
+        local[indices ? indices[i + 2] : i + 2] < 0) continue; // nothing of the hand
       const corners = [0, 1, 2].map(k => indices ? indices[i + k] : i + k);
       const ids = corners.map(v => local[v]);
       if (corners.some(v => beyondSphere[v])) for (const id of ids) if (id >= 0) exits[id] = 1;

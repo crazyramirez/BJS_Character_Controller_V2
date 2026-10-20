@@ -31,6 +31,9 @@
             <p>Custom Character Controller Builder &amp; Exporter (BETA)</p>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <label class="mode-toggle" title="Show expert controls: posture sliders, pivot axes, bone tree, rig options and config files.">
+              <input type="checkbox" id="toggle-advanced-mode"> Advanced
+            </label>
             <!-- Server status badge -->
             <span id="server-badge" class="server-badge offline" title="Server status">
               <span class="server-badge-dot"></span>
@@ -49,8 +52,8 @@
             <path
               d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z" />
           </svg>
-          <span>Changes save automatically. Use <strong style="color:#fca5a5;">Reset All</strong> to restore
-            defaults.</span>
+          <span>Settings save automatically (keys, physics, animation mapping). Model files are not stored — keep
+            your originals. <strong style="color:#fca5a5;">Reset All</strong> restores defaults.</span>
         </div>
       </div>
 
@@ -111,11 +114,11 @@
                   d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
               </svg>
               <p>Drag &amp; drop <strong>.glb</strong> or <strong>.fbx</strong> character here</p>
-              <span>or click to browse</span>
+              <span>or click to browse · extra files are added as animations · you can also drop onto the 3D view</span>
               <p style="margin-top:10px;color:var(--text-secondary);">Recommended: <a href="https://www.mixamo.com"
                   target="_blank" style="color:var(--accent);text-decoration:underline;"><strong>Mixamo</strong></a>
                 Rigged Models</p>
-              <input type="file" id="char-file-input" accept=".glb,.fbx" style="display:none;">
+              <input type="file" id="char-file-input" accept=".glb,.fbx" multiple style="display:none;">
             </div>
             <label class="import-option-row"
               title="Meshes without a skeleton are stood up facing forward, placed on the ground, rigged and animated automatically. Use Generate Skeleton (Auto-Rig) afterwards to review the joints.">
@@ -144,7 +147,7 @@
               </h4>
 
               <!-- Uniform scale toggle -->
-              <div class="control-group checkbox-group"
+              <div class="control-group checkbox-group adv-only"
                 style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
                 <span style="font-size:0.75rem; color:var(--text-secondary);">Uniform Scaling</span>
                 <label class="switch">
@@ -193,7 +196,7 @@
 
               <!-- Pivot Offset X, Y, Z sliders -->
               <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.06);">
-                <div class="control-group" style="margin-bottom:10px;">
+                <div class="control-group adv-only" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset X</span>
@@ -201,7 +204,7 @@
                   </div>
                   <input type="range" id="slider-pivot-x" min="-2.0" max="2.0" step="0.01" value="0.0">
                 </div>
-                <div class="control-group" style="margin-bottom:10px;">
+                <div class="control-group adv-only" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset Y</span>
@@ -209,7 +212,7 @@
                   </div>
                   <input type="range" id="slider-pivot-y" min="-2.0" max="2.0" step="0.01" value="0.0">
                 </div>
-                <div class="control-group" style="margin-bottom:10px;">
+                <div class="control-group adv-only" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
                     <span>Pivot Offset Z</span>
@@ -223,8 +226,9 @@
                 </button>
               </div>
 
-              <!-- Arm & Leg Spread Angle sliders -->
-              <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.06);">
+              <!-- Arm & Leg Spread Angle sliders (expert retarget posture fixes) -->
+              <div class="adv-only" style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.06);">
+                <p class="adv-hint">Posture fixes for retargeting (e.g. A-pose arms). Leave at 0° unless animations look off.</p>
                 <div class="control-group" style="margin-bottom:10px;">
                   <div class="control-label"
                     style="font-size:0.72rem; display:flex; justify-content:space-between; margin-bottom:4px;">
@@ -308,28 +312,34 @@
               </div>
               <div id="autorig-controls" style="display:none;">
                 <button id="btn-autorig-start" class="btn-action">💀 Generate Skeleton (Auto-Rig)</button>
-                <button id="btn-autorig-batch" class="btn-action btn-secondary" style="margin-top: 6px;"
-                  title="Auto-rig several .glb files in a row with the current layout options (server guess, no marker editing) and download each rigged result.">
+                <button id="btn-autorig-undo" class="btn-action btn-secondary" style="margin-top: 6px;" hidden
+                  title="Restore the model as it was before the last rig (static mesh or previous skeleton).">
+                  ↶ Undo last rig
+                </button>
+                <button id="btn-autorig-batch" class="btn-action btn-secondary adv-only" style="margin-top: 6px;"
+                  title="Auto-rig several .glb files in a row (layout detected per file, no marker editing) and download them as one .zip.">
                   📦 Batch auto-rig GLBs…
                 </button>
                 <input type="file" id="autorig-batch-files" accept=".glb" multiple style="display:none;">
                 <div id="autorig-adjust" style="display:none;">
                   <p id="autorig-adjust-hint">
-                    Analyze the mesh, review the suggested joints, then apply the rig.
+                    The joints were placed automatically. Check any <b>red</b> markers, then apply the rig.
                   </p>
                   <div id="autorig-diagnostics" class="autorig-diagnostics" role="status" aria-live="polite" style="display:none;"></div>
                   <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
-                    title="Skeleton anatomy. Humanoid uses upright T/A-pose analysis; Animal builds a horizontal spine with four legs and a tail chain.">
+                    title="Skeleton anatomy. Automatic detects humanoids and four-legged animals from the mesh.">
                     Body plan
                     <select id="autorig-body-plan" style="width:100%; margin-top:4px;">
+                      <option value="auto">✨ Automatic</option>
                       <option value="humanoid">🧍 Humanoid (biped)</option>
                       <option value="quadruped">🐾 Animal (quadruped)</option>
                     </select>
                   </label>
                   <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
-                    title="How many finger chains each hand gets. 'No fingers' rigs a solid hand (mittens, hooves, robots).">
+                    title="How many finger chains each hand gets. Automatic counts the separate digits on the mesh; 'No fingers' rigs a solid hand (mittens, hooves, robots).">
                     Hand fingers
                     <select id="autorig-finger-count" style="width:100%; margin-top:4px;">
+                      <option value="auto">✨ Automatic</option>
                       <option value="5">✋ 5 fingers (full hand)</option>
                       <option value="4">4 fingers (cartoon)</option>
                       <option value="3">3 fingers</option>
@@ -346,18 +356,21 @@
                       <button type="button" id="btn-autorig-mesh-apply" class="btn-action btn-secondary">Reanalyse selection</button>
                     </div>
                   </fieldset>
-                  <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;">
-                    Skeleton target
+                  <label class="autorig-symmetry-row" id="autorig-rebuild-row" style="display:none;"
+                    title="Discard the imported skeleton and skin weights and generate a brand-new rig using the Body plan / Hand fingers / Skeleton target selected above. Leave off to only adjust the existing bones (preserves artist weights).">
+                    <input type="checkbox" id="autorig-rebuild"> Rebuild from scratch (replaces the imported skin weights)
+                  </label>
+                  <details class="autorig-advanced">
+                  <summary>More rig options</summary>
+                  <label class="autorig-symmetry-row" style="display:block; margin-bottom:8px;"
+                    title="Bone naming of the generated skeleton. Retargeting works with every option; pick the engine you will export to.">
+                    Skeleton naming
                     <select id="autorig-skeleton-preset" style="width:100%; margin-top:4px;">
                       <option value="mixamo">Mixamo / Babylon.js</option>
                       <option value="unity">Unity Humanoid</option>
                       <option value="unreal">Unreal Engine</option>
                       <option value="blender">Blender / Rigify</option>
                     </select>
-                  </label>
-                  <label class="autorig-symmetry-row" id="autorig-rebuild-row" style="display:none;"
-                    title="Discard the imported skeleton and skin weights and generate a brand-new rig using the Body plan / Hand fingers / Skeleton target selected above. Leave off to only adjust the existing bones (preserves artist weights).">
-                    <input type="checkbox" id="autorig-rebuild"> Rebuild skeleton (replace existing rig)
                   </label>
                   <label class="autorig-symmetry-row">
                     <input type="checkbox" id="autorig-symmetry" checked> Symmetric editing (mirror left ↔ right)
@@ -392,7 +405,7 @@
                   </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Add Left/RightForeArmTwist bones between elbow and wrist. The controller drives them from hand roll at runtime, removing the candy-wrapper wrist pinch.">
-                    <input type="checkbox" id="autorig-twist-bones"> Forearm twist bones (smoother wrists)
+                    <input type="checkbox" id="autorig-twist-bones" checked> Forearm twist bones (smoother wrists)
                   </label>
                   <label class="autorig-symmetry-row" style="margin-top: 6px;"
                     title="Bind every joint with +Y along the bone and +Z towards the front (DCC/engine convention) instead of world axes. Retargeting is identical; local roll becomes meaningful for IK, twist drivers and external tools.">
@@ -405,6 +418,7 @@
                       title="Load a saved marker layout preset (scaled to this character's height).">📂 Load layout</button>
                   </div>
                   <input type="file" id="autorig-layout-file" accept=".json" style="display:none;">
+                  </details>
                   <div class="autorig-btn-row">
                     <button id="btn-autorig-apply" class="btn-action btn-autorig-apply">✓ Apply Rig</button>
                     <button id="btn-autorig-cancel" class="btn-action btn-secondary">✕ Cancel</button>
@@ -412,7 +426,7 @@
                 </div>
               </div>
               <div id="skeleton-health" class="skeleton-health" style="display:none;"></div>
-              <div id="skeleton-tree" class="skeleton-tree"></div>
+              <div id="skeleton-tree" class="skeleton-tree adv-only"></div>
             </div>
           </div>
 
@@ -433,9 +447,9 @@
                   <path
                     d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
                 </svg>
-                <p>Batch import animations <strong>.glb</strong> / <strong>.fbx</strong></p>
+                <p>Import animations <strong>.glb</strong> / <strong>.fbx</strong> — one or many files</p>
                 <span>Choose to replace or merge current animations</span>
-                <input type="file" id="anim-file-input" accept=".glb,.fbx" style="display:none;">
+                <input type="file" id="anim-file-input" accept=".glb,.fbx" multiple style="display:none;">
               </div>
             </div>
 
@@ -737,7 +751,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Gravity Strength</span>
+                <span title="Downward acceleration in m/s². Earth-like feel ≈ 20–25 (games use more than 9.8 for snappy jumps).">Gravity (m/s²)</span>
                 <span class="control-value" id="slider-grav-val">22</span>
               </div>
               <input type="range" id="slider-grav" min="5" max="40" step="0.5" value="22">
@@ -745,7 +759,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Jump Takeoff Power</span>
+                <span title="Upward launch speed in m/s. Jump height ≈ power² ÷ (2 × gravity).">Jump power (m/s)</span>
                 <span class="control-value" id="slider-jump-pwr-val">9.5</span>
               </div>
               <input type="range" id="slider-jump-pwr" min="3" max="25" step="0.1" value="9.5">
@@ -753,7 +767,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Walk Speed</span>
+                <span title="Top walking ground speed in metres per second.">Walk speed (m/s)</span>
                 <span class="control-value" id="slider-speed-walk-val">2.5</span>
               </div>
               <input type="range" id="slider-speed-walk" min="0.5" max="8" step="0.1" value="2.5">
@@ -761,7 +775,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Sprint Speed</span>
+                <span title="Top sprint ground speed in metres per second.">Sprint speed (m/s)</span>
                 <span class="control-value" id="slider-speed-sprint-val">5.0</span>
               </div>
               <input type="range" id="slider-speed-sprint" min="2" max="15" step="0.1" value="5.0">
@@ -769,7 +783,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Acceleration</span>
+                <span title="How fast the character reaches its top speed. Higher = snappier start.">Acceleration (responsiveness)</span>
                 <span class="control-value" id="slider-accel-val">14</span>
               </div>
               <input type="range" id="slider-accel" min="1" max="40" step="0.5" value="14">
@@ -777,7 +791,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Deceleration</span>
+                <span title="How fast the character stops when you release the keys. Higher = shorter slide.">Braking (responsiveness)</span>
                 <span class="control-value" id="slider-decel-val">16</span>
               </div>
               <input type="range" id="slider-decel" min="1" max="40" step="0.5" value="16">
@@ -785,7 +799,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Rotation Speed</span>
+                <span title="How fast the character turns to face the movement direction. Higher = sharper turns.">Turn speed</span>
                 <span class="control-value" id="slider-rot-val">40</span>
               </div>
               <input type="range" id="slider-rot" min="5" max="120" step="1" value="40">
@@ -793,7 +807,7 @@
 
             <div class="control-group">
               <div class="control-label">
-                <span>Speed Multiplier</span>
+                <span title="Scales walk, jog and sprint speeds together (1.0× = values above).">Overall speed ×</span>
                 <span class="control-value" id="slider-speed-mult-val">1.0x</span>
               </div>
               <input type="range" id="slider-speed-mult" min="0.5" max="2.0" step="0.1" value="1.0">
@@ -806,6 +820,23 @@
              5. EXPORT TAB
         ══════════════════════════════════════ -->
         <div class="tab-panel" id="panel-export">
+          <div class="settings-section export-ready">
+            <h3 style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <span>Ready to export?</span>
+              <span id="export-checklist-summary" class="export-checklist-summary"></span>
+            </h3>
+            <ul id="export-checklist" class="export-checklist" aria-live="polite"></ul>
+            <button class="btn-action" id="btn-download-package"
+              title="One .zip with the character GLB, the baked controller, character.preset.json, a runnable index.html and a README.">
+              <svg style="width:20px;height:20px;fill:white;" viewBox="0 0 24 24">
+                <path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6 10v-3h-4v-2h4V8l4 4-4 4z" />
+              </svg>
+              Download everything (.zip)
+            </button>
+            <p class="export-ready-hint">Unzip, run any static server and open <code>index.html</code> — or copy
+              <code>assets/</code> and <code>js/</code> into your project and call <code>createCharacter(scene, { camera })</code>.</p>
+          </div>
+
           <div class="settings-section">
             <h3>Export Code Snippet</h3>
             <p style="margin-bottom:8px;">
@@ -863,9 +894,13 @@
               </svg>
               Download custom-character-controller.js
             </button>
+            <button class="btn-action btn-secondary" id="btn-download-preset" style="margin-top:8px;"
+              title="The setup as data for setupCharacter/createCharacter({ preset }) with the stock controller.">
+              Download character.preset.json
+            </button>
           </div>
 
-          <div class="settings-section">
+          <div class="settings-section adv-only">
             <h3>Download Builder Config</h3>
             <p style="margin-bottom:12px;">
               Save or restore controller, rig, mapping and animation settings as <code>builder-config.json</code>.
@@ -1036,7 +1071,7 @@
       <!-- Controls tooltip -->
       <div class="keyboard-controls-tooltip">
         <h4>Playground controls</h4>
-        <div class="controls-grid">
+        <div class="controls-grid" id="controls-grid">
           <span class="key-cap">W A S D</span>
           <span>Move character</span>
           <span class="key-cap">SHIFT</span>
@@ -1092,11 +1127,35 @@
           <span class="step-text">Merge & Retarget Tracks</span>
         </div>
       </div>
+      <!-- Live server job: real stage, elapsed time, cancel -->
+      <div id="loading-job" class="loading-job" hidden>
+        <div class="loading-job-bar"><div id="loading-job-fill" class="loading-job-fill indeterminate"></div></div>
+        <div class="loading-job-meta">
+          <span id="loading-job-stage">Working…</span>
+          <span id="loading-job-elapsed">0s</span>
+        </div>
+        <button type="button" id="btn-loading-cancel" class="loading-job-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 
-  <!-- Toast notifications -->
-  <div id="toast" class="toast">Toast Message</div>
+  <!-- Toast notifications (stacked) -->
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+  <dialog id="drop-intent-dialog" class="custom-confirm-card animation-import-dialog" aria-labelledby="drop-intent-title"
+    aria-describedby="drop-intent-message">
+    <form method="dialog">
+      <h4 class="custom-confirm-title" id="drop-intent-title">What did you drop?</h4>
+      <p class="custom-confirm-message" id="drop-intent-message"></p>
+      <p class="custom-confirm-message">A new character replaces the current one (extra files become its animations).
+        Animations are retargeted onto the current character.</p>
+      <div class="custom-confirm-actions">
+        <button class="custom-confirm-btn custom-confirm-btn-cancel" value="cancel">Cancel</button>
+        <button class="custom-confirm-btn custom-confirm-btn-danger" value="character">New character</button>
+        <button class="custom-confirm-btn animation-import-merge" value="animations" autofocus>Animations</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- Shared token bridge -->
   <style>
@@ -1186,8 +1245,8 @@
   </div>
 
   <!-- Builder & Controller Scripts -->
-  <script src="js/character-controller.js?v=2.4.1"></script>
-  <script src="js/core/builder.js?v=2.4.4"></script>
+  <script src="js/character-controller.js?v=2.5.0"></script>
+  <script src="js/core/builder.js?v=2.5.0"></script>
 
 </body>
 

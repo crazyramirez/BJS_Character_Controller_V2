@@ -1899,6 +1899,19 @@ export async function analyzeGLB(buffer) {
   };
 }
 
+// Clips the user deleted in the Builder (display names, `Armature|` prefix
+// stripped). T-pose clips stay: they are the retarget reference.
+function dropExcludedAnimations(doc, names) {
+  if (!Array.isArray(names) || !names.length) return 0;
+  const excluded = new Set(names.map(name => String(name).trim()));
+  let dropped = 0;
+  for (const anim of [...doc.getRoot().listAnimations()]) {
+    const name = anim.getName().split('|').pop().trim();
+    if (excluded.has(name) && !/t[_-]?pose/i.test(name)) { anim.dispose(); dropped++; }
+  }
+  return dropped;
+}
+
 /**
  * Merge animations from animBuffer into charBuffer and return the merged GLB as a Buffer.
  * @param {Buffer|Uint8Array} charBuffer   — base character GLB
@@ -2209,8 +2222,11 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   // If no animation buffer is provided, serialize and return the cleaned character directly
   if (!animBuffer || animBuffer.byteLength === 0) {
+    const dropped = dropExcludedAnimations(charDoc, cfg.excludeAnimationNames);
     if (cfg.COMPRESS_OUTPUT) {
       await charDoc.transform(unpartition(), prune());
+    } else if (dropped) {
+      await charDoc.transform(prune());
     }
     return io.writeBinary(charDoc);
   }
@@ -3112,6 +3128,7 @@ export async function mergeGLBs(charBuffer, animBuffer, options = {}) {
 
   for (const scene of charDoc.getRoot().listScenes()) { if (!origScenes.has(scene)) scene.dispose(); }
 
+  dropExcludedAnimations(charDoc, cfg.excludeAnimationNames);
   await charDoc.transform(prune());
   if (cfg.requireAnimations && !charDoc.getRoot().listAnimations().some(anim =>
     importedAnims.includes(anim) && !/t[_-]?pose/i.test(anim.getName()) && anim.listChannels().length)) {

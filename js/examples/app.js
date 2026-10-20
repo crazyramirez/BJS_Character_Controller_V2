@@ -58,8 +58,9 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
 //     },
 //     // Optional: Remap animations and ranges using the configure callback
 //     configure: ({ animCtrl, filteredGroups }) => {
-//       // Change the walking animation to another one from the GLB
-//       animCtrl.setWalkAnim(filteredGroups[2]);
+//       // Change the walking animation to another one from the GLB (look clips up by name)
+//       const formalWalk = filteredGroups.find(g => cleanAnimName(g.name) === 'Walk_Formal_Loop');
+//       if (formalWalk) animCtrl.setWalkAnim(formalWalk);
 //       // Change the frame ranges for an animation
 //       animCtrl.setAnimationRanges('Walk_Loop', 0, 50);
 //     }

@@ -8,7 +8,7 @@ function exactArrayBuffer(buffer) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
-export function runProcessingJob(type, payload, { signal, timeoutMs = 120_000 } = {}) {
+export function runProcessingJob(type, payload, { signal, timeoutMs = 120_000, onProgress = null } = {}) {
   return new Promise((resolve, reject) => {
     // Processing is self-contained and needs no parent Node/V8 flags. An empty
     // list avoids forwarding eval-only or host-managed flags that a file-backed
@@ -31,7 +31,14 @@ export function runProcessingJob(type, payload, { signal, timeoutMs = 120_000 } 
     worker.once('exit', code => {
       if (!settled && code !== 0) finish(reject, new Error(`Processing worker exited with code ${code}.`));
     });
-    worker.once('message', message => {
+    worker.on('message', message => {
+      // Stage updates stream in while the job runs; only ok/error settles it.
+      if (message?.progress) {
+        if (!settled && typeof onProgress === 'function') {
+          try { onProgress(message.progress); } catch (_) { /* progress is advisory */ }
+        }
+        return;
+      }
       if (!message.ok) {
         const error = new Error(message.error?.message || 'Processing failed.');
         error.stack = message.error?.stack || error.stack;

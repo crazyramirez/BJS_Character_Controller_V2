@@ -491,8 +491,8 @@ async function loadCharacter(scene, shadow, camera, usePhysics) {
     keys: { JUMP: ['KeyK'] },           // Optional: remap keyboard controls directly
     config: { JUMP_PWR: 12 },           // Optional: override physical and camera parameters
     configure: ({ animCtrl, filteredGroups }) => {
-      // Optional: callback to remap animations or customize keyframe ranges
-      animCtrl.setWalkAnim(filteredGroups[15]);
+      // Optional: callback to remap animations or customize keyframe ranges (look clips up by name)
+      animCtrl.setWalkAnim(filteredGroups.find(g => cleanAnimName(g.name) === 'Walk_Formal_Loop'));
     }
   });
 }
@@ -526,7 +526,7 @@ const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, 
 
             <h3>Reference Example Templates</h3>
             <ul>
-              <li><strong>js/examples/app-minimal.js:</strong> Barebones boilerplate to see engine setup, capsule creation, mesh parenting, and basic constructor bindings.</li>
+              <li><strong>js/examples/app-minimal.js:</strong> Barebones boilerplate: engine, scene, ground and a single <code>createCharacter</code> call (camera, capsule, physics and controllers).</li>
               <li><strong>js/examples/app-complex.js:</strong> High-geometry environment demonstrating raycast grounding, stair climbing, and mesh slope alignment.</li>
               <li><strong>js/examples/app.js:</strong> Production loading flow including lighting rig, soft shadow maps, Aces Tonemapping, post-processing pipelines, and HUD syncing.</li>
             </ul>
@@ -584,7 +584,7 @@ localStorage.removeItem('use-physics');</div>
             <h3>Dynamic Animations Swapping & Retargeting</h3>
             <p>Reassign clips or crop keyframe ranges programmatically via the animation controller (<span class="info-kbd">animCtrl</span>):</p>
             <div class="info-code">// REMAP Animations -- You can setup different animation here
-animCtrl.setWalkAnim(filteredGroups[15]);
+animCtrl.setWalkAnim(filteredGroups.find(g => cleanAnimName(g.name) === 'Walk_Formal_Loop'));
 animCtrl.setAnimationRanges('Walk_Loop', 0, 15);
 animCtrl.setRunAnim(newRunAnimGroup);
 animCtrl.setIdleAnim(newIdleAnimGroup);</div>

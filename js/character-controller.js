@@ -19,6 +19,15 @@
 // 3. Setting play ranges (keyframes) on any animation:
 //    animCtrl.setAnimationRanges('Walk_Loop', startFrame, endFrame);
 // ═══════════════════════════════════════════════════════════
+//
+// QUICK INTEGRATION (see README "Quick start"):
+//   const player = await createCharacter(scene, { model: 'assets/character_animated.glb' });
+//   const npc = await createCharacter(scene, { model: 'assets/npc.glb', name: 'npc', input: 'none' });
+//   npc.charCtrl.setMoveInput(0, 1);           // AI / network driven movement
+//   npc.charCtrl.pressAction('JUMP');          // ... and actions
+//   player.charCtrl.onStateChangedObservable.add(({ state }) => console.log(state));
+//   player.dispose();
+// ═══════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════
 // CONFIGURABLE CHARACTER VARIABLES & SETTINGS
@@ -94,6 +103,157 @@ const DEFAULT_CHAR_CONFIG = {
   }
 };
 
+// ═══════════════════════════════════════════════════════════
+// BAKED CHARACTER PRESET ('bjs-character-preset/v1')
+// ═══════════════════════════════════════════════════════════
+// setupCharacter()/createCharacter() apply this preset when the app passes no
+// `preset` option. The Builder's "Download controller" replaces the next line
+// with the exported preset object; null keeps the stock behaviour.
+const BAKED_PRESET = null; // replaced by Builder "Download controller"
+
+const CHARACTER_PRESET_SCHEMA = 'bjs-character-preset/v1';
+
+// Type + fallback of every runtime config key (DEFAULT_CHAR_CONFIG.PHYSICS may
+// be replaced by a Builder export that lists fewer keys; these keep working).
+// type: 'number' | 'boolean' | 'boolnum' (boolean or number) | 'stride' (boolean | 'full' | 'scale')
+const CHAR_CONFIG_SCHEMA = {
+  GRAV: ['number', 22], JUMP_PWR: ['number', 9.5], SPD_WALK: ['number', 2.5], SPD_JOG: ['number', 3],
+  SPD_SPRINT: ['number', 5], SPD_CROUCH: ['number', 2], SPD_CROUCH_RUN: ['number', 3.2],
+  ACCEL: ['number', 14], DECEL: ['number', 16], ROT_SPD: ['number', 40], AIR_CONTROL: ['boolnum', false],
+  DYNAMIC_FOV: ['boolean', true], DYNAMIC_FOV_MAX: ['number', 0.10], CAM_TILT: ['boolean', false],
+  CAM_TILT_AMOUNT: ['number', 0.15], CAM_FOLLOW_LOCK: ['boolean', true], CAM_FOLLOW_PITCH: ['number', 1.047],
+  CAM_FOLLOW_DIST: ['number', 8.0], CAM_LOCK_PITCH: ['boolean', false], JOYSTICK_LOCK_X: ['boolean', false],
+  DOUBLE_JUMP_ENABLED: ['boolean', true], SPEED_MULTIPLIER: ['number', 1.0], PLAY_PARTICLES: ['boolean', true],
+  MOVING_PLATFORMS: ['boolean', true], HEAD_LOOK: ['boolean', true], FOOT_PLANTING: ['boolean', true],
+  TWIST_DRIVER: ['boolean', true], MANTLE_ENABLED: ['boolean', true], COYOTE_TIME: ['number', 0.12],
+  JUMP_BUFFER: ['number', 0.15], JUMP_CUT: ['boolean', true], JUMP_CUT_MULT: ['number', 2.5],
+  ACCEL_CURVE: ['boolean', true], STRIDE_MATCHING: ['stride', true], UPPER_BODY_ACTIONS: ['boolean', false],
+};
+const CHAR_CONFIG_WARNED = new Set();
+
+/** Every valid runtime config key: the schema plus any key of DEFAULT_CHAR_CONFIG.PHYSICS. */
+function charConfigKeys() {
+  return [...new Set([...Object.keys(CHAR_CONFIG_SCHEMA), ...Object.keys(DEFAULT_CHAR_CONFIG.PHYSICS || {})])];
+}
+
+function charConfigTypeOk(key, value) {
+  const spec = CHAR_CONFIG_SCHEMA[key];
+  const type = spec ? spec[0] : typeof (DEFAULT_CHAR_CONFIG.PHYSICS || {})[key];
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  if (type === 'boolnum') return typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+  if (type === 'stride') return typeof value === 'boolean' || value === 'full' || value === 'scale';
+  return typeof value === type;
+}
+
+/**
+ * Validate a partial runtime config: unknown keys and wrong value types are
+ * reported once (console.warn) and dropped. Returns the accepted subset.
+ */
+function validateCharConfig(partial, source = 'config') {
+  const valid = {};
+  if (!partial || typeof partial !== 'object') return valid;
+  const known = new Set(charConfigKeys());
+  for (const [key, value] of Object.entries(partial)) {
+    if (value === undefined) continue;
+    let problem = null;
+    if (!known.has(key)) problem = `unknown key "${key}" ignored`;
+    else if (!charConfigTypeOk(key, value)) problem = `"${key}" has an invalid value (${JSON.stringify(value)}); ignored`;
+    if (problem) {
+      const id = `${source}:${problem}`;
+      if (!CHAR_CONFIG_WARNED.has(id)) {
+        CHAR_CONFIG_WARNED.add(id);
+        console.warn(`[CharCtrl] ${source}: ${problem}.`);
+      }
+      continue;
+    }
+    valid[key] = value;
+  }
+  return valid;
+}
+
+// ═══════════════════════════════════════════════════════════
+// STANDARD ANIMATION SLOTS (same keywords as the Builder's auto-mapper)
+// ═══════════════════════════════════════════════════════════
+// Clips are matched by exact clean name first ("Armature|Walk_Loop" → Walk_Loop),
+// then by keyword. `core` slots drive the locomotion blend tree.
+const STANDARD_ANIM_SLOTS = [
+  { key: 'Idle_Loop', label: 'Idle Loop', defaultKeyword: /^(?!.*crouch).*idle/i, core: true, loop: true },
+  { key: 'Walk_Loop', label: 'Walk Loop', defaultKeyword: /^(?!.*crouch)(?!.*formal).*walk/i, core: true, loop: true },
+  { key: 'Sprint_Loop', label: 'Sprint / Run Loop', defaultKeyword: /^(?!.*crouch).*(sprint|run)/i, core: true, loop: true },
+  { key: 'Crouch_Idle_Loop', label: 'Crouch Idle Loop', defaultKeyword: /crouch.*idle/i, loop: true },
+  { key: 'Crouch_Fwd_Loop', label: 'Crouch Forward Loop', defaultKeyword: /crouch.*(walk|fwd)/i, loop: true },
+  { key: 'Jump_Start', label: 'Jump Takeoff', defaultKeyword: /jump.*(start|takeoff|up)/i },
+  { key: 'Jump_Loop', label: 'Jump Mid-Air Loop', defaultKeyword: /jump.*(loop|mid|air)/i, loop: true },
+  { key: 'Jump_Land', label: 'Jump Land', defaultKeyword: /jump.*(land|ground)/i },
+  { key: 'Roll', label: 'Dodge Roll', defaultKeyword: /roll/i },
+  { key: 'Punch', label: 'Punch', defaultKeyword: /^(?!.*jab)(?!.*cross).*punch/i },
+  { key: 'Punch_Jab', label: 'Punch Jab', defaultKeyword: /jab/i },
+  { key: 'Punch_Cross', label: 'Punch Cross', defaultKeyword: /cross/i },
+  { key: 'Spell_Simple_Enter', label: 'Spell Enter', defaultKeyword: /spell.*enter/i },
+  { key: 'Spell_Simple_Shoot', label: 'Spell Shoot / Cast', defaultKeyword: /spell.*(shoot|cast)/i },
+  { key: 'Spell_Simple_Exit', label: 'Spell Exit', defaultKeyword: /spell.*exit/i },
+  { key: 'Interact', label: 'Interact / Pick up', defaultKeyword: /interact/i },
+];
+
+// ═══════════════════════════════════════════════════════════
+// OBSERVABLES (Babylon Observable when available, tiny fallback otherwise)
+// ═══════════════════════════════════════════════════════════
+class CharLiteObservable {
+  constructor() { this.observers = []; }
+  add(callback) {
+    if (typeof callback !== 'function') return null;
+    const observer = { callback, unregisterOnNextCall: false };
+    this.observers.push(observer);
+    return observer;
+  }
+  addOnce(callback) {
+    const observer = this.add(callback);
+    if (observer) observer.unregisterOnNextCall = true;
+    return observer;
+  }
+  remove(observer) {
+    const index = this.observers.indexOf(observer);
+    if (index < 0) return false;
+    this.observers.splice(index, 1);
+    return true;
+  }
+  removeCallback(callback) {
+    const observer = this.observers.find(o => o.callback === callback);
+    return observer ? this.remove(observer) : false;
+  }
+  notifyObservers(data) {
+    for (const observer of [...this.observers]) {
+      if (observer.unregisterOnNextCall) this.remove(observer);
+      observer.callback(data, {});
+    }
+    return true;
+  }
+  hasObservers() { return this.observers.length > 0; }
+  clear() { this.observers = []; }
+}
+
+function createCharObservable() {
+  return (typeof BABYLON !== 'undefined' && BABYLON && typeof BABYLON.Observable === 'function')
+    ? new BABYLON.Observable() : new CharLiteObservable();
+}
+
+/** Notify without letting one failing handler break the controller loop. */
+function notifyCharObservable(observable, data) {
+  if (!observable || (observable.hasObservers && !observable.hasObservers())) return;
+  try {
+    observable.notifyObservers(typeof data === 'function' ? data() : data);
+  } catch (error) {
+    console.error('[CharCtrl] observer failed:', error);
+  }
+}
+
+/** Flag a node as part of a controller character (ground rays of every controller ignore it). */
+function flagCharacterNode(node) {
+  if (!node) return;
+  if (node.metadata == null) node.metadata = {};
+  if (typeof node.metadata === 'object') node.metadata.bjsCharacter = true;
+}
+
 
 // ═══════════════════════════════════════════════════════════
 // STATES
@@ -117,6 +277,14 @@ const ACTION_STATES = new Set([
 ]);
 
 const KEYS = DEFAULT_CHAR_CONFIG.KEYS;
+
+// Built-in gameplay actions (KEYS names). pressAction()/releaseAction() drive
+// them through virtual key codes, independent of the physical keyboard.
+const CHAR_BUILTIN_ACTIONS = new Set([
+  'MOVE_FORWARD', 'MOVE_BACKWARD', 'MOVE_LEFT', 'MOVE_RIGHT',
+  'CROUCH', 'SPRINT', 'JUMP', 'ROLL', 'PUNCH', 'SPELL', 'INTERACT',
+]);
+const CHAR_VIRTUAL_KEY_PREFIX = '__action__';
 
 // ═══════════════════════════════════════════════════════════
 // UTILS & MATH HELPERS
@@ -939,7 +1107,9 @@ class LocoBlendGroup {
     const char = this.anim.charCtrl;
 
     if (char) {
-      const backward = char._isPressed('MOVE_BACKWARD') || (char.isTouch && char.touchVector.y < -0.2);
+      const backward = typeof char._isMovingBackward === 'function'
+        ? char._isMovingBackward()
+        : (char._isPressed('MOVE_BACKWARD') || (char.isTouch && char.touchVector.y < -0.2));
       const sign = (char.CAM_FOLLOW_LOCK && backward) ? -1 : 1;
       const ratios = this._strideRatios(char, walk, sprint, this.speed) || this._legacyRatios(char);
 
@@ -998,7 +1168,13 @@ class LocoBlendGroup {
 // ANIMATION CONTROLLER
 // ═══════════════════════════════════════════════════════════
 class AnimCtrl {
-  constructor(groups, scene) {
+  /**
+   * @param groups Array of AnimationGroups (mapped by clean name, then by
+   *   keyword for missing standard slots) or a pre-populated Map name → group.
+   * @param options { autoMap = true, warnMissing = true, hud }
+   */
+  constructor(groups, scene, options = {}) {
+    options = options || {};
     this.scene = scene;
     this.cur = null;
     this.curName = '';
@@ -1006,9 +1182,13 @@ class AnimCtrl {
     this.activeWeight = 1.0;
     this.customWeights = new Map(); // Store specific defaults here
     this.onAnimationChange = null;  // Callback for decoupling UI
+    this.hud = options.hud;         // false → never touch the DOM (#hud-anim)
+    this.onAnimationChangedObservable = createCharObservable(); // { name, previous, character }
+    this.onAnimationEventObservable = createCharObservable();   // { type, frame, label, animName, character }
     this._warnedMissing = new Set();
     this._endObservers = new Map();
     this._disposed = false;
+    this.mappingReport = { exact: [], keyword: [], missing: [] };
 
     // Support both pre-populated Map or a simple Array of AnimationGroups
     if (groups instanceof Map) {
@@ -1025,6 +1205,16 @@ class AnimCtrl {
       });
     } else {
       this.g = new Map();
+    }
+
+    // Standard slots missing by exact name fall back to the Builder keywords.
+    this.mappingReport = options.autoMap === false || !Array.isArray(groups)
+      ? this._mappingReport([])
+      : this._autoMapStandardSlots();
+    this._missingWarnTimer = null;
+    if (options.warnMissing !== false && Array.isArray(groups) && groups.length && typeof setTimeout === 'function') {
+      // Deferred so synchronous remaps right after construction count.
+      this._missingWarnTimer = setTimeout(() => { this._missingWarnTimer = null; this._warnMissingCoreSlots(); }, 0);
     }
 
     // console.log('[AnimCtrl] loaded:', [...this.g.keys()].sort().join(', '));
@@ -1054,6 +1244,64 @@ class AnimCtrl {
     this._eventObserver = scene.onBeforeRenderObservable.add(() => this._updateAnimationEvents());
 
     this.resetInactiveWeights();
+  }
+
+  _mappingReport(keyword) {
+    const keywordSlots = new Set(keyword.map(k => k.slot));
+    return {
+      exact: STANDARD_ANIM_SLOTS.filter(s => this.g.has(s.key) && !keywordSlots.has(s.key)).map(s => s.key),
+      keyword,
+      missing: STANDARD_ANIM_SLOTS.filter(s => !this.g.has(s.key)).map(s => s.key),
+    };
+  }
+
+  /**
+   * Map standard slots that have no exact-name clip by keyword (the Builder's
+   * STANDARD_ANIM_KEYS table). Unused clips win over clips another slot already
+   * took, loop slots avoid directional/transition variants, then the shortest
+   * name wins. A clip is only shared by two slots when nothing else matches
+   * (cloned so both can play at once, e.g. inside the locomotion blend tree).
+   */
+  _autoMapStandardSlots() {
+    const slotKeys = new Set(STANDARD_ANIM_SLOTS.map(s => s.key));
+    const clips = [...this.g.keys()].filter(n => n !== 'Locomotion' && !slotKeys.has(n));
+    const used = new Map(); // clip name → slot that took it
+    const keyword = [];
+    for (const slot of STANDARD_ANIM_SLOTS) {
+      if (this.g.has(slot.key)) continue;
+      const candidates = clips.filter(name => slot.defaultKeyword.test(name));
+      if (!candidates.length) continue;
+      const variant = /back|bwd|left|right|strafe|turn|start|stop|_to_/i;
+      const score = name => (used.has(name) ? 1000 : 0) + (slot.loop && variant.test(name) ? 100 : 0) + name.length;
+      const clip = candidates.reduce((best, name) => (score(name) < score(best) ? name : best));
+      let group = this.g.get(clip);
+      const sharedWith = used.get(clip);
+      if (sharedWith && group && typeof group.clone === 'function') {
+        group = group.clone(`${group.name}__${slot.key}`);
+        group.__isSharedClone = true;
+        if (typeof group.stop === 'function') group.stop();
+      }
+      if (!group) continue;
+      this.g.set(slot.key, group);
+      if (!sharedWith) used.set(clip, slot.key);
+      keyword.push(sharedWith ? { slot: slot.key, clip, sharedWith } : { slot: slot.key, clip });
+    }
+    return this._mappingReport(keyword);
+  }
+
+  /** Warn once when Idle/Walk/Sprint have no clip (locomotion would not blend). */
+  _warnMissingCoreSlots() {
+    if (this._disposed) return [];
+    this.mappingReport.missing = STANDARD_ANIM_SLOTS.filter(s => !this.g.has(s.key)).map(s => s.key);
+    const missing = STANDARD_ANIM_SLOTS.filter(s => s.core && !this.g.has(s.key)).map(s => s.key);
+    if (missing.length && !this._warnedCoreSlots) {
+      this._warnedCoreSlots = true;
+      const names = [...this.g.keys()].filter(n => n !== 'Locomotion');
+      const list = names.slice(0, 12).join(', ') + (names.length > 12 ? ', …' : '');
+      console.warn(`[AnimCtrl] No clip for ${missing.join(', ')} (clips: ${list || 'none'}). ` +
+        'Map them with a preset { animations: { Walk_Loop: { clip: "..." } } } or animCtrl.setAnimation(slot, group).');
+    }
+    return missing;
   }
 
   // Fire markers whose frame was crossed since the previous render tick.
@@ -1116,13 +1364,25 @@ class AnimCtrl {
   }
 
   _fireAnimationEvent(evt, animName) {
+    const character = this.charCtrl ? this.charCtrl.name : undefined;
+    const detail = { ...evt, animName, character };
     try {
       if (this.onAnimationEvent) this.onAnimationEvent(evt, animName);
       if (this.charCtrl?.onAnimationEvent) this.charCtrl.onAnimationEvent(evt, animName);
-      window.dispatchEvent(new CustomEvent('charanimevent', { detail: { ...evt, animName } }));
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('charanimevent', { detail }));
+      }
     } catch (e) {
       console.error('[AnimCtrl] animation event handler failed:', e);
     }
+    notifyCharObservable(this.onAnimationEventObservable, detail);
+    if (this.charCtrl) notifyCharObservable(this.charCtrl.onAnimationEventObservable, detail);
+  }
+
+  /** DOM HUD writes (#hud-anim) are allowed unless hud:false (here or on the CharCtrl). */
+  _hudEnabled() {
+    if (this.hud === false || (this.charCtrl && this.charCtrl._hud === false)) return false;
+    return typeof document !== 'undefined' && !!document && typeof document.getElementById === 'function';
   }
 
   resetInactiveWeights() {
@@ -1306,6 +1566,7 @@ class AnimCtrl {
       this.activeTransitions.push(transition);
     }
 
+    const previousName = this.curName;
     this.cur = incoming;
     this.curName = name;
     // Seed event tracking at the clip start so frame-0 markers fire
@@ -1313,12 +1574,14 @@ class AnimCtrl {
 
     if (this.onAnimationChange) {
       this.onAnimationChange(name);
-    } else {
+    } else if (this._hudEnabled()) {
       const hudAnim = document.getElementById('hud-anim');
       if (hudAnim) {
         hudAnim.textContent = name;
       }
     }
+    notifyCharObservable(this.onAnimationChangedObservable,
+      () => ({ name, previous: previousName, character: this.charCtrl ? this.charCtrl.name : undefined }));
 
     if (onEnd && !loop) {
       this._setEndObserver(incoming, onEnd);
@@ -1358,10 +1621,30 @@ class AnimCtrl {
     if (this._eventObserver) this.scene.onBeforeRenderObservable.remove(this._eventObserver);
     for (const group of this._endObservers.keys()) this._clearEndObserver(group);
     this._evtLastFrame.clear();
+    if (this._missingWarnTimer !== null && this._missingWarnTimer !== undefined) clearTimeout(this._missingWarnTimer);
+    this._missingWarnTimer = null;
+    this.onAnimationChangedObservable?.clear?.();
+    this.onAnimationEventObservable?.clear?.();
     this.charCtrl = null;
   }
 
   has(name) { return this.g.has(name); }
+
+  /**
+   * Unmap a slot (the "None" mapping): the clip stops and the slot is removed,
+   * exactly like the Builder does for an explicit None selection.
+   */
+  clearAnimation(name) {
+    const ag = this.g.get(name);
+    if (!ag || ag === this.locoGroup) return false;
+    if (typeof ag.stop === 'function') ag.stop();
+    if (typeof ag.setWeightForAllAnimatables === 'function') ag.setWeightForAllAnimatables(0);
+    this.g.delete(name);
+    if (this.cur === ag) { this.cur = null; this.curName = ''; }
+    if (ag.__isSharedClone && ![...this.g.values()].includes(ag) && typeof ag.dispose === 'function') ag.dispose();
+    if (this.locoGroup) this.locoGroup._strideCache.clear();
+    return true;
+  }
 
   setAnimation(name, animationGroup) {
     // If this group is already mapped to another action, clone it so each
@@ -1674,49 +1957,94 @@ class AnimCtrl {
 // CHARACTER CONTROLLER
 // ═══════════════════════════════════════════════════════════
 class CharCtrl {
+  /**
+   * @param root       capsule collider (parent of the visual mesh)
+   * @param visualMesh visual character root (child of `root`)
+   * @param camera     ArcRotateCamera; may be null when options.input === 'none'
+   * @param anim       AnimCtrl
+   * @param options    { usePhysics, keys, config, callbacks, touch, gamepad,
+   *   gamepadIndex, input: 'player' | 'none', hud: 'auto' | false, name,
+   *   cameraControl, onConfigChanged(changes, source), dustTexture,
+   *   persistPreferences, storage }
+   */
   constructor(root, visualMesh, camera, anim, scene, options = {}) {
-    if (!camera || !Number.isFinite(camera.alpha) || !Number.isFinite(camera.beta) || !Number.isFinite(camera.radius)) {
+    options = options || {};
+    if (options.input !== undefined && options.input !== 'player' && options.input !== 'none') {
+      console.warn(`[CharCtrl] Unknown input mode "${options.input}" — using 'player'.`);
+    }
+    const inputMode = options.input === 'none' ? 'none' : 'player';
+    const validCamera = !!camera && Number.isFinite(camera.alpha) && Number.isFinite(camera.beta) && Number.isFinite(camera.radius);
+    if (!validCamera && !(camera == null && inputMode === 'none')) {
       throw new TypeError('CharCtrl requires a Babylon.js ArcRotateCamera (alpha, beta and radius must be finite).');
     }
+    this.name = typeof options.name === 'string' && options.name ? options.name : 'player';
+    this._inputMode = inputMode;
+    // HUD: 'auto' writes the legacy DOM ids when present; false never touches the DOM.
+    // AI/network characters (input:'none') default to no HUD so they cannot overwrite the player's.
+    this._hud = options.hud !== undefined ? options.hud : (inputMode === 'none' ? false : 'auto');
+    this._onConfigChanged = typeof options.onConfigChanged === 'function' ? options.onConfigChanged : null;
+
+    // UI-agnostic events (always fired, whatever the HUD mode)
+    this.onStateChangedObservable = createCharObservable();     // { state, previous, character }
+    this.onSpeedChangedObservable = createCharObservable();     // { speed, previous, character }
+    this.onComboObservable = createCharObservable();            // { text, visible, character }
+    this.onAnimationEventObservable = createCharObservable();   // { type, frame, label, animName, character }
+    this.onConfigChangedObservable = createCharObservable();    // { changes, source, character }
+    this._lastNotifiedSpeed = 0;
+
     this.root = root; // Capsule collider parent mesh
     this.visualMesh = visualMesh; // Visual character mesh
-    this.camera = camera;
+    this.camera = validCamera ? camera : null;
+    // A camera passed in is driven by the controller (follow, zoom, FOV, tilt)
+    // unless cameraControl:false (then it is only read for camera-relative input).
+    this._cameraControl = !!this.camera && options.cameraControl !== false;
     this._destroyed = false;
     this._timers = new Set();
     this._intervals = new Set();
-    this._cameraStateBeforeController = {
-      alpha: camera.alpha,
-      beta: camera.beta,
-      radius: camera.radius,
-      lowerRadiusLimit: camera.lowerRadiusLimit,
-      upperRadiusLimit: camera.upperRadiusLimit,
-      wheelPrecision: camera.wheelPrecision,
-      pinchPrecision: camera.pinchPrecision,
-      panningSensibility: camera.panningSensibility,
-      checkCollisions: camera.checkCollisions,
-      angularSensibilityX: camera.angularSensibilityX,
-      angularSensibilityY: camera.angularSensibilityY,
-      fov: camera.fov,
-      upVector: camera.upVector?.clone ? camera.upVector.clone() : null,
-    };
-    const attachedInputs = camera.inputs?.attached;
-    const wheelInput = attachedInputs?.mousewheel || attachedInputs?.mouseWheel;
-    const pointerInput = attachedInputs?.pointers || attachedInputs?.pointersInput;
-    this._cameraInputStateBeforeController = {
-      wheelInput,
-      pointerInput,
-      wheelPrecision: wheelInput?.wheelPrecision,
-      wheelPrecisionX: wheelInput?.wheelPrecisionX,
-      wheelPrecisionY: wheelInput?.wheelPrecisionY,
-      wheelPrecisionZ: wheelInput?.wheelPrecisionZ,
-      pinchPrecision: pointerInput?.pinchPrecision,
-    };
-    if (this.camera) {
+    if (this._cameraControl) {
+      this._cameraStateBeforeController = {
+        alpha: camera.alpha,
+        beta: camera.beta,
+        radius: camera.radius,
+        lowerRadiusLimit: camera.lowerRadiusLimit,
+        upperRadiusLimit: camera.upperRadiusLimit,
+        wheelPrecision: camera.wheelPrecision,
+        pinchPrecision: camera.pinchPrecision,
+        panningSensibility: camera.panningSensibility,
+        checkCollisions: camera.checkCollisions,
+        angularSensibilityX: camera.angularSensibilityX,
+        angularSensibilityY: camera.angularSensibilityY,
+        fov: camera.fov,
+        upVector: camera.upVector?.clone ? camera.upVector.clone() : null,
+      };
+      const attachedInputs = camera.inputs?.attached;
+      const wheelInput = attachedInputs?.mousewheel || attachedInputs?.mouseWheel;
+      const pointerInput = attachedInputs?.pointers || attachedInputs?.pointersInput;
+      this._cameraInputStateBeforeController = {
+        wheelInput,
+        pointerInput,
+        wheelPrecision: wheelInput?.wheelPrecision,
+        wheelPrecisionX: wheelInput?.wheelPrecisionX,
+        wheelPrecisionY: wheelInput?.wheelPrecisionY,
+        wheelPrecisionZ: wheelInput?.wheelPrecisionZ,
+        pinchPrecision: pointerInput?.pinchPrecision,
+      };
       this.camera.checkCollisions = false;
+    } else {
+      this._cameraStateBeforeController = null;
+      this._cameraInputStateBeforeController = null;
     }
     this.anim = anim;
     anim.charCtrl = this;
     this.scene = scene;
+
+    // Every node of a controller character is flagged so ground/wall rays of
+    // all controllers skip it (other characters are not floors).
+    flagCharacterNode(root);
+    flagCharacterNode(visualMesh);
+    if (visualMesh && typeof visualMesh.getChildMeshes === 'function') {
+      for (const mesh of visualMesh.getChildMeshes(false)) flagCharacterNode(mesh);
+    }
 
     // Key Bindings
     this.keyBindings = Object.assign({}, KEYS, options.keys || {});
@@ -1728,8 +2056,13 @@ class CharCtrl {
       onCombo: null
     }, options.callbacks || {});
 
-    // Physics & Speeds Config
-    const config = Object.assign({}, DEFAULT_CHAR_CONFIG.PHYSICS, options.config || {});
+    // Physics & Speeds Config (unknown keys / wrong types warn once and are ignored)
+    // (CAM_FOLLOW_PITCH / CAM_FOLLOW_DIST keep their historical fallbacks below.)
+    const schemaDefaults = Object.fromEntries(Object.entries(CHAR_CONFIG_SCHEMA)
+      .filter(([key]) => key !== 'CAM_FOLLOW_PITCH' && key !== 'CAM_FOLLOW_DIST')
+      .map(([key, spec]) => [key, spec[1]]));
+    const config = Object.assign(schemaDefaults, DEFAULT_CHAR_CONFIG.PHYSICS, validateCharConfig(options.config, 'config'));
+
 
     // Runtime configuration is authoritative. Browser persistence is opt-in so
     // an exported project cannot be silently changed by stale settings left by
@@ -1774,7 +2107,7 @@ class CharCtrl {
     this.CAM_FOLLOW_PITCH = savedCamFollowPitch !== null ? parseFloat(savedCamFollowPitch) : (config.CAM_FOLLOW_PITCH !== undefined ? config.CAM_FOLLOW_PITCH : Math.PI / 3.0);
 
     const savedCamFollowDist = stored('cam-follow-dist');
-    this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : this.camera.radius);
+    this.CAM_FOLLOW_DIST = savedCamFollowDist !== null ? parseFloat(savedCamFollowDist) : (config.CAM_FOLLOW_DIST !== undefined ? config.CAM_FOLLOW_DIST : (this.camera ? this.camera.radius : 8.0));
 
     const savedCamLockPitch = stored('cam-lock-pitch');
     this.CAM_LOCK_PITCH = savedCamLockPitch !== null ? (savedCamLockPitch === 'true') : (config.CAM_LOCK_PITCH !== undefined ? config.CAM_LOCK_PITCH : false);
@@ -1806,6 +2139,9 @@ class CharCtrl {
     this.ACCEL_CURVE = config.ACCEL_CURVE !== undefined ? config.ACCEL_CURVE : true;
     this.STRIDE_MATCHING = config.STRIDE_MATCHING !== undefined ? config.STRIDE_MATCHING : true;
     this.UPPER_BODY_ACTIONS = config.UPPER_BODY_ACTIONS !== undefined ? config.UPPER_BODY_ACTIONS : false;
+    if (!this.camera && !(options.config && options.config.CAM_FOLLOW_LOCK === true)) {
+      this.CAM_FOLLOW_LOCK = false; // no camera to lock behind: world-relative steering
+    }
     this._coyoteTimer = 0;        // seconds since last grounded (jump still valid while < COYOTE_TIME)
     this._jumpBufferTimer = -1;   // seconds since last JUMP press (<0 = no buffered press); consumed on landing
     this._jumpCutApplied = false; // whether the current ascent has already been shortened by a release
@@ -1822,7 +2158,7 @@ class CharCtrl {
     // console.log("[CharCtrl] Config loaded: FOLLOW_LOCK =", this.CAM_FOLLOW_LOCK, " | DYNAMIC_FOV =", this.DYNAMIC_FOV, " | FOV_MAX =", this.DYNAMIC_FOV_MAX, " | FOLLOW_PITCH =", this.CAM_FOLLOW_PITCH, " | FOLLOW_DIST =", this.CAM_FOLLOW_DIST);
 
     // Apply Hide Cursor only when the opt-in storage contains the preference.
-    if (stored('hide-cursor') === 'true') {
+    if (stored('hide-cursor') === 'true' && this._hudEnabled() && document.body) {
       document.body.classList.add('cursor-hidden');
     }
 
@@ -1883,14 +2219,18 @@ class CharCtrl {
 
     this.keys = {};
     this.touchVector = { x: 0, y: 0 };
-    this.gamepadEnabled = options.gamepad !== false;
+    // input:'none' (AI / network) never reads devices: drive it with setMoveInput/pressAction.
+    this.gamepadEnabled = inputMode === 'player' && options.gamepad !== false;
+    this.gamepadIndex = Number.isInteger(options.gamepadIndex) ? options.gamepadIndex : null;
     this.gamepadVector = { x: 0, y: 0 };
+    this.virtualMove = { x: 0, z: 0 }; // setMoveInput() analog vector
     this._gamepadButtons = new Map();
     this.isTouch = false;
     this._touchListeners = [];
     this._pointerDragging = false;
+    this._dustTextureUrl = typeof options.dustTexture === 'string' ? options.dustTexture : 'assets/smoke.png';
 
-    this._setupInput();
+    if (inputMode === 'player') this._setupInput();
 
     // Setup procedural dust particles
     this._setupDustParticles();
@@ -1900,14 +2240,16 @@ class CharCtrl {
     // iPad OS 13+ spoofs a Mac UA — can't rely on UA alone.
     // Strategy: combine UA check + coarse-pointer media query.
     // Real touch devices (phones/tablets) have coarse pointer; desktop mice are fine.
-    const hasTouchAPI = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
-    const hasCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
-    const isMobileUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    // iPad OS 13+ spoofs Mac UA but still has coarse pointer
-    const hasTouch = hasTouchAPI && (hasCoarsePointer || isMobileUA);
-    this.isTouch = hasTouch;
-    if (this.isTouch) {
-      document.body.classList.add('touch-device');
+    if (inputMode === 'player' && typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+      const hasTouchAPI = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
+      const hasCoarsePointer = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+      const isMobileUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+      // iPad OS 13+ spoofs Mac UA but still has coarse pointer
+      const hasTouch = hasTouchAPI && (hasCoarsePointer || isMobileUA);
+      this.isTouch = hasTouch;
+    }
+    if (this.isTouch && this._hudEnabled()) {
+      if (document.body) document.body.classList.add('touch-device');
       // Wait slightly for DOM loading
       this._setTimeout(() => this._setupTouchHUD(), 200);
     }
@@ -1933,7 +2275,7 @@ class CharCtrl {
     this._lastSpeed = this.speed;
     this._camShake = 0;
     this._bobTime = 0;
-    this._initialCameraFOV = this.camera.fov || 0.8;
+    this._initialCameraFOV = (this.camera && this.camera.fov) || 0.8;
     this._timeSinceSpawn = 0;
 
     // Cache initial visual mesh yaw rotation to preserve imports & orientations
@@ -1947,158 +2289,19 @@ class CharCtrl {
     this._updateObserver = scene.onBeforeRenderObservable.add(() => this._update());
 
     // Track last known alpha/beta/radius to compute mouse/zoom deltas each frame
-    this._lastCameraAlpha = this.camera.alpha;
-    this._lastCameraBeta = this.camera.beta;
-    this._lastCameraRadius = this.camera.radius;
+    this._lastCameraAlpha = this.camera ? this.camera.alpha : 0;
+    this._lastCameraBeta = this.camera ? this.camera.beta : 0;
+    this._lastCameraRadius = this.camera ? this.camera.radius : 0;
 
-    this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => {
-      // Sync camera radius zoom updates (wheel, trackpad, pinch) back to CAM_FOLLOW_DIST and HUD
-      const now = performance.now();
-      const isWheelZooming = (now - (this._lastWheelTime || 0)) < 250;
-      const isTouchPinchZooming = (this._touchCount !== undefined && this._touchCount >= 2);
-      const isUserZooming = isWheelZooming || isTouchPinchZooming;
-
-      // Keep camera zoom speed, limits, and sensitivities in sync with character scale Y
-      const scaleY = this._capScaleY || 1.0;
-      if (this.camera) {
-        this.camera.lowerRadiusLimit = 2 * scaleY;
-        this.camera.upperRadiusLimit = 20 * scaleY;
-        this.camera.wheelPrecision = 55 / scaleY;
-        this.camera.pinchPrecision = 55 / scaleY;
-        if (this.camera.inputs && this.camera.inputs.attached) {
-          const mw = this.camera.inputs.attached.mousewheel || this.camera.inputs.attached.mouseWheel;
-          if (mw) {
-            mw.wheelPrecision = 55 / scaleY;
-            if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55 / scaleY;
-            if (mw.wheelPrecisionX !== undefined) mw.wheelPrecisionX = 55 / scaleY;
-            if (mw.wheelPrecisionZ !== undefined) mw.wheelPrecisionZ = 55 / scaleY;
-          }
-          const ptrs = this.camera.inputs.attached.pointers || this.camera.inputs.attached.pointersInput;
-          if (ptrs) {
-            ptrs.pinchPrecision = 55 / scaleY;
-          }
-        }
-        this.camera.panningSensibility = 1000 / scaleY;
-        if (!this.CAM_FOLLOW_LOCK) {
-          this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
-        }
-        this.camera.angularSensibilityY = (this._originalSensibilityY || 1000) / scaleY;
-      }
-
-      const radiusDelta = this.camera.radius - this._lastCameraRadius;
-      if (isUserZooming && Math.abs(radiusDelta) > 0.0001) {
-        const slider = document.getElementById('slider-cam-dist');
-        const minVal = slider ? parseFloat(slider.min) : 2;
-        const maxVal = slider ? parseFloat(slider.max) : 15;
-        this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
-        this._baseCamFollowDist = this.CAM_FOLLOW_DIST / (this._capScaleY || 1.0);
-        this._setStoredPreference('cam-follow-dist', this.CAM_FOLLOW_DIST);
-
-        const label = document.getElementById('cam-dist-val');
-        if (slider) {
-          slider.value = this.CAM_FOLLOW_DIST;
-        }
-        if (window.physicsConfig) {
-          window.physicsConfig.CAM_FOLLOW_DIST = this.CAM_FOLLOW_DIST;
-        }
-        if (typeof window.updateExportCode === 'function') {
-          window.updateExportCode();
-        }
-        if (label) {
-          label.textContent = this.CAM_FOLLOW_DIST.toFixed(1) + 'm';
-        }
-      }
-
-      // Sync manual camera pitch drag back to CAM_FOLLOW_PITCH and sync HUD in both modes!
-      const betaDelta = this.camera.beta - this._lastCameraBeta;
-      if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
-        // Block pitch if CAM_LOCK_PITCH is enabled (horizontal-only drag)
-        if (this.CAM_LOCK_PITCH) {
-          this.camera.beta = this._lastCameraBeta;
-        } else if (!this.grounded && !this.AIR_CONTROL) {
-          // Block manual camera pitch in the air if air control is disabled
-          this.camera.beta = this._lastCameraBeta;
-        } else {
-          const lo = this.camera.lowerBetaLimit || 0.05;
-          const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
-          this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.camera.beta));
-          this._setStoredPreference('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
-          // Sync HUD slider and label
-          const slider = document.getElementById('slider-cam-pitch');
-          const label = document.getElementById('cam-pitch-val');
-          if (slider) {
-            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
-            slider.value = deg;
-          }
-          if (window.physicsConfig) {
-            window.physicsConfig.CAM_FOLLOW_PITCH = this.CAM_FOLLOW_PITCH;
-          }
-          if (typeof window.updateExportCode === 'function') {
-            window.updateExportCode();
-          }
-          if (label) {
-            const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
-            label.textContent = deg + '°';
-          }
-        }
-      }
-
-      // Enforce configured radius and pitch in all modes when not dragging to maintain consistency and prevent drifting
-      this.camera.radius = this.CAM_FOLLOW_DIST;
-      if (!this._pointerDragging) {
-        this.camera.beta = this.CAM_FOLLOW_PITCH;
-      }
-
-      if (this.CAM_FOLLOW_LOCK) {
-        // Restore full mouse sensitivity, adapted to character scale
-        const scaleY = this._capScaleY || 1.0;
-        this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
-
-        // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
-        const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
-        if (this._pointerDragging && Math.abs(alphaDelta) > 0.0001) {
-          // Block manual rotation in the air if air control is disabled
-          if (!this.grounded && !this.AIR_CONTROL) {
-            this.camera.alpha = this._lastCameraAlpha;
-          } else {
-            this.rotY -= alphaDelta * this.SPEED_MULTIPLIER;
-            if (this.usePhysics) {
-              this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
-            } else {
-              this.root.rotation.y = this.rotY;
-            }
-            this._lastYawTurnTime = performance.now();
-          }
-        }
-
-        // Push camera alpha to match rotY (single source of truth)
-        const dt = this.scene.getEngine().getDeltaTime() / 1000;
-        if (dt > 0 && dt < 0.1) {
-          const targetAlpha = -this.rotY - Math.PI / 2;
-          const rate = (this.speed < 0.1) ? 38 : 16; // Much more responsive (snappy) when stopped, smooth when moving
-          this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-rate * dt));
-        }
-        this._lastCameraAlpha = this.camera.alpha;
-        this._lastCameraBeta = this.camera.beta;
-      } else {
-        // Under standard camera mode, if air control is false and they are in mid-air, lock camera alpha/beta!
-        if (!this.grounded && !this.AIR_CONTROL) {
-          this.camera.alpha = this._lastCameraAlpha;
-          this.camera.beta = this._lastCameraBeta;
-        } else {
-          this._lastCameraAlpha = this.camera.alpha;
-          this._lastCameraBeta = this.camera.beta;
-        }
-      }
-
-      this._lastCameraRadius = this.camera.radius;
-    });
+    if (this._cameraControl) {
+      this._cameraLockObserver = scene.onBeforeCameraRenderObservable.add(() => this._updateCameraLock());
+    }
 
     // Scale-aware camera speed & limits initialization
     const scaleY = this._capScaleY || 1.0;
     this._baseCamFollowDist = this.CAM_FOLLOW_DIST / scaleY;
 
-    if (this.camera) {
+    if (this._cameraControl) {
       this.camera.lowerRadiusLimit = 2 * scaleY;
       this.camera.upperRadiusLimit = 20 * scaleY;
       this.camera.radius = this.CAM_FOLLOW_DIST;
@@ -2127,9 +2330,147 @@ class CharCtrl {
     this._idle();
   }
 
+  // Camera follow lock, zoom/pitch sync and scale-aware limits (runs before
+  // every camera render while the controller drives the camera).
+  _updateCameraLock() {
+    if (!this.camera) return;
+    // Sync camera radius zoom updates (wheel, trackpad, pinch) back to CAM_FOLLOW_DIST and HUD
+    const now = performance.now();
+    const isWheelZooming = (now - (this._lastWheelTime || 0)) < 250;
+    const isTouchPinchZooming = (this._touchCount !== undefined && this._touchCount >= 2);
+    const isUserZooming = isWheelZooming || isTouchPinchZooming;
+
+    // Keep camera zoom speed, limits, and sensitivities in sync with character scale Y
+    const scaleY = this._capScaleY || 1.0;
+    { // limits & sensitivities
+      this.camera.lowerRadiusLimit = 2 * scaleY;
+      this.camera.upperRadiusLimit = 20 * scaleY;
+      this.camera.wheelPrecision = 55 / scaleY;
+      this.camera.pinchPrecision = 55 / scaleY;
+      if (this.camera.inputs && this.camera.inputs.attached) {
+        const mw = this.camera.inputs.attached.mousewheel || this.camera.inputs.attached.mouseWheel;
+        if (mw) {
+          mw.wheelPrecision = 55 / scaleY;
+          if (mw.wheelPrecisionY !== undefined) mw.wheelPrecisionY = 55 / scaleY;
+          if (mw.wheelPrecisionX !== undefined) mw.wheelPrecisionX = 55 / scaleY;
+          if (mw.wheelPrecisionZ !== undefined) mw.wheelPrecisionZ = 55 / scaleY;
+        }
+        const ptrs = this.camera.inputs.attached.pointers || this.camera.inputs.attached.pointersInput;
+        if (ptrs) {
+          ptrs.pinchPrecision = 55 / scaleY;
+        }
+      }
+      this.camera.panningSensibility = 1000 / scaleY;
+      if (!this.CAM_FOLLOW_LOCK) {
+        this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+      }
+      this.camera.angularSensibilityY = (this._originalSensibilityY || 1000) / scaleY;
+    }
+
+    const radiusDelta = this.camera.radius - this._lastCameraRadius;
+    if (isUserZooming && Math.abs(radiusDelta) > 0.0001) {
+      const hud = this._hudEnabled();
+      const slider = hud ? document.getElementById('slider-cam-dist') : null;
+      const minVal = slider ? parseFloat(slider.min) : 2;
+      const maxVal = slider ? parseFloat(slider.max) : 15;
+      this.CAM_FOLLOW_DIST = Math.max(minVal, Math.min(maxVal, this.camera.radius));
+      this._baseCamFollowDist = this.CAM_FOLLOW_DIST / (this._capScaleY || 1.0);
+      this._setStoredPreference('cam-follow-dist', this.CAM_FOLLOW_DIST);
+
+      const label = hud ? document.getElementById('cam-dist-val') : null;
+      if (slider) {
+        slider.value = this.CAM_FOLLOW_DIST;
+      }
+      this._notifyConfigChanged({ CAM_FOLLOW_DIST: this.CAM_FOLLOW_DIST }, 'camera');
+      if (label) {
+        label.textContent = this.CAM_FOLLOW_DIST.toFixed(1) + 'm';
+      }
+    }
+
+    // Sync manual camera pitch drag back to CAM_FOLLOW_PITCH and sync HUD in both modes!
+    const betaDelta = this.camera.beta - this._lastCameraBeta;
+    if (this._pointerDragging && Math.abs(betaDelta) > 0.0001) {
+      // Block pitch if CAM_LOCK_PITCH is enabled (horizontal-only drag)
+      if (this.CAM_LOCK_PITCH) {
+        this.camera.beta = this._lastCameraBeta;
+      } else if (!this.grounded && !this.AIR_CONTROL) {
+        // Block manual camera pitch in the air if air control is disabled
+        this.camera.beta = this._lastCameraBeta;
+      } else {
+        const lo = this.camera.lowerBetaLimit || 0.05;
+        const hi = this.camera.upperBetaLimit || (Math.PI / 2.05);
+        this.CAM_FOLLOW_PITCH = Math.max(lo, Math.min(hi, this.camera.beta));
+        this._setStoredPreference('cam-follow-pitch', this.CAM_FOLLOW_PITCH);
+        // Sync HUD slider and label
+        const hud = this._hudEnabled();
+        const slider = hud ? document.getElementById('slider-cam-pitch') : null;
+        const label = hud ? document.getElementById('cam-pitch-val') : null;
+        if (slider) {
+          const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
+          slider.value = deg;
+        }
+        this._notifyConfigChanged({ CAM_FOLLOW_PITCH: this.CAM_FOLLOW_PITCH }, 'camera');
+        if (label) {
+          const deg = Math.round(this.CAM_FOLLOW_PITCH * 180 / Math.PI);
+          label.textContent = deg + '°';
+        }
+      }
+    }
+
+    // Enforce configured radius and pitch in all modes when not dragging to maintain consistency and prevent drifting
+    this.camera.radius = this.CAM_FOLLOW_DIST;
+    if (!this._pointerDragging) {
+      this.camera.beta = this.CAM_FOLLOW_PITCH;
+    }
+
+    if (this.CAM_FOLLOW_LOCK) {
+      // Restore full mouse sensitivity, adapted to character scale
+      const scaleY = this._capScaleY || 1.0;
+      this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+
+      // Apply mouse yaw delta to rotY (alpha = -rotY - PI/2, so delta inverts)
+      const alphaDelta = this.camera.alpha - this._lastCameraAlpha;
+      if (this._pointerDragging && Math.abs(alphaDelta) > 0.0001) {
+        // Block manual rotation in the air if air control is disabled
+        if (!this.grounded && !this.AIR_CONTROL) {
+          this.camera.alpha = this._lastCameraAlpha;
+        } else {
+          this.rotY -= alphaDelta * this.SPEED_MULTIPLIER;
+          if (this.usePhysics) {
+            this.root.rotationQuaternion = BABYLON.Quaternion.RotationYawPitchRoll(this.rotY, 0, 0);
+          } else {
+            this.root.rotation.y = this.rotY;
+          }
+          this._lastYawTurnTime = performance.now();
+        }
+      }
+
+      // Push camera alpha to match rotY (single source of truth)
+      const dt = this.scene.getEngine().getDeltaTime() / 1000;
+      if (dt > 0 && dt < 0.1) {
+        const targetAlpha = -this.rotY - Math.PI / 2;
+        const rate = (this.speed < 0.1) ? 38 : 16; // Much more responsive (snappy) when stopped, smooth when moving
+        this.camera.alpha = lerpAngle(this.camera.alpha, targetAlpha, 1 - Math.exp(-rate * dt));
+      }
+      this._lastCameraAlpha = this.camera.alpha;
+      this._lastCameraBeta = this.camera.beta;
+    } else {
+      // Under standard camera mode, if air control is false and they are in mid-air, lock camera alpha/beta!
+      if (!this.grounded && !this.AIR_CONTROL) {
+        this.camera.alpha = this._lastCameraAlpha;
+        this.camera.beta = this._lastCameraBeta;
+      } else {
+        this._lastCameraAlpha = this.camera.alpha;
+        this._lastCameraBeta = this.camera.beta;
+      }
+    }
+
+    this._lastCameraRadius = this.camera.radius;
+  }
+
   // ── DUST PARTICLE SYSTEM ─────────────────────────────
   _setupDustParticles() {
-    const smokeTex = new BABYLON.Texture("assets/smoke.png", this.scene);
+    const smokeTex = new BABYLON.Texture(this._dustTextureUrl || "assets/smoke.png", this.scene);
 
     // Instantiate Particle System
     this.dustPS = new BABYLON.ParticleSystem("dustParticles", 300, this.scene);
@@ -2202,6 +2543,7 @@ class CharCtrl {
 
   _isPressed(action) {
     if (this._isInputBlocked()) return false;
+    if (this.keys[CHAR_VIRTUAL_KEY_PREFIX + action]) return true; // pressAction()
     const keysForAction = this.keyBindings[action];
     if (!keysForAction) return false;
     if (Array.isArray(keysForAction)) {
@@ -2211,6 +2553,7 @@ class CharCtrl {
   }
 
   _matchesAction(code, action) {
+    if (code === CHAR_VIRTUAL_KEY_PREFIX + action) return true; // pressAction()
     const keysForAction = this.keyBindings[action];
     if (!keysForAction) return false;
     if (Array.isArray(keysForAction)) {
@@ -2220,8 +2563,10 @@ class CharCtrl {
   }
 
   _pollGamepad() {
-    if (!this.gamepadEnabled || typeof navigator.getGamepads !== 'function') return;
-    const gamepad = [...navigator.getGamepads()].find(Boolean);
+    if (!this.gamepadEnabled || typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
+    const pads = navigator.getGamepads() || [];
+    // gamepadIndex pins a pad (local multiplayer); otherwise the first connected one.
+    const gamepad = Number.isInteger(this.gamepadIndex) ? pads[this.gamepadIndex] : [...pads].find(Boolean);
     if (!gamepad) {
       this.gamepadVector = { x: 0, y: 0 };
       this._gamepadButtons.clear();
@@ -2257,7 +2602,7 @@ class CharCtrl {
   // ── INPUT ──────────────────────────────────────────────
   _setupInput() {
     this._boundKeyDown = e => {
-      const modal = document.getElementById('info-panel-modal');
+      const modal = this._hudEnabled() ? document.getElementById('info-panel-modal') : null;
       if (modal && modal.classList.contains('open')) {
         return;
       }
@@ -2324,6 +2669,7 @@ class CharCtrl {
     this.keys = {};
     this.touchVector = { x: 0, y: 0 };
     this.gamepadVector = { x: 0, y: 0 };
+    this.virtualMove = { x: 0, z: 0 };
     this._gamepadButtons.clear();
     this._jumpBufferTimer = -1; // discard any pending buffered jump on focus loss
     if (this.joystickKnob) {
@@ -2336,6 +2682,7 @@ class CharCtrl {
   }
 
   _setupTouchHUD() {
+    if (!this._hudEnabled()) return;
     const zone = document.getElementById(this.touchConfig.zoneId);
     const ring = document.getElementById(this.touchConfig.ringId);
     const knob = document.getElementById(this.touchConfig.knobId);
@@ -2505,6 +2852,8 @@ class CharCtrl {
   }
 
   _isInputBlocked() {
+    // Programmatic input (input:'none' — AI / network) is never blocked by page focus.
+    if (this._inputMode === 'none' || typeof document === 'undefined' || !document) return false;
     const active = document.activeElement;
     return !!active && (active.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName));
   }
@@ -2513,11 +2862,13 @@ class CharCtrl {
     if (this._destroyed) return;
     this._destroyed = true;
     // 1. Remove window keyboard and focus/blur event listeners
-    if (this._boundKeyDown) window.removeEventListener('keydown', this._boundKeyDown);
-    if (this._boundKeyUp) window.removeEventListener('keyup', this._boundKeyUp);
-    if (this._boundReset) {
-      window.removeEventListener('focus', this._boundReset);
-      window.removeEventListener('blur', this._boundReset);
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      if (this._boundKeyDown) window.removeEventListener('keydown', this._boundKeyDown);
+      if (this._boundKeyUp) window.removeEventListener('keyup', this._boundKeyUp);
+      if (this._boundReset) {
+        window.removeEventListener('focus', this._boundReset);
+        window.removeEventListener('blur', this._boundReset);
+      }
     }
 
     // 2. Remove update and camera lock observers from scene
@@ -2592,7 +2943,7 @@ class CharCtrl {
 
     if (this.anim?.dispose) this.anim.dispose();
     const previous = this._cameraStateBeforeController;
-    if (previous && this.camera) {
+    if (previous && this.camera && this._cameraControl) {
       this.camera.alpha = previous.alpha;
       this.camera.beta = previous.beta;
       this.camera.radius = previous.radius;
@@ -2617,6 +2968,10 @@ class CharCtrl {
     if (inputState?.pointerInput && inputState.pinchPrecision !== undefined) {
       inputState.pointerInput.pinchPrecision = inputState.pinchPrecision;
     }
+    for (const observable of [this.onStateChangedObservable, this.onSpeedChangedObservable, this.onComboObservable,
+      this.onAnimationEventObservable, this.onConfigChangedObservable]) {
+      if (observable && typeof observable.clear === 'function') observable.clear();
+    }
   }
 
   playParticles(enable) {
@@ -2626,6 +2981,120 @@ class CharCtrl {
       this.dustPS.emitRate = 0;
       this.dustPS.stop();
     }
+  }
+
+  // ── PUBLIC INPUT API (AI, network replicas, custom UIs) ─────
+  /**
+   * Analog movement, -1..1 per axis (x = right, z = forward). Camera-relative
+   * when the controller has a camera, world-relative (+Z forward) without one;
+   * under CAM_FOLLOW_LOCK x steers and z drives, like the joystick.
+   * Accepts (x, z) or a vector-like { x, z } / { x, y }. Overrides keys while non-zero.
+   */
+  setMoveInput(x = 0, z = 0) {
+    if (x && typeof x === 'object') { z = x.z !== undefined ? x.z : x.y; x = x.x; }
+    const clamp = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
+    this.virtualMove = { x: clamp(x), z: clamp(z) };
+    return this;
+  }
+
+  /**
+   * Press an action by KEYS name ('JUMP', 'SPRINT', 'CROUCH', 'ROLL', 'PUNCH',
+   * 'SPELL', 'INTERACT', 'MOVE_FORWARD'…) or a custom action registered on the
+   * AnimCtrl. Edge-triggered like a key press; hold semantics until releaseAction().
+   */
+  pressAction(action) {
+    if (!action || typeof action !== 'string') return false;
+    const code = CHAR_VIRTUAL_KEY_PREFIX + action;
+    if (this.keys[code]) return true; // already held
+    this.keys[code] = true;
+    if (CHAR_BUILTIN_ACTIONS.has(action) || Object.prototype.hasOwnProperty.call(this.keyBindings, action)) {
+      this._keyDown(code);
+    } else if (this.anim && this.anim.has(action)) {
+      this.triggerAction(action);
+    }
+    return true;
+  }
+
+  releaseAction(action) {
+    const code = CHAR_VIRTUAL_KEY_PREFIX + action;
+    const wasPressed = !!this.keys[code];
+    this.keys[code] = false;
+    if (wasPressed && action === 'JUMP') this._releaseJump();
+    return wasPressed;
+  }
+
+  // Active analog source (setMoveInput wins over the gamepad), or null.
+  _analogMove() {
+    const v = this.virtualMove;
+    if (v && (Math.abs(v.x) > 0.01 || Math.abs(v.z) > 0.01)) return { x: v.x, z: v.z };
+    const g = this.gamepadVector;
+    if (g && (Math.abs(g.x) > 0.01 || Math.abs(g.y) > 0.01)) return { x: g.x, z: g.y };
+    return null;
+  }
+
+  // Combined movement input: keys, then touch joystick, then gamepad / setMoveInput.
+  _moveInput() {
+    let x = 0, z = 0;
+    if (this._isPressed('MOVE_FORWARD')) z += 1;
+    if (this._isPressed('MOVE_BACKWARD')) z -= 1;
+    if (this._isPressed('MOVE_RIGHT')) x += 1;
+    if (this._isPressed('MOVE_LEFT')) x -= 1;
+    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
+      x = this.touchVector.x; z = this.touchVector.y;
+    }
+    const analog = this._analogMove();
+    if (analog) { x = analog.x; z = analog.z; }
+    return { x, z };
+  }
+
+  _isMovingBackward() {
+    const analog = this._analogMove();
+    return this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2) || (!!analog && analog.z < -0.2);
+  }
+
+  // ── CONFIG API ─────────────────────────────────────────
+  /**
+   * Apply runtime config keys (see DEFAULT_CHAR_CONFIG.PHYSICS). Unknown keys
+   * and wrong types warn once and are ignored. Returns the applied subset.
+   *   charCtrl.setConfig({ SPD_SPRINT: 7, DOUBLE_JUMP_ENABLED: false });
+   */
+  setConfig(partial) {
+    const valid = validateCharConfig(partial, 'setConfig');
+    for (const [key, value] of Object.entries(valid)) {
+      if (key === 'PLAY_PARTICLES') {
+        this.playParticles(value);
+      } else {
+        this[key] = value;
+      }
+      if (key === 'CAM_FOLLOW_DIST') this._baseCamFollowDist = value / (this._capScaleY || 1.0);
+    }
+    if (Object.keys(valid).length) this._notifyConfigChanged(valid, 'setConfig');
+    return valid;
+  }
+
+  /** Current value of every runtime config key. */
+  getConfig() {
+    const out = {};
+    for (const key of charConfigKeys()) out[key] = this[key];
+    return out;
+  }
+
+  // Config changed by the controller itself (camera zoom/pitch sync) or setConfig().
+  _notifyConfigChanged(changes, source) {
+    notifyCharObservable(this.onConfigChangedObservable, () => ({ changes, source, character: this.name }));
+    if (this._onConfigChanged) {
+      try { this._onConfigChanged(changes, source); } catch (e) { console.error('[CharCtrl] onConfigChanged failed:', e); }
+      return;
+    }
+    // Legacy host bridge (Builder page): only for camera sync, only with the DOM HUD.
+    if (source !== 'camera' || !this._hudEnabled() || typeof window === 'undefined') return;
+    if (window.physicsConfig) Object.assign(window.physicsConfig, changes);
+    if (typeof window.updateExportCode === 'function') window.updateExportCode();
+  }
+
+  /** Legacy DOM HUD writes (#hud-state, #combo, …) are on unless hud:false. */
+  _hudEnabled() {
+    return this._hud !== false && typeof document !== 'undefined' && !!document && typeof document.getElementById === 'function';
   }
 
   _keyDown(code) {
@@ -2803,17 +3272,7 @@ class CharCtrl {
     this._setState(S.JUMP_START);
 
     // Update takeoff momentum (moveDir) at the moment of double jump to respect new input direction!
-    let inputX = 0, inputZ = 0;
-    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
-    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
-    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
-    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
-    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
-      inputX = this.touchVector.x; inputZ = this.touchVector.y;
-    }
-    if (Math.abs(this.gamepadVector.x) > 0.01 || Math.abs(this.gamepadVector.y) > 0.01) {
-      inputX = this.gamepadVector.x; inputZ = this.gamepadVector.y;
-    }
+    const { x: inputX, z: inputZ } = this._moveInput();
 
     if (this.CAM_FOLLOW_LOCK) {
       if (inputZ !== 0) {
@@ -2858,14 +3317,7 @@ class CharCtrl {
     this._setState(S.ROLL);
     this.comboIdx = 0;
 
-    let inputX = 0, inputZ = 0;
-    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
-    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
-    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
-    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
-    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
-      inputX = this.touchVector.x; inputZ = this.touchVector.y;
-    }
+    const { x: inputX, z: inputZ } = this._moveInput();
     this._rollMoving = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
 
     // Check if we are in mid-air and have existing horizontal velocity to preserve and boost momentum
@@ -2885,7 +3337,7 @@ class CharCtrl {
     }
 
     if (this._rollMoving) {
-      const hasInput = (inputX !== 0 || inputZ !== 0) || (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01));
+      const hasInput = inputX !== 0 || inputZ !== 0;
       if (hasInput) {
         const camFwd = this._camForward();
         let dir = this._camRight(camFwd).scale(inputX).add(camFwd.scale(inputZ));
@@ -2952,7 +3404,7 @@ class CharCtrl {
 
     const check = () => {
       // Stop polling if state changed externally (e.g. landed via _update loop)
-      if (this.state !== S.ROLL) return;
+      if (this._destroyed || this.state !== S.ROLL) return;
 
       const grounded = this._checkGrounded();
       const fallingDown = this.usePhysics
@@ -2963,9 +3415,10 @@ class CharCtrl {
         // Character has landed — seed a small speed so the run animation
         // doesn't pop in from a dead stop, then return to locomotion.
         this.grounded = true;
+        const move = this._moveInput();
         const hasInput = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
           this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
-          (this.isTouch && (Math.abs(this.touchVector?.x) > 0.15 || Math.abs(this.touchVector?.y) > 0.15));
+          Math.abs(move.x) > 0.15 || Math.abs(move.z) > 0.15;
         if (hasInput) {
           // Seed speed at walk level so the locomotion blend starts from something
           // non-zero — avoids the jarring snap from 0 → run speed.
@@ -2981,11 +3434,13 @@ class CharCtrl {
         this.anim.play('Jump_Loop', true, 0.7);
       } else {
         // Still ascending or at peak — wait one more frame
-        requestAnimationFrame(check);
+        nextFrame(check);
       }
     };
+    const nextFrame = (fn) => (typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(fn) : this._setTimeout(fn, 16));
 
-    requestAnimationFrame(check);
+    nextFrame(check);
   }
 
   // Upper-body actions are allowed while grounded locomotion is playing.
@@ -3047,25 +3502,27 @@ class CharCtrl {
     if (!this.SHOW_COMBO) return;
     if (this.callbacks.onCombo) {
       this.callbacks.onCombo(txt, true);
-    } else {
+    } else if (this._hudEnabled()) {
       const el = document.getElementById('combo');
       if (el) {
         el.textContent = txt;
         el.classList.add('show');
       }
     }
+    notifyCharObservable(this.onComboObservable, () => ({ text: txt, visible: true, character: this.name }));
     clearTimeout(this._comboTO);
   }
 
   _hideCombo() {
     if (this.callbacks.onCombo) {
       this.callbacks.onCombo('', false);
-    } else {
+    } else if (this._hudEnabled()) {
       const el = document.getElementById('combo');
       if (el) {
         el.classList.remove('show');
       }
     }
+    notifyCharObservable(this.onComboObservable, () => ({ text: '', visible: false, character: this.name }));
   }
 
   _spellCast() {
@@ -3100,9 +3557,10 @@ class CharCtrl {
     this._setTimeout(() => {
       const cancelIfMoving = this._setInterval(() => {
         if (this.state !== S.INTERACT) { clearInterval(cancelIfMoving); return; }
+        const move = this._moveInput();
         const moving = this._isPressed('MOVE_FORWARD') || this._isPressed('MOVE_BACKWARD') ||
           this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
-          (this.isTouch && (Math.abs(this.touchVector.x) > 0.2 || Math.abs(this.touchVector.y) > 0.2));
+          Math.abs(move.x) > 0.2 || Math.abs(move.z) > 0.2;
         if (moving) { clearInterval(cancelIfMoving); this._returnToLoco(0.35); }
       }, 50);
     }, recoveryDelay);
@@ -3122,19 +3580,8 @@ class CharCtrl {
   // ── RETURN TO LOCOMOTION (INTELLIGENT DECISION) ──────────
   _returnToLoco(blend = 0.45) {
     const finalBlend = blend / this.SPEED_MULTIPLIER;
-    // Check if there is movement input
-    let inputX = 0;
-    let inputZ = 0;
-
-    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
-    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
-    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
-    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
-
-    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
-      inputX = this.touchVector.x;
-      inputZ = this.touchVector.y;
-    }
+    // Check if there is movement input (keys, touch, gamepad, setMoveInput)
+    const { x: inputX, z: inputZ } = this._moveInput();
 
     const isSprinting = this.sprinting;
     const hasMove = Math.sqrt(inputX * inputX + inputZ * inputZ) > 0.15;
@@ -3148,6 +3595,7 @@ class CharCtrl {
 
   _setState(s) {
     if (this.state === s) return;
+    const previous = this.state;
     this.state = s;
     this.stateT = 0;
     // A full-body action (jump, roll, spell...) ends any layered upper-body strike.
@@ -3159,12 +3607,13 @@ class CharCtrl {
     }
     if (this.callbacks.onStateChange) {
       this.callbacks.onStateChange(s);
-    } else {
+    } else if (this._hudEnabled()) {
       const hudState = document.getElementById('hud-state');
       if (hudState) {
         hudState.textContent = s;
       }
     }
+    notifyCharObservable(this.onStateChangedObservable, () => ({ state: s, previous, character: this.name }));
   }
 
   _isInAction() {
@@ -3174,10 +3623,12 @@ class CharCtrl {
 
   // ── CAMERA HELPERS ─────────────────────────────────────
   _camForward() {
+    if (!this.camera) return new BABYLON.Vector3(0, 0, 1); // world-relative (no camera)
     const alpha = this.camera.alpha;
     return new BABYLON.Vector3(-Math.cos(alpha), 0, -Math.sin(alpha)).normalize();
   }
   _camRight(fwd) {
+    if (!this.camera) return new BABYLON.Vector3(1, 0, 0);
     const alpha = this.camera.alpha;
     return new BABYLON.Vector3(-Math.sin(alpha), 0, Math.cos(alpha)).normalize();
   }
@@ -3206,13 +3657,19 @@ class CharCtrl {
       }
     }
 
-    // Check name pattern matching
-    const lowerName = (mesh.name || "").toLowerCase();
-    if (lowerName.includes("character") || lowerName.includes("playercapsule") || lowerName.includes("autorig") || lowerName.includes("wrapper")) {
-      return true;
+    // Any controller character (this one or another) is flagged at setup:
+    // metadata.bjsCharacter = true on the capsule and every visual mesh.
+    // metadata.bjsCharacter === false opts a mesh back in as walkable ground.
+    for (let n = mesh; n; n = n.parent) {
+      const md = n.metadata;
+      if (!md || typeof md !== 'object') continue;
+      if (md.bjsCharacter === true) return true;
+      if (n === mesh && md.bjsCharacter === false) return false;
     }
 
-    return false;
+    // Legacy name fallback for unflagged controller artifacts (see CharCtrl.legacyCharacterNamePattern).
+    const pattern = CharCtrl.legacyCharacterNamePattern;
+    return !!(pattern && pattern.test && pattern.test(mesh.name || ''));
   }
 
   // ── RAYCAST GROUND DETECT ──────────────────────────────
@@ -3500,7 +3957,7 @@ class CharCtrl {
 
   _updateHeadLook(dt) {
     const node = this._headNode;
-    if (!node || !this.HEAD_LOOK || !this.camera) return;
+    if (!node || !this.HEAD_LOOK || !this.camera || this._cameraControl === false) return;
     const inLoco = !this._isInAction() && !this.sitting && this.state !== S.ROLL;
     this._headLookWeight = lerp(this._headLookWeight, inLoco ? 1 : 0, 1 - Math.exp(-6 * dt));
     const camFwd = this._camForward();
@@ -3620,23 +4077,8 @@ class CharCtrl {
       }
     }
 
-    // Input Gathering (Supports Keyboard & Mobile Analog Touch) - Calculated early for landing checks
-    let inputX = 0;
-    let inputZ = 0;
-
-    if (this._isPressed('MOVE_FORWARD')) inputZ += 1;
-    if (this._isPressed('MOVE_BACKWARD')) inputZ -= 1;
-    if (this._isPressed('MOVE_RIGHT')) inputX += 1;
-    if (this._isPressed('MOVE_LEFT')) inputX -= 1;
-
-    if (this.isTouch && (Math.abs(this.touchVector.x) > 0.01 || Math.abs(this.touchVector.y) > 0.01)) {
-      inputX = this.touchVector.x;
-      inputZ = this.touchVector.y;
-    }
-    if (Math.abs(this.gamepadVector.x) > 0.01 || Math.abs(this.gamepadVector.y) > 0.01) {
-      inputX = this.gamepadVector.x;
-      inputZ = this.gamepadVector.y;
-    }
+    // Input Gathering (keyboard, touch joystick, gamepad, setMoveInput) - Calculated early for landing checks
+    const { x: inputX, z: inputZ } = this._moveInput();
 
     const isSprinting = this.sprinting;
     const inputMag = Math.min(1.0, Math.sqrt(inputX * inputX + inputZ * inputZ));
@@ -3917,7 +4359,7 @@ class CharCtrl {
       }
 
       // Calculate forward/backward locomotion offset direction based on follow lock state
-      const isMovingBackward = this.CAM_FOLLOW_LOCK && (this._isPressed('MOVE_BACKWARD') || (this.isTouch && this.touchVector.y < -0.2));
+      const isMovingBackward = this.CAM_FOLLOW_LOCK && this._isMovingBackward();
       const localMoveSign = isMovingBackward ? -1 : 1;
 
       // Raycast to detect obstacles in the offset direction (forward or backward) to prevent pushing the ellipsoid into walls/stairs
@@ -4544,7 +4986,8 @@ class CharCtrl {
     const acceleration = (this.speed - this._lastSpeed) / dt;
     let targetPitch = 0;
 
-    if (this.speed > 0.1 && (this._isPressed('MOVE_FORWARD') || (this.isTouch && this.touchVector.y > 0.1))) {
+    const leanAnalog = this._analogMove();
+    if (this.speed > 0.1 && (this._isPressed('MOVE_FORWARD') || (this.isTouch && this.touchVector.y > 0.1) || (leanAnalog && leanAnalog.z > 0.1))) {
       // Leaning forward proportional to speed
       targetPitch = currentSpeedRatio * 0.12;
     } else if (acceleration < -4.0 && this.speed > 1.0) {
@@ -4615,87 +5058,92 @@ class CharCtrl {
     // Interpolate visual mesh scale smoothly
     BABYLON.Vector3.LerpToRef(this.visualMesh.scaling, this.targetScale, 1 - Math.exp(-12 * dt), this.visualMesh.scaling);
 
-    // 4. Dynamic Camera Shake & FOV Expansion
-    // Decay camera shake intensity
-    if (this._camShake > 0.002) {
-      this._camShake = lerp(this._camShake, 0, 1 - Math.exp(-8 * dt));
-      // Perturb camera orientation slightly to convey landing impact weight
-      this.camera.beta += Math.sin(performance.now() * 0.048) * this._camShake * 0.05;
-      this.camera.alpha += Math.cos(performance.now() * 0.054) * this._camShake * 0.04;
-    }
-
-    // Dynamic FOV based on speed (tunnel vision expansion).
-    // Skip FOV update during the roll — keep the camera FOV frozen so the
-    // speed=0 reset at roll-end doesn't cause any visible zoom-in/out change.
-    if (this.state !== S.ROLL && !this._rollActive) {
-      const targetFOV = this.DYNAMIC_FOV
-        ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
-        : this._initialCameraFOV;
-      this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
-    }
-
-    // 5. Camera Angle Movement (Drone-style Banking)
-    // Roll the camera slightly when moving laterally at speed, like a chase drone banking into the move
-    if (this._camTilt === undefined) this._camTilt = 0;
-    // Lazily hook pointer drag tracking (works regardless of CAM_FOLLOW_LOCK, which freezes alpha)
-    if (!this._camTiltPointerInit) {
-      this._camTiltPointerInit = true;
-      this._camTiltDragPx = 0;
-      this._camTiltPointerObserver = this.scene.onPointerObservable.add((pi) => {
-        if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE && pi.event && pi.event.buttons > 0) {
-          this._camTiltDragPx += pi.event.movementX || 0;
-        }
-      });
-    }
-    let targetCamTilt = 0;
-    const camDragVel = this._camTiltDragPx / Math.max(dt, 0.001); // horizontal drag speed in px/s
-    this._camTiltDragPx = 0;
-    // Smooth the raw per-frame drag velocity to avoid jitter from discrete mouse events
-    if (this._camDragVelSmooth === undefined) this._camDragVelSmooth = 0;
-    this._camDragVelSmooth = lerp(this._camDragVelSmooth, camDragVel, 1 - Math.exp(-3.5 * dt));
-    if (this.CAM_TILT) {
-      // Bank from mouse/touch camera drag speed (drone orbiting feel).
-      // Soft deadzone: subtract the threshold so the response stays continuous (no on/off popping).
-      const dragMag = Math.max(0, Math.abs(this._camDragVelSmooth) - 30);
-      targetCamTilt += -Math.sign(this._camDragVelSmooth) * dragMag * 0.0015 * this.CAM_TILT_AMOUNT;
-
-      if (this.speed > 0.5 && !inAction) {
-        // Lateral input relative to the camera (strafe direction)
-        let lateralX = 0;
-        if (this._isPressed('MOVE_LEFT')) lateralX -= 1;
-        if (this._isPressed('MOVE_RIGHT')) lateralX += 1;
-        if (this.isTouch && Math.abs(this.touchVector.x) > 0.01) lateralX = this.touchVector.x;
-        // Bank into lateral movement; also add a touch of bank from yaw turning for fluid arcs.
-        // The raw per-frame turn rate is noisy, so keep a smoothed copy for the tilt only.
-        if (this._camTurnVelSmooth === undefined) this._camTurnVelSmooth = 0;
-        this._camTurnVelSmooth = lerp(this._camTurnVelSmooth, turnDelta / Math.max(dt, 0.001), 1 - Math.exp(-4 * dt));
-        targetCamTilt += (-lateralX * 0.85 - this._camTurnVelSmooth * 0.04) * this.CAM_TILT_AMOUNT * currentSpeedRatio;
+    // Camera effects only while this controller drives the camera.
+    if (this._cameraControl) {
+      // 4. Dynamic Camera Shake & FOV Expansion
+      // Decay camera shake intensity
+      if (this._camShake > 0.002) {
+        this._camShake = lerp(this._camShake, 0, 1 - Math.exp(-8 * dt));
+        // Perturb camera orientation slightly to convey landing impact weight
+        this.camera.beta += Math.sin(performance.now() * 0.048) * this._camShake * 0.05;
+        this.camera.alpha += Math.cos(performance.now() * 0.054) * this._camShake * 0.04;
       }
-      // Clamp to the configured maximum bank
-      targetCamTilt = Math.max(-this.CAM_TILT_AMOUNT, Math.min(this.CAM_TILT_AMOUNT, targetCamTilt));
-    }
-    this._camTilt = lerp(this._camTilt, targetCamTilt, 1 - Math.exp(-2.5 * dt));
-    if (Math.abs(this._camTilt) > 0.0005) {
-      // Derive viewDir from rotY + CAM_FOLLOW_PITCH — controller-owned values that are
-      // never contaminated by the tilted upVector feeding back into Babylon's alpha/beta.
-      const yaw = -this.rotY - Math.PI / 2;
-      const pitch = this.CAM_FOLLOW_PITCH;
-      const sinP = Math.sin(pitch);
-      const viewDir = new BABYLON.Vector3(
-        -Math.cos(yaw) * sinP,
-        -Math.cos(pitch),
-        -Math.sin(yaw) * sinP
-      ).normalize();
-      const tiltMatrix = BABYLON.Matrix.RotationAxis(viewDir, this._camTilt);
-      this.camera.upVector = BABYLON.Vector3.TransformNormal(BABYLON.Vector3.Up(), tiltMatrix);
-    } else if (this.camera.upVector.x !== 0 || this.camera.upVector.z !== 0 || this.camera.upVector.y !== 1) {
-      this.camera.upVector = BABYLON.Vector3.Up();
-    }
 
-    // Lock camera behind the character if follow lock is active
-    if (!this.CAM_FOLLOW_LOCK && this.camera.angularSensibilityX === 999999999) {
-      const scaleY = this._capScaleY || 1.0;
-      this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+      // Dynamic FOV based on speed (tunnel vision expansion).
+      // Skip FOV update during the roll — keep the camera FOV frozen so the
+      // speed=0 reset at roll-end doesn't cause any visible zoom-in/out change.
+      if (this.state !== S.ROLL && !this._rollActive) {
+        const targetFOV = this.DYNAMIC_FOV
+          ? (this._initialCameraFOV + (this.speed / this.SPD_SPRINT) * this.DYNAMIC_FOV_MAX)
+          : this._initialCameraFOV;
+        this.camera.fov = lerp(this.camera.fov, targetFOV, 1 - Math.exp(-6 * dt));
+      }
+
+      // 5. Camera Angle Movement (Drone-style Banking)
+      // Roll the camera slightly when moving laterally at speed, like a chase drone banking into the move
+      if (this._camTilt === undefined) this._camTilt = 0;
+      // Lazily hook pointer drag tracking (works regardless of CAM_FOLLOW_LOCK, which freezes alpha)
+      if (!this._camTiltPointerInit) {
+        this._camTiltPointerInit = true;
+        this._camTiltDragPx = 0;
+        this._camTiltPointerObserver = this.scene.onPointerObservable.add((pi) => {
+          if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE && pi.event && pi.event.buttons > 0) {
+            this._camTiltDragPx += pi.event.movementX || 0;
+          }
+        });
+      }
+      let targetCamTilt = 0;
+      const camDragVel = this._camTiltDragPx / Math.max(dt, 0.001); // horizontal drag speed in px/s
+      this._camTiltDragPx = 0;
+      // Smooth the raw per-frame drag velocity to avoid jitter from discrete mouse events
+      if (this._camDragVelSmooth === undefined) this._camDragVelSmooth = 0;
+      this._camDragVelSmooth = lerp(this._camDragVelSmooth, camDragVel, 1 - Math.exp(-3.5 * dt));
+      if (this.CAM_TILT) {
+        // Bank from mouse/touch camera drag speed (drone orbiting feel).
+        // Soft deadzone: subtract the threshold so the response stays continuous (no on/off popping).
+        const dragMag = Math.max(0, Math.abs(this._camDragVelSmooth) - 30);
+        targetCamTilt += -Math.sign(this._camDragVelSmooth) * dragMag * 0.0015 * this.CAM_TILT_AMOUNT;
+
+        if (this.speed > 0.5 && !inAction) {
+          // Lateral input relative to the camera (strafe direction)
+          let lateralX = 0;
+          if (this._isPressed('MOVE_LEFT')) lateralX -= 1;
+          if (this._isPressed('MOVE_RIGHT')) lateralX += 1;
+          if (this.isTouch && Math.abs(this.touchVector.x) > 0.01) lateralX = this.touchVector.x;
+          const lateralAnalog = this._analogMove();
+          if (lateralAnalog && Math.abs(lateralAnalog.x) > 0.01) lateralX = lateralAnalog.x;
+          // Bank into lateral movement; also add a touch of bank from yaw turning for fluid arcs.
+          // The raw per-frame turn rate is noisy, so keep a smoothed copy for the tilt only.
+          if (this._camTurnVelSmooth === undefined) this._camTurnVelSmooth = 0;
+          this._camTurnVelSmooth = lerp(this._camTurnVelSmooth, turnDelta / Math.max(dt, 0.001), 1 - Math.exp(-4 * dt));
+          targetCamTilt += (-lateralX * 0.85 - this._camTurnVelSmooth * 0.04) * this.CAM_TILT_AMOUNT * currentSpeedRatio;
+        }
+        // Clamp to the configured maximum bank
+        targetCamTilt = Math.max(-this.CAM_TILT_AMOUNT, Math.min(this.CAM_TILT_AMOUNT, targetCamTilt));
+      }
+      this._camTilt = lerp(this._camTilt, targetCamTilt, 1 - Math.exp(-2.5 * dt));
+      if (Math.abs(this._camTilt) > 0.0005) {
+        // Derive viewDir from rotY + CAM_FOLLOW_PITCH — controller-owned values that are
+        // never contaminated by the tilted upVector feeding back into Babylon's alpha/beta.
+        const yaw = -this.rotY - Math.PI / 2;
+        const pitch = this.CAM_FOLLOW_PITCH;
+        const sinP = Math.sin(pitch);
+        const viewDir = new BABYLON.Vector3(
+          -Math.cos(yaw) * sinP,
+          -Math.cos(pitch),
+          -Math.sin(yaw) * sinP
+        ).normalize();
+        const tiltMatrix = BABYLON.Matrix.RotationAxis(viewDir, this._camTilt);
+        this.camera.upVector = BABYLON.Vector3.TransformNormal(BABYLON.Vector3.Up(), tiltMatrix);
+      } else if (this.camera.upVector.x !== 0 || this.camera.upVector.z !== 0 || this.camera.upVector.y !== 1) {
+        this.camera.upVector = BABYLON.Vector3.Up();
+      }
+
+      // Lock camera behind the character if follow lock is active
+      if (!this.CAM_FOLLOW_LOCK && this.camera.angularSensibilityX === 999999999) {
+        const scaleY = this._capScaleY || 1.0;
+        this.camera.angularSensibilityX = (this._originalSensibilityX || 1000) / scaleY;
+      }
     }
 
     // Save tracking states for next frame calculations
@@ -4703,28 +5151,36 @@ class CharCtrl {
     this._lastSpeed = this.speed;
 
     // Speed update callback / HUD
+    const hud = this._hudEnabled();
     if (this.callbacks.onSpeedChange) {
       this.callbacks.onSpeedChange(this.speed);
-    } else {
+    } else if (hud) {
       const hudSpeed = document.getElementById('hud-speed');
       if (hudSpeed) {
         hudSpeed.textContent = `spd: ${this.speed.toFixed(1)}`;
       }
     }
+    if (Math.abs(this.speed - this._lastNotifiedSpeed) > 1e-3 || (this.speed === 0 && this._lastNotifiedSpeed !== 0)) {
+      const previousSpeed = this._lastNotifiedSpeed;
+      this._lastNotifiedSpeed = this.speed;
+      notifyCharObservable(this.onSpeedChangedObservable, () => ({ speed: this.speed, previous: previousSpeed, character: this.name }));
+    }
 
     // Update FPS inside the HUD
-    const fpsText = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
-    const hudFps = document.getElementById('hud-fps');
-    if (hudFps) {
-      hudFps.textContent = fpsText;
-    }
-    const hudFpsInline = document.getElementById('hud-fps-inline');
-    if (hudFpsInline) {
-      hudFpsInline.textContent = fpsText;
+    if (hud) {
+      const fpsText = `fps: ${this.scene.getEngine().getFps().toFixed(0)}`;
+      const hudFps = document.getElementById('hud-fps');
+      if (hudFps) {
+        hudFps.textContent = fpsText;
+      }
+      const hudFpsInline = document.getElementById('hud-fps-inline');
+      if (hudFpsInline) {
+        hudFpsInline.textContent = fpsText;
+      }
     }
 
     // Update active visual state for mobile toggle buttons
-    if (this.isTouch) {
+    if (this.isTouch && hud) {
       const btnCrouch = document.getElementById('btn-crouch');
       const btnSprint = document.getElementById('btn-sprint');
 
@@ -4773,6 +5229,8 @@ class CharCtrl {
         const inputMag = Math.min(1.0, Math.sqrt(this.touchVector.x * this.touchVector.x + this.touchVector.y * this.touchVector.y));
         speedRatio *= inputMag;
       }
+      const crouchAnalog = hasMove ? this._analogMove() : null;
+      if (crouchAnalog) speedRatio *= Math.min(1.0, Math.hypot(crouchAnalog.x, crouchAnalog.z));
 
       // Invert crouch animation direction when moving backward under follow lock
       if (this.CAM_FOLLOW_LOCK && backward) {
@@ -4801,8 +5259,10 @@ class CharCtrl {
 
     // Detect turning in place under follow lock (including manual camera rotation via mouse/trackpad/touch)
     const isMouseOrTouchTurning = this._pointerDragging && (performance.now() - (this._lastYawTurnTime || 0)) < 100;
+    const turnAnalog = this._analogMove();
     const turning = this._isPressed('MOVE_LEFT') || this._isPressed('MOVE_RIGHT') ||
       (this.isTouch && Math.abs(this.touchVector.x) > 0.15) ||
+      (!!turnAnalog && Math.abs(turnAnalog.x) > 0.15) ||
       isMouseOrTouchTurning;
 
     if (this.CAM_FOLLOW_LOCK && turning && !hasMove) {
@@ -4842,7 +5302,7 @@ class CharCtrl {
 
   // ── RECENTER CAMERA (DOUBLE TAP OPTIMIZATION) ─────────
   _recenterCamera() {
-    if (!this.camera) return;
+    if (!this.camera || this._cameraControl === false) return;
     if (this._recenterObserver) {
       this.scene.onBeforeRenderObservable.remove(this._recenterObserver);
       this._recenterObserver = null;
@@ -4884,14 +5344,28 @@ class CharCtrl {
   }
 }
 
+// Fallback name filter for meshes of a controller character that were not
+// flagged with metadata.bjsCharacter. The previous, broader rule
+// (/character|playercapsule|autorig|wrapper/i) also skipped level meshes such
+// as "character_select_floor"; assign it here to restore it, or null to rely on
+// flags and hierarchy only.
+CharCtrl.legacyCharacterNamePattern = /playercapsule|autorig/i;
+
 // ═══════════════════════════════════════════════════════════
 // SHARED PHYSICS INITIALIZATION HELPER
 // ═══════════════════════════════════════════════════════════
+/**
+ * Enable Havok on `scene` (falls back to kinematic collisions → false).
+ * options: { usePhysics, persistPreferences, storage, havok } — `havok` is the
+ * HavokPhysics factory (ESM: `import HavokPhysics from '@babylonjs/havok'`) or
+ * an initialised instance; defaults to `initPhysics.havok`, then the global
+ * HavokPhysics of the UMD script.
+ */
 async function initPhysics(scene, gravityOrOptions = null, maybeOptions = {}) {
   const looksLikeVector = gravityOrOptions &&
     Number.isFinite(gravityOrOptions.x) && Number.isFinite(gravityOrOptions.y) && Number.isFinite(gravityOrOptions.z);
   const gravity = looksLikeVector ? gravityOrOptions : new BABYLON.Vector3(0, -22, 0);
-  const options = looksLikeVector ? maybeOptions : (gravityOrOptions || {});
+  const options = (looksLikeVector ? maybeOptions : gravityOrOptions) || {};
   const storage = options.storage ||
     (options.persistPreferences === true && typeof localStorage !== 'undefined' ? localStorage : null);
   let physicsOverride = null;
@@ -4902,7 +5376,9 @@ async function initPhysics(scene, gravityOrOptions = null, maybeOptions = {}) {
   }
   if (physicsOverride === 'false') return false;
   try {
-    const havokInstance = await HavokPhysics();
+    const havok = options.havok || initPhysics.havok || (typeof HavokPhysics !== 'undefined' ? HavokPhysics : null);
+    if (!havok) throw new Error('HavokPhysics is not loaded.');
+    const havokInstance = typeof havok === 'function' ? await havok() : await havok;
     const hk = new BABYLON.HavokPlugin(true, havokInstance);
     scene.enablePhysics(gravity, hk);
     // console.log("[Physics] Havok Physics initialized successfully.");
@@ -4919,219 +5395,281 @@ async function initPhysics(scene, gravityOrOptions = null, maybeOptions = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// CHARACTER PRESETS ('bjs-character-preset/v1')
+// ═══════════════════════════════════════════════════════════
+// {
+//   schema: 'bjs-character-preset/v1',
+//   character?: { filename, animationsFilename?, assetsPath?, capsuleScale?: number | {x,y,z} },
+//   keys?: { ACTION: ['KeyCode', ...] },
+//   config?: { ...DEFAULT_CHAR_CONFIG.PHYSICS keys },
+//   animations?: { Slot: { clip, from?, to? } | 'clip' | null },   // null = explicitly no clip
+//   customActions?: [{ name, clip, keys?, from?, to? }],
+//   animationEvents?: { Slot: [{ type, frame, label }] },
+//   mergeOptions?: { boneMapOverrides?: { canonicalRole: 'NodeName' } },
+// }
+
+/**
+ * Normalize a preset object. 'bjs-character-preset/v1' (or schema-less)
+ * presets pass through; a Builder builder-config.json
+ * ('bjs-character-controller-builder/v1|v2') is converted. Returns null when
+ * `preset` is not an object.
+ */
+function normalizeCharacterPreset(preset) {
+  if (!preset || typeof preset !== 'object' || Array.isArray(preset)) return null;
+  const schema = preset.schema;
+  if (typeof schema === 'string' && /^bjs-character-controller-builder\/v\d+$/.test(schema)) {
+    const source = preset.animations || {};
+    const animations = {};
+    for (const [slot, mapping] of Object.entries(source.standardMappings || {})) {
+      if (!mapping || typeof mapping !== 'object') continue;
+      if (!mapping.animName || mapping.animName === 'None') {
+        if (mapping.autoMapped !== true) animations[slot] = null; // explicit None only
+        continue;
+      }
+      animations[slot] = { clip: mapping.animName, from: mapping.from, to: mapping.to };
+    }
+    const converted = {
+      schema: CHARACTER_PRESET_SCHEMA,
+      keys: preset.keys,
+      config: preset.physics,
+      animations,
+      customActions: (Array.isArray(source.customActions) ? source.customActions : [])
+        .filter(action => action && action.name && action.animName && action.animName !== 'None')
+        .map(action => ({ name: action.name, clip: action.animName, keys: Array.isArray(action.keyTrigger) ? action.keyTrigger : undefined })),
+      animationEvents: source.events,
+    };
+    const t = preset.transforms;
+    if (t && [t.SCALE_X, t.SCALE_Y, t.SCALE_Z].every(Number.isFinite)) {
+      converted.character = { capsuleScale: { x: t.SCALE_X, y: t.SCALE_Y, z: t.SCALE_Z } };
+    }
+    const overrides = preset.rigging && preset.rigging.boneMapOverrides;
+    if (overrides && typeof overrides === 'object' && Object.keys(overrides).length) {
+      converted.mergeOptions = { boneMapOverrides: { ...overrides } };
+    }
+    return converted;
+  }
+  if (schema !== undefined && schema !== CHARACTER_PRESET_SCHEMA) {
+    console.warn(`[CharacterPreset] Unknown schema "${schema}", reading it as ${CHARACTER_PRESET_SCHEMA}.`);
+  }
+  return preset;
+}
+
+/** options.preset → preset object: an object, a JSON URL, or null/false (none). */
+async function resolveCharacterPreset(preset) {
+  if (!preset) return null;
+  if (typeof preset === 'string') {
+    if (typeof fetch !== 'function') throw new Error('Loading a character preset URL requires fetch().');
+    const response = await fetch(preset);
+    if (!response.ok) throw new Error(`Could not load character preset "${preset}": ${response.status} ${response.statusText}`);
+    return normalizeCharacterPreset(await response.json());
+  }
+  return normalizeCharacterPreset(preset);
+}
+
+function findCharacterPresetClip(groups, animCtrl, clip) {
+  if (typeof clip !== 'string' || !clip) return null;
+  const list = Array.isArray(groups) ? groups : [];
+  const fromMap = animCtrl && animCtrl.g ? animCtrl.g.get(clip) : null;
+  return list.find(g => g && typeof g.name === 'string' && cleanAnimName(g.name) === clip)
+    || list.find(g => g && g.name === clip)
+    || (fromMap && fromMap !== animCtrl.locoGroup ? fromMap : null);
+}
+
+/**
+ * Apply a preset to a controller pair: keys, config (charCtrl.setConfig),
+ * animation slots (setAnimation + setAnimationRanges; null clears the slot),
+ * custom actions (clip + key bindings) and animation events.
+ * `groups` defaults to the clips registered on `animCtrl`.
+ * Returns { applied: string[], missing: { slot, clip }[] } and warns once
+ * listing the clips that were not found.
+ */
+function applyCharacterPreset(charCtrl, animCtrl, groups, preset, internal = {}) {
+  const result = { applied: [], missing: [] };
+  preset = normalizeCharacterPreset(preset);
+  if (!preset) return result;
+  animCtrl = animCtrl || (charCtrl && charCtrl.anim) || null;
+  if (!Array.isArray(groups)) {
+    groups = animCtrl && animCtrl.g ? [...new Set(animCtrl.g.values())].filter(g => g !== animCtrl.locoGroup) : [];
+  }
+  const keepKeys = new Set(internal.keepKeys || []); // bindings the app set explicitly
+  const codesOf = codes => (Array.isArray(codes) ? codes : [codes]).filter(code => typeof code === 'string' && code);
+
+  if (charCtrl && internal.keys !== false && preset.keys && typeof preset.keys === 'object') {
+    let count = 0;
+    for (const [action, codes] of Object.entries(preset.keys)) {
+      const list = codesOf(codes);
+      if (!list.length || keepKeys.has(action)) continue;
+      charCtrl.keyBindings[action] = list;
+      count++;
+    }
+    if (count) result.applied.push('keys');
+  }
+  if (charCtrl && internal.config !== false && preset.config && typeof charCtrl.setConfig === 'function') {
+    if (Object.keys(charCtrl.setConfig(preset.config)).length) result.applied.push('config');
+  }
+
+  const mapSlot = (slot, spec, label) => {
+    const entry = typeof spec === 'string' ? { clip: spec } : spec;
+    if (!entry || typeof entry !== 'object' || !animCtrl) return false;
+    const group = findCharacterPresetClip(groups, animCtrl, entry.clip);
+    if (!group) {
+      result.missing.push({ slot, clip: entry.clip });
+      return false;
+    }
+    const exclusive = animCtrl.g.get(slot) === group &&
+      [...animCtrl.g.entries()].every(([name, g]) => name === slot || g !== group);
+    if (!exclusive) animCtrl.setAnimation(slot, group);
+    const hasFrom = entry.from != null && Number.isFinite(Number(entry.from));
+    const hasTo = entry.to != null && Number.isFinite(Number(entry.to));
+    if (hasFrom || hasTo) {
+      const mapped = animCtrl.g.get(slot);
+      animCtrl.setAnimationRanges(slot, hasFrom ? Number(entry.from) : mapped.from, hasTo ? Number(entry.to) : mapped.to);
+    }
+    result.applied.push(label);
+    return true;
+  };
+
+  if (animCtrl && preset.animations && typeof preset.animations === 'object') {
+    for (const [slot, spec] of Object.entries(preset.animations)) {
+      if (slot === 'Locomotion' || spec === undefined) continue;
+      if (spec === null) {
+        animCtrl.clearAnimation(slot);
+        result.applied.push(`animations.${slot}=none`);
+      } else {
+        mapSlot(slot, spec, `animations.${slot}`);
+      }
+    }
+  }
+  if (animCtrl && Array.isArray(preset.customActions)) {
+    for (const action of preset.customActions) {
+      if (!action || typeof action.name !== 'string' || !action.name || action.name === 'Locomotion') continue;
+      mapSlot(action.name, action, `customActions.${action.name}`);
+      const list = action.keys !== undefined ? codesOf(action.keys) : [];
+      if (charCtrl && list.length && !keepKeys.has(action.name)) charCtrl.keyBindings[action.name] = list;
+    }
+  }
+  if (animCtrl && preset.animationEvents && typeof preset.animationEvents === 'object') {
+    const events = {};
+    for (const [slot, list] of Object.entries(preset.animationEvents)) {
+      if (!Array.isArray(list)) continue;
+      events[slot] = list
+        .filter(evt => evt && typeof evt === 'object' && Number.isFinite(Number(evt.frame)))
+        .map(evt => ({ ...evt, frame: Number(evt.frame) }));
+    }
+    animCtrl.animationEvents = { ...(animCtrl.animationEvents || {}), ...events };
+    result.applied.push('animationEvents');
+  }
+
+  if (result.missing.length) {
+    const available = groups.map(g => cleanAnimName(String(g && g.name || ''))).filter(Boolean);
+    console.warn(`[CharacterPreset] ${result.missing.length} clip(s) not found: ` +
+      result.missing.map(m => `${m.slot} ← "${m.clip}"`).join(', ') +
+      ` (available: ${available.slice(0, 16).join(', ') || 'none'}${available.length > 16 ? ', …' : ''}).`);
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════
 // SHARED CHARACTER SETUP HELPER
 // ═══════════════════════════════════════════════════════════
-async function setupCharacter(scene, camera, usePhysics, options = {}) {
-  const setLoad = (pct, label) => {
-    if (typeof window.setLoad === 'function') {
+const CHAR_ABSOLUTE_URL = /^(?:[a-z][a-z0-9+.\-]*:|\/)/i;
+
+/** assetsPath + file, unless `file` is already an absolute URL / path. */
+function resolveCharacterAssetUrl(assetsPath, file) {
+  return CHAR_ABSOLUTE_URL.test(String(file)) ? String(file) : (assetsPath || '') + file;
+}
+
+function importCharacterModel(scene, assetsPath, filename) {
+  const file = String(filename);
+  if (/^(?:blob|data):/i.test(file)) return BABYLON.SceneLoader.ImportMeshAsync('', '', file, scene, null, '.glb');
+  if (CHAR_ABSOLUTE_URL.test(file)) {
+    const cut = file.lastIndexOf('/') + 1;
+    return BABYLON.SceneLoader.ImportMeshAsync('', file.slice(0, cut), file.slice(cut), scene);
+  }
+  return BABYLON.SceneLoader.ImportMeshAsync('', assetsPath, file, scene);
+}
+
+function disposeCharacterImport(result) {
+  if (!result) return;
+  for (const group of result.animationGroups || []) { try { group.dispose(); } catch (_) { /* already gone */ } }
+  for (const mesh of result.meshes || []) { try { if (!mesh.isDisposed || !mesh.isDisposed()) mesh.dispose(); } catch (_) { /* already gone */ } }
+  for (const node of result.transformNodes || []) { try { if (!node.isDisposed || !node.isDisposed()) node.dispose(); } catch (_) { /* already gone */ } }
+  for (const skeleton of result.skeletons || []) { try { skeleton.dispose(); } catch (_) { /* already gone */ } }
+}
+
+/** Progress reporter: options.onProgress, else window.setLoad / #bar (legacy, HUD only). */
+function makeCharacterProgress(onProgress, hudMode) {
+  if (typeof onProgress === 'function') {
+    return (pct, label) => {
+      try { onProgress(pct, label); } catch (e) { console.error('[setupCharacter] onProgress failed:', e); }
+    };
+  }
+  if (hudMode === false) return () => {};
+  return (pct, label) => {
+    if (typeof window !== 'undefined' && typeof window.setLoad === 'function') {
       window.setLoad(pct, label);
-    } else {
+    } else if (typeof document !== 'undefined' && document && typeof document.getElementById === 'function') {
       const bar = document.getElementById('bar');
       const barLabel = document.getElementById('bar-label');
       if (bar) bar.style.width = pct + '%';
       if (barLabel && label) barLabel.textContent = label;
     }
   };
+}
 
-  // ── Option B: separate mesh + animations files ───────────────────────────────
-  // When animationsFilename is provided, we first try to merge them server-side
-  // using /api/merge (same pipeline as the Builder: virtual T-pose + change-of-basis
-  // quaternion retargeting via merge_api.mjs). This correctly handles skeletons with
-  // different bone orientations (e.g. Mixamo → CC3/UE5).
-  // If the server is unavailable, we fall back to BJS AnimatorAvatar (works for
-  // same-convention skeletons like Mixamo→Mixamo).
-  if (options.animationsFilename) {
-    setLoad(10, 'Merging character + animations on server...');
-    let serverMerged = false;
-    try {
-      const healthRes = await fetch('/api/health');
-      if (healthRes.ok) {
-        setLoad(20, 'Server available — loading files for merge...');
-        const assetsPath = options.assetsPath || 'assets/';
+/**
+ * Server-side merge (/api/merge, same pipeline as the Builder: virtual T-pose +
+ * change-of-basis retargeting via merge_api.mjs). Returns the imported result,
+ * null when the server is not available, or throws when the merge fails.
+ */
+async function mergeCharacterOnServer(scene, cfg, setLoad) {
+  const base = String(cfg.serverUrl || '').replace(/\/+$/, '');
+  const fileName = file => String(file).split(/[\\/]/).pop().split('?')[0] || 'model.glb';
+  setLoad(10, 'Merging character + animations on server...');
+  const healthRes = await fetch(base + '/api/health');
+  if (!healthRes.ok) return null;
+  setLoad(20, 'Server available — loading files for merge...');
 
-        // Fetch both GLBs as ArrayBuffers
-        const [charBuf, animBuf] = await Promise.all([
-          fetch(assetsPath + options.filename).then(r => { if (!r.ok) throw new Error('char fetch failed'); return r.arrayBuffer(); }),
-          fetch(assetsPath + options.animationsFilename).then(r => { if (!r.ok) throw new Error('anim fetch failed'); return r.arrayBuffer(); }),
-        ]);
+  // Fetch both GLBs as ArrayBuffers
+  const [charBuf, animBuf] = await Promise.all([
+    fetch(resolveCharacterAssetUrl(cfg.assetsPath, cfg.filename)).then(r => { if (!r.ok) throw new Error('char fetch failed'); return r.arrayBuffer(); }),
+    fetch(resolveCharacterAssetUrl(cfg.assetsPath, cfg.animationsFilename)).then(r => { if (!r.ok) throw new Error('anim fetch failed'); return r.arrayBuffer(); }),
+  ]);
 
-        setLoad(40, 'Sending to server for retargeting...');
-        const formData = new FormData();
-        formData.append('character', new Blob([charBuf], { type: 'model/gltf-binary' }), options.filename);
-        formData.append('animations', new Blob([animBuf], { type: 'model/gltf-binary' }), options.animationsFilename);
-        formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false, ...(options.mergeOptions || {}) }));
+  setLoad(40, 'Sending to server for retargeting...');
+  const formData = new FormData();
+  formData.append('character', new Blob([charBuf], { type: 'model/gltf-binary' }), fileName(cfg.filename));
+  formData.append('animations', new Blob([animBuf], { type: 'model/gltf-binary' }), fileName(cfg.animationsFilename));
+  formData.append('options', JSON.stringify({ COMPRESS_OUTPUT: false, ...(cfg.mergeOptions || {}) }));
 
-        const mergeRes = await fetch('/api/merge', { method: 'POST', body: formData });
-        if (!mergeRes.ok) {
-          const errBody = await mergeRes.json().catch(() => ({ error: mergeRes.statusText }));
-          throw new Error(errBody.error || 'Server merge failed');
-        }
-
-        setLoad(65, 'Loading server-merged character...');
-        const mergedBuf = await mergeRes.arrayBuffer();
-        console.log('[setupCharacter] Server merge OK:', (mergedBuf.byteLength / 1024 / 1024).toFixed(2), 'MB');
-
-        // No charRes to dispose — in Option B we skip the initial ImportMeshAsync
-        // and go straight to the server merge, so nothing needs cleaning up here.
-
-        const blob = new Blob([mergedBuf], { type: 'model/gltf-binary' });
-        const blobUrl = URL.createObjectURL(blob);
-        // Same pattern as builder.js _loadGlbIntoScene: ('', '', blobUrl, scene, null, '.glb')
-        const mergedRes = await BABYLON.SceneLoader.ImportMeshAsync('', '', blobUrl, scene, null, '.glb');
-        URL.revokeObjectURL(blobUrl);
-
-        if (!mergedRes.meshes || mergedRes.meshes.length === 0) {
-          throw new Error('Merged GLB loaded but contained no meshes');
-        }
-
-        serverMerged = true;
-
-        // Reassign charRoot/charRes from merged result
-        const mergedRoot = mergedRes.meshes[0];
-        mergedRoot.name = 'Character_Visual';
-        mergedRes.meshes.forEach(m => {
-          if (options.shadow) options.shadow.addShadowCaster(m, true);
-          m.receiveShadows = true;
-          m.isPickable = false;
-          m.checkCollisions = false;
-        });
-        mergedRes.animationGroups.forEach(ag => ag.stop());
-        scene.animationGroups.forEach(ag => ag.stop());
-
-        setLoad(75, 'Building controller...');
-
-        // Capsule
-        const capScale = options.capsuleScale || 1;
-        const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
-        const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
-        const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.46 * capW, height: 1.8 * capY }, scene);
-        playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
-        playerCapsule.visibility = 0;
-        playerCapsule.isPickable = false;
-        playerCapsule.checkCollisions = !usePhysics;
-        playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.46 * capW, 0.96 * capY, 0.46 * capW);
-        playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
-
-        mergedRoot.setParent(playerCapsule);
-        mergedRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
-        mergedRoot.rotation.set(0, 0, 0);
-
-        // Filter T-Pose
-        mergedRes.animationGroups.filter(ag => /t[\-_]?pose/i.test(ag.name)).forEach(ag => ag.dispose());
-        const filteredGroups = mergedRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
-
-        setLoad(90, 'Building controllers...');
-        const animCtrl = new AnimCtrl(filteredGroups, scene);
-        const charOptions = Object.assign({}, options.charOptions);
-        if (options.keys) charOptions.keys = options.keys;
-        if (options.config) charOptions.config = options.config;
-        if (options.persistPreferences !== undefined) charOptions.persistPreferences = options.persistPreferences;
-        if (options.storage) charOptions.storage = options.storage;
-        if (options.gamepad !== undefined) charOptions.gamepad = options.gamepad;
-        charOptions.usePhysics = !!usePhysics;
-        const charCtrl = new CharCtrl(playerCapsule, mergedRoot, camera, animCtrl, scene, charOptions);
-        if (typeof options.configure === 'function') {
-          options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
-        }
-
-        const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const cameraYOffset = isMobileDev ? -0.25 : 0.4;
-        charCtrl._cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
-          const dt = scene.getEngine().getDeltaTime() / 1000;
-          const clampedDt = Math.max(0.001, Math.min(0.1, dt));
-          const deflection = charCtrl.visualLocalY - charCtrl.targetLocalY;
-          const currentScaleY = playerCapsule.scaling.y;
-          const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, (cameraYOffset + deflection) * currentScaleY, 0));
-          camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
-        });
-
-        setLoad(100, 'Ready!');
-        return { playerCapsule, charRoot: mergedRoot, animCtrl, charCtrl, scene };
-      }
-    } catch (serverErr) {
-      console.warn('[setupCharacter] Server merge failed, falling back to client retargeting:', serverErr.message);
-    }
-
-    if (!serverMerged) {
-      // ── Fallback: BabylonJS AnimatorAvatar (client-side, same-convention skeletons) ──
-      console.warn('[setupCharacter] Using client-side AnimatorAvatar fallback (may distort cross-convention skeletons)');
-    }
+  const mergeRes = await fetch(base + '/api/merge', { method: 'POST', body: formData });
+  if (!mergeRes.ok) {
+    const errBody = await mergeRes.json().catch(() => ({ error: mergeRes.statusText }));
+    throw new Error(errBody.error || 'Server merge failed');
   }
 
-  // ── Option A: single merged GLB, OR Option B client-side fallback ──
-  setLoad(10, 'Loading character...');
-  const mergedCharRes = await BABYLON.SceneLoader.ImportMeshAsync('', options.assetsPath || 'assets/', options.filename || 'character_animated.glb', scene);
+  setLoad(65, 'Loading server-merged character...');
+  const mergedBuf = await mergeRes.arrayBuffer();
+  console.log('[setupCharacter] Server merge OK:', (mergedBuf.byteLength / 1024 / 1024).toFixed(2), 'MB');
 
-  setLoad(75, 'Setting up character...');
-  const charRoot = mergedCharRes.meshes[0];
-  charRoot.name = 'Character_Visual';
-
-  mergedCharRes.meshes.forEach(m => {
-    if (options.shadow) options.shadow.addShadowCaster(m, true);
-    m.receiveShadows = true;
-    m.isPickable = false;
-    m.checkCollisions = false;
-  });
-
-  mergedCharRes.animationGroups.forEach(ag => ag.stop());
-  scene.animationGroups.forEach(ag => ag.stop());
-
-  const capScale = options.capsuleScale || 1;
-  const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
-  const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
-  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule('playerCapsule', { radius: 0.46 * capW, height: 1.8 * capY }, scene);
-  playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
-  playerCapsule.visibility = 0;
-  playerCapsule.isPickable = false;
-  playerCapsule.checkCollisions = !usePhysics;
-  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.46 * capW, 0.96 * capY, 0.46 * capW);
-  playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
-
-  setLoad(90, 'Building controllers...');
-
-  mergedCharRes.animationGroups
-    .filter(ag => /t[\-_]?pose/i.test(ag.name))
-    .forEach(ag => ag.dispose());
-  let filteredGroups = mergedCharRes.animationGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
-
-  if (options.animationsFilename) {
-    // Client-side fallback retargeting with AnimatorAvatar
-    setLoad(80, 'Client retargeting animations...');
-    const { container, json } = await loadRetargetSource(scene, (options.assetsPath || 'assets/') + options.animationsFilename);
-    try {
-      const { groups, report } = retargetAnimationGroupsClient(scene, charRoot, container, { json });
-      console.log('[setupCharacter] Client fallback retarget:', report);
-      filteredGroups = groups;
-    } finally {
-      container.dispose();
-    }
+  const blobUrl = URL.createObjectURL(new Blob([mergedBuf], { type: 'model/gltf-binary' }));
+  let result;
+  try {
+    // Same pattern as builder.js _loadGlbIntoScene: ('', '', blobUrl, scene, null, '.glb')
+    result = await BABYLON.SceneLoader.ImportMeshAsync('', '', blobUrl, scene, null, '.glb');
+  } finally {
+    URL.revokeObjectURL(blobUrl);
   }
-
-  charRoot.setParent(playerCapsule);
-  charRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
-  charRoot.rotation.set(0, 0, 0);
-
-  const animCtrl = new AnimCtrl(filteredGroups, scene);
-
-  // Allow passing keys, config and other options directly or inside charOptions
-  const charOptions = Object.assign({}, options.charOptions);
-  if (options.keys) charOptions.keys = options.keys;
-  if (options.config) charOptions.config = options.config;
-  if (options.persistPreferences !== undefined) charOptions.persistPreferences = options.persistPreferences;
-  if (options.storage) charOptions.storage = options.storage;
-  if (options.gamepad !== undefined) charOptions.gamepad = options.gamepad;
-  charOptions.usePhysics = !!usePhysics;
-
-  const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, charOptions);
-
-  // Allow custom remapping of animations/controls or extra setup from app
-  if (typeof options.configure === 'function') {
-    options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene });
+  if (!result || !result.meshes || result.meshes.length === 0) {
+    disposeCharacterImport(result);
+    throw new Error('Merged GLB loaded but contained no meshes');
   }
+  return result;
+}
 
-  const isMobileDev = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+function attachCharacterCameraFollow(scene, camera, charCtrl, playerCapsule) {
+  const isMobileDev = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
   const cameraYOffset = isMobileDev ? -0.25 : 0.4;
-
   charCtrl._cameraFollowObserver = scene.onBeforeRenderObservable.add(() => {
     const dt = scene.getEngine().getDeltaTime() / 1000;
     const clampedDt = Math.max(0.001, Math.min(0.1, dt));
@@ -5140,23 +5678,338 @@ async function setupCharacter(scene, camera, usePhysics, options = {}) {
     const tgt = playerCapsule.position.add(new BABYLON.Vector3(0, (cameraYOffset + deflection) * currentScaleY, 0));
     camera.target = BABYLON.Vector3.Lerp(camera.target, tgt, 1 - Math.exp(-15 * clampedDt));
   });
-
-  return { playerCapsule, animCtrl, charCtrl };
 }
 
-// Expose classes and definitions to the global window object for easy consumption in classical script-based setups
-window.S = S;
-window.ACTION_STATES = ACTION_STATES;
-window.AnimCtrl = AnimCtrl;
-window.CharCtrl = CharCtrl;
-window.normBone = normBone;
-window.BJSRetarget = {
+/**
+ * Load a character GLB, build capsule + AnimCtrl + CharCtrl and follow camera.
+ *
+ * Option A: single merged GLB (`filename`). Option B: separate `filename` +
+ * `animationsFilename`, merged by the server (/api/merge, same pipeline as the
+ * Builder) or — when the server is unavailable or `serverMerge: false` —
+ * retargeted client side with BabylonJS 9 AnimatorAvatar.
+ *
+ * options: { filename, animationsFilename, assetsPath, preset (object | JSON URL |
+ *   false), shadow, spawnPosition, ellipsoid, capsuleScale, keys, config,
+ *   mergeOptions, serverUrl, serverMerge, onProgress(pct, label), name,
+ *   input: 'player' | 'none', hud: 'auto' | false, gamepad, gamepadIndex,
+ *   cameraControl, onConfigChanged, persistPreferences, storage, charOptions,
+ *   autoMapAnimations, configure({ animCtrl, charCtrl, filteredGroups, ... }) }
+ *
+ * Preset `character.*` fields are defaults for filename / animationsFilename /
+ * assetsPath / capsuleScale; preset keys/config sit under explicit options.
+ * Returns { playerCapsule, charRoot, animCtrl, charCtrl, scene, report } where
+ * report = { mode: 'server' | 'client' | 'single', preset: 'options' | 'baked' | null,
+ *   applied, missing, mapping, retarget, serverError }.
+ */
+async function setupCharacter(scene, camera, usePhysics, options = {}) {
+  options = options || {};
+  const inputMode = options.input === 'none' ? 'none' : 'player';
+  const hudMode = options.hud !== undefined ? options.hud : (inputMode === 'none' ? false : 'auto');
+  const setLoad = makeCharacterProgress(options.onProgress, hudMode);
+
+  // Effective preset: options.preset (object or JSON URL, false = none) ?? the baked one.
+  const presetInput = options.preset ?? BAKED_PRESET;
+  const preset = await resolveCharacterPreset(presetInput);
+  const presetCharacter = preset && preset.character && typeof preset.character === 'object' ? preset.character : {};
+  const pick = key => (options[key] !== undefined && options[key] !== null ? options[key] : presetCharacter[key]);
+  const assetsPath = pick('assetsPath') || 'assets/';
+  const filename = pick('filename') || 'character_animated.glb';
+  const animationsFilename = pick('animationsFilename') || null;
+  const presetMerge = preset && preset.mergeOptions && typeof preset.mergeOptions === 'object' ? preset.mergeOptions : null;
+  let mergeOptions = options.mergeOptions;
+  if (presetMerge) {
+    const overrides = { ...(presetMerge.boneMapOverrides || {}), ...((options.mergeOptions && options.mergeOptions.boneMapOverrides) || {}) };
+    mergeOptions = { ...presetMerge, ...(options.mergeOptions || {}) };
+    if (Object.keys(overrides).length) mergeOptions.boneMapOverrides = overrides;
+  }
+  const name = typeof options.name === 'string' && options.name ? options.name : null;
+  const report = {
+    mode: 'single', preset: preset ? (options.preset ? 'options' : 'baked') : null,
+    applied: [], missing: [], mapping: null, retarget: null, serverError: null,
+  };
+
+  // ── Load: server merge (Option B) → single GLB (Option A / client fallback) ──
+  let res = null;
+  if (animationsFilename && options.serverMerge !== false && typeof fetch === 'function') {
+    try {
+      res = await mergeCharacterOnServer(scene, { serverUrl: options.serverUrl, assetsPath, filename, animationsFilename, mergeOptions }, setLoad);
+      if (res) report.mode = 'server';
+    } catch (serverErr) {
+      report.serverError = serverErr.message;
+      console.warn('[setupCharacter] Server merge failed, falling back to client retargeting:', serverErr.message);
+    }
+    if (!res) {
+      // ── Fallback: BabylonJS AnimatorAvatar (client-side, same-convention skeletons) ──
+      console.warn('[setupCharacter] Using client-side AnimatorAvatar fallback (may distort cross-convention skeletons)');
+    }
+  }
+  if (!res) {
+    setLoad(10, 'Loading character...');
+    res = await importCharacterModel(scene, assetsPath, filename);
+    report.mode = animationsFilename ? 'client' : 'single';
+  }
+  setLoad(75, report.mode === 'server' ? 'Building controller...' : 'Setting up character...');
+
+  const charRoot = res.meshes && res.meshes[0];
+  if (!charRoot) {
+    disposeCharacterImport(res);
+    throw new Error(`[setupCharacter] "${filename}" contains no meshes.`);
+  }
+  charRoot.name = name ? `${name}_visual` : 'Character_Visual';
+  res.meshes.forEach(m => {
+    if (options.shadow) options.shadow.addShadowCaster(m, true);
+    m.receiveShadows = true;
+    m.isPickable = false;
+    m.checkCollisions = false;
+    flagCharacterNode(m);
+  });
+  // Stop only this character's clips (the glTF loader auto-plays its first
+  // group); level animations and other characters keep playing.
+  const ownGroups = [...(res.animationGroups || [])];
+  ownGroups.forEach(ag => ag.stop());
+
+  // Capsule
+  const capScale = pick('capsuleScale') || 1;
+  const capY = typeof capScale === 'number' ? capScale : (capScale.y !== undefined ? capScale.y : 1);
+  const capW = typeof capScale === 'number' ? capScale : Math.max(capScale.x !== undefined ? capScale.x : 1, capScale.z !== undefined ? capScale.z : 1);
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule(name ? `${name}_capsule` : 'playerCapsule', { radius: 0.46 * capW, height: 1.8 * capY }, scene);
+  playerCapsule.position.copyFrom(options.spawnPosition || new BABYLON.Vector3(0, 2, 0));
+  playerCapsule.visibility = 0;
+  playerCapsule.isPickable = false;
+  playerCapsule.checkCollisions = !usePhysics;
+  playerCapsule.ellipsoid = options.ellipsoid || new BABYLON.Vector3(0.46 * capW, 0.96 * capY, 0.46 * capW);
+  playerCapsule.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
+  flagCharacterNode(playerCapsule);
+
+  // Filter T-Pose
+  ownGroups.filter(ag => /t[\-_]?pose/i.test(ag.name)).forEach(ag => ag.dispose());
+  let filteredGroups = ownGroups.filter(ag => !/t[\-_]?pose/i.test(ag.name));
+  const allGroups = [...filteredGroups];
+
+  if (report.mode === 'client') {
+    // Client-side fallback retargeting with AnimatorAvatar
+    setLoad(80, 'Client retargeting animations...');
+    const { container, json } = await loadRetargetSource(scene, resolveCharacterAssetUrl(assetsPath, animationsFilename));
+    try {
+      const { groups, report: retargetReport } = retargetAnimationGroupsClient(scene, charRoot, container, { json });
+      console.log('[setupCharacter] Client fallback retarget:', retargetReport);
+      report.retarget = retargetReport;
+      filteredGroups = groups;
+      allGroups.push(...groups);
+    } finally {
+      container.dispose();
+    }
+  }
+
+  setLoad(90, 'Building controllers...');
+  charRoot.setParent(playerCapsule);
+  charRoot.position.set(0, (usePhysics ? -0.90 : -0.97) * capY, 0);
+  charRoot.rotation.set(0, 0, 0);
+
+  const animCtrl = new AnimCtrl(filteredGroups, scene, {
+    warnMissing: false, // reported below, after preset + configure had their say
+    autoMap: options.autoMapAnimations !== false,
+    hud: hudMode === false ? false : undefined,
+  });
+
+  // Allow passing keys, config and other options directly or inside charOptions.
+  // Precedence: explicit options > charOptions > preset.
+  const charOptions = Object.assign({}, options.charOptions);
+  const presetKeys = preset && preset.keys && typeof preset.keys === 'object' ? preset.keys : null;
+  const presetConfig = preset && preset.config && typeof preset.config === 'object' ? preset.config : null;
+  if (presetKeys) charOptions.keys = Object.assign({}, presetKeys, options.keys || charOptions.keys);
+  else if (options.keys) charOptions.keys = options.keys;
+  if (presetConfig) charOptions.config = Object.assign({}, presetConfig, options.config || charOptions.config);
+  else if (options.config) charOptions.config = options.config;
+  if (options.persistPreferences !== undefined) charOptions.persistPreferences = options.persistPreferences;
+  if (options.storage) charOptions.storage = options.storage;
+  if (options.gamepad !== undefined) charOptions.gamepad = options.gamepad;
+  for (const key of ['input', 'hud', 'name', 'gamepadIndex', 'cameraControl', 'onConfigChanged', 'dustTexture', 'callbacks', 'touch']) {
+    if (options[key] !== undefined) charOptions[key] = options[key];
+  }
+  charOptions.usePhysics = !!usePhysics;
+
+  const charCtrl = new CharCtrl(playerCapsule, charRoot, camera, animCtrl, scene, charOptions);
+  charCtrl._setupAssets = {
+    groups: allGroups, meshes: res.meshes || [], skeletons: res.skeletons || [], transformNodes: res.transformNodes || [],
+  };
+
+  // Preset animations, custom actions and events (keys/config went into the constructor).
+  if (preset) {
+    const applied = applyCharacterPreset(charCtrl, animCtrl, filteredGroups, preset, {
+      keys: false, config: false,
+      keepKeys: Object.keys(options.keys || (options.charOptions && options.charOptions.keys) || {}),
+    });
+    report.applied = [...(presetKeys ? ['keys'] : []), ...(presetConfig ? ['config'] : []), ...applied.applied];
+    report.missing = applied.missing;
+  }
+
+  // Allow custom remapping of animations/controls or extra setup from app
+  if (typeof options.configure === 'function') {
+    options.configure({ animCtrl, charCtrl, filteredGroups, playerCapsule, scene, charRoot, preset, report });
+  }
+  report.mapping = animCtrl.mappingReport;
+  animCtrl._warnMissingCoreSlots();
+
+  if (charCtrl._cameraControl) attachCharacterCameraFollow(scene, camera, charCtrl, playerCapsule);
+
+  setLoad(100, 'Ready!');
+  return { playerCapsule, charRoot, animCtrl, charCtrl, scene, report };
+}
+
+// ═══════════════════════════════════════════════════════════
+// ONE-CALL API
+// ═══════════════════════════════════════════════════════════
+/** Split `model` / `animations` URLs into setupCharacter's assetsPath + file names. */
+function splitCharacterUrls(model, animations, assetsPath) {
+  const base = assetsPath !== undefined && assetsPath !== null ? assetsPath : 'assets/';
+  const full = url => (CHAR_ABSOLUTE_URL.test(url) || url.includes('/') ? url : base + url);
+  const modelUrl = full(String(model));
+  if (/^(?:blob|data):/i.test(modelUrl)) {
+    return { assetsPath: '', filename: modelUrl, animationsFilename: animations ? full(String(animations)) : undefined };
+  }
+  const cut = modelUrl.lastIndexOf('/') + 1;
+  const dir = modelUrl.slice(0, cut);
+  const out = { assetsPath: dir, filename: modelUrl.slice(cut) };
+  if (animations) {
+    const animUrl = full(String(animations));
+    if (animUrl.startsWith(dir)) {
+      out.animationsFilename = animUrl.slice(dir.length);
+    } else if (CHAR_ABSOLUTE_URL.test(animUrl) || typeof location === 'undefined' || !location.href) {
+      out.animationsFilename = animUrl;
+    } else {
+      out.animationsFilename = new URL(animUrl, location.href).href;
+    }
+  }
+  return out;
+}
+
+function createDefaultCharacterCamera(scene, name) {
+  const camera = new BABYLON.ArcRotateCamera(`${name || 'player'}_camera`, -Math.PI / 2, Math.PI / 3.5, 8,
+    new BABYLON.Vector3(0, 1.2, 0), scene);
+  camera.lowerBetaLimit = 0.05;
+  camera.upperBetaLimit = Math.PI / 2.05;
+  camera.panningSensibility = 0;
+  // Arrow keys move the character, not the camera
+  if (camera.inputs && typeof camera.inputs.removeByType === 'function') camera.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
+  const engine = scene.getEngine();
+  const canvas = engine && typeof engine.getRenderingCanvas === 'function' ? engine.getRenderingCanvas() : null;
+  if (canvas) camera.attachControl(canvas, true);
+  return camera;
+}
+
+/**
+ * One call: physics, camera, character, controller.
+ *   const player = await createCharacter(scene, { model: 'assets/hero.glb' });
+ *   const npc = await createCharacter(scene, { model: 'assets/npc.glb', name: 'npc', input: 'none' });
+ *   player.dispose();
+ *
+ * opts: { model (URL, or file name under assetsPath), animations?, assetsPath?,
+ *   preset?, camera? (ArcRotateCamera; created + attached when omitted, null for
+ *   NPCs), physics?: true | false | 'auto' (default: Havok when the scene has
+ *   physics or HavokPhysics loads), havok?, shadow?, spawn? (Vector3 | [x,y,z] |
+ *   {x,y,z}), config?, keys?, input?: 'player' | 'none', name?, onProgress?,
+ *   ...any setupCharacter option }.
+ * Returns { playerCapsule, charRoot, animCtrl, charCtrl, scene, report, camera,
+ *   usePhysics, dispose() }.
+ */
+async function createCharacter(scene, opts = {}) {
+  if (!scene || typeof scene.getEngine !== 'function') {
+    throw new TypeError('createCharacter(scene, options) requires a Babylon.js Scene.');
+  }
+  opts = typeof opts === 'string' ? { model: opts } : Object.assign({}, opts);
+  const { model, animations, camera: cameraOption, physics = 'auto', spawn, havok, ...rest } = opts;
+  const input = opts.input === 'none' ? 'none' : 'player';
+  const setupOptions = Object.assign({}, rest, { input });
+  delete setupOptions.camera;
+  if (model) Object.assign(setupOptions, splitCharacterUrls(model, animations, opts.assetsPath));
+  else if (animations) setupOptions.animationsFilename = animations;
+  if (spawn) {
+    setupOptions.spawnPosition = Array.isArray(spawn)
+      ? new BABYLON.Vector3(spawn[0] || 0, spawn[1] || 0, spawn[2] || 0)
+      : (typeof spawn.clone === 'function' ? spawn : new BABYLON.Vector3(spawn.x || 0, spawn.y || 0, spawn.z || 0));
+  }
+
+  // Physics: true / false / 'auto' (scene physics already on → Havok; else try initPhysics).
+  const physicsEnabled = typeof scene.isPhysicsEnabled === 'function' && scene.isPhysicsEnabled();
+  let usePhysics = false;
+  if (physics === true) usePhysics = physicsEnabled || await initPhysics(scene, { usePhysics: true, havok });
+  else if (physics !== false) usePhysics = physicsEnabled || await initPhysics(scene, { havok });
+
+  // Camera: explicit (null allowed for input:'none'), else a default follow camera for players.
+  let camera = cameraOption;
+  let createdCamera = null;
+  const previousActiveCamera = scene.activeCamera || null;
+  if (cameraOption === undefined) {
+    camera = input === 'none' ? null : (createdCamera = createDefaultCharacterCamera(scene, opts.name));
+    if (createdCamera) scene.activeCamera = createdCamera;
+  }
+
+  let result;
+  try {
+    result = await setupCharacter(scene, camera, usePhysics, setupOptions);
+  } catch (error) {
+    if (createdCamera) {
+      if (scene.activeCamera === createdCamera) scene.activeCamera = previousActiveCamera;
+      createdCamera.dispose();
+    }
+    throw error;
+  }
+
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    const { charCtrl, animCtrl, playerCapsule } = result;
+    const assets = charCtrl._setupAssets || {};
+    const groups = new Set(assets.groups || []);
+    if (animCtrl && animCtrl.g) {
+      for (const group of animCtrl.g.values()) if (group && group !== animCtrl.locoGroup) groups.add(group);
+    }
+    charCtrl.destroy();
+    for (const group of groups) {
+      try { group.stop(); group.dispose(); } catch (_) { /* already disposed */ }
+    }
+    for (const skeleton of assets.skeletons || []) {
+      try { skeleton.dispose(); } catch (_) { /* already disposed */ }
+    }
+    const alive = node => node && (typeof node.isDisposed !== 'function' || !node.isDisposed());
+    if (alive(playerCapsule)) playerCapsule.dispose(false, true);
+    for (const mesh of assets.meshes || []) if (alive(mesh)) mesh.dispose(false, true);
+    for (const node of assets.transformNodes || []) if (alive(node)) node.dispose();
+    if (createdCamera) {
+      if (scene.activeCamera === createdCamera) {
+        scene.activeCamera = previousActiveCamera && !(previousActiveCamera.isDisposed && previousActiveCamera.isDisposed())
+          ? previousActiveCamera : null;
+      }
+      createdCamera.dispose();
+    }
+  };
+  return Object.assign({}, result, { camera, usePhysics, dispose });
+}
+
+const BJSRetarget = {
   canonicalBoneRole, readGlbJson, buildRetargetBoneMap, loadRetargetSource,
   retargetAnimationGroups: retargetAnimationGroupsClient,
 };
-window.cleanAnimName = cleanAnimName;
-window.lerp = lerp;
-window.lerpAngle = lerpAngle;
-window.setupCharacter = setupCharacter;
-window.loadCharacter = setupCharacter;
-window.initPhysics = initPhysics;
+
+// Expose classes and definitions to the global window object for easy consumption in classical script-based setups
+if (typeof window !== 'undefined') {
+  window.S = S;
+  window.ACTION_STATES = ACTION_STATES;
+  window.AnimCtrl = AnimCtrl;
+  window.CharCtrl = CharCtrl;
+  window.normBone = normBone;
+  window.BJSRetarget = BJSRetarget;
+  window.cleanAnimName = cleanAnimName;
+  window.lerp = lerp;
+  window.lerpAngle = lerpAngle;
+  window.setupCharacter = setupCharacter;
+  window.loadCharacter = setupCharacter;
+  window.initPhysics = initPhysics;
+  window.createCharacter = createCharacter;
+  window.applyCharacterPreset = applyCharacterPreset;
+  window.normalizeCharacterPreset = normalizeCharacterPreset;
+  window.STANDARD_ANIM_SLOTS = STANDARD_ANIM_SLOTS;
+  window.DEFAULT_CHAR_CONFIG = DEFAULT_CHAR_CONFIG;
+}

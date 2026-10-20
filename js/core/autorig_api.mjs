@@ -21,6 +21,7 @@ import { prune, dequantize, convertPrimitiveToTriangles } from '@gltf-transform/
 import draco3d from 'draco3dgltf';
 import { detectHandFingers } from './autorig_hands.mjs';
 import { inferNumberedHumanoid } from './rig_topology.mjs';
+import { createHash } from 'node:crypto';
 
 let _io = null;
 async function getIO() {
@@ -34,6 +35,45 @@ async function getIO() {
     });
   return _io;
 }
+
+// ── Progress ─────────────────────────────────────────────────────────────────
+// options.onProgress(stage, fraction 0..1 of the whole call). Stages: select,
+// orient, analyze, fingers, bind, weights, smooth, validate, deform-test,
+// write. A throwing callback never breaks the job.
+function progressReporter(options) {
+  const fn = typeof options?.onProgress === 'function' ? options.onProgress : null;
+  return (stage, fraction) => {
+    if (!fn) return;
+    try { fn(stage, Math.max(0, Math.min(1, fraction))); } catch (_) { /* ignore */ }
+  };
+}
+
+// ── Analysis cache ───────────────────────────────────────────────────────────
+// guessJoints → autoRigGLB (tests, batch rigs, re-applies) on the same skinless
+// buffer in one process repeat the same body selection, orientation, voxel
+// solid and joint analysis. Results are kept in the canonical frame, keyed by
+// a hash of the buffer and the options that shape the analysis. The server
+// runs each job in a fresh worker, so there it is simply a miss.
+const ANALYSIS_CACHE = new Map();
+const ANALYSIS_CACHE_SIZE = 4;
+function analysisKey(bytes, options, layout) {
+  const digest = createHash('sha1').update(bytes).digest('hex');
+  return `${digest}|${JSON.stringify([layout.bodyPlan, layout.fingers, options.symmetrize === true,
+    Array.isArray(options.bodyMeshIds) ? options.bodyMeshIds : null, options.autoOrient !== false])}`;
+}
+function analysisCacheGet(key) {
+  const entry = key ? ANALYSIS_CACHE.get(key) : null;
+  if (entry) { ANALYSIS_CACHE.delete(key); ANALYSIS_CACHE.set(key, entry); }
+  return entry || null;
+}
+function analysisCachePut(key, entry) {
+  if (!key) return;
+  ANALYSIS_CACHE.delete(key);
+  ANALYSIS_CACHE.set(key, entry);
+  while (ANALYSIS_CACHE.size > ANALYSIS_CACHE_SIZE) ANALYSIS_CACHE.delete(ANALYSIS_CACHE.keys().next().value);
+}
+/** Drop cached analyses (tests, memory pressure). */
+export function clearAutoRigCache() { ANALYSIS_CACHE.clear(); }
 
 // ── mat4 helpers (column-major) ──────────────────────────────────────────────
 function mat4Mul(a, b) {
@@ -515,36 +555,60 @@ const YAW_MIN_GAIN = 0.08;                    // symmetry gain over the current 
 // horizontal normal at `angle` from +X toward +Z) is also occupied.
 function mirrorSymmetryScore(pts, angle, minY, cell) {
   const nx = Math.cos(angle), nz = Math.sin(angle);
-  const us = new Float64Array(pts.length), ws = new Float64Array(pts.length);
+  const n = pts.length;
+  const us = new Float64Array(n), ws = new Float64Array(n);
   let wSum = 0;
-  for (let i = 0; i < pts.length; i++) {
+  for (let i = 0; i < n; i++) {
     us[i] = pts[i][0] * nx + pts[i][2] * nz;
     ws[i] = pts[i][2] * nx - pts[i][0] * nz;
     wSum += ws[i];
   }
-  const uCenter = median(us), wCenter = wSum / pts.length;
+  const sorted = Float64Array.from(us).sort(), m = n >> 1;
+  const uCenter = n % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2, wCenter = wSum / n;
   const clamp = v => Math.max(-1023, Math.min(1023, v));
-  const key = (iu, iw, iy) => ((iu + 1024) * 2048 + (iw + 1024)) * 2048 + iy;
+  const IU = new Int32Array(n), IW = new Int32Array(n), IY = new Int32Array(n);
   let best = 0;
   // Plane on a cell border (cell k mirrors to −1−k) or through a cell centre
   // (k mirrors to −k): the true plane rarely falls on just one of them.
   for (const centred of [0, 1]) {
-    const cells = new Set();
-    for (let i = 0; i < pts.length; i++) {
-      const iu = clamp(Math.floor((us[i] - uCenter) / cell + 0.5 * centred));
-      const iw = clamp(Math.round((ws[i] - wCenter) / cell));
-      cells.add(key(iu, iw, Math.max(0, Math.min(2047, Math.round((pts[i][1] - minY) / cell)))));
+    let u0 = Infinity, u1 = -Infinity, w0 = Infinity, w1 = -Infinity, y1 = 0;
+    for (let i = 0; i < n; i++) {
+      const iu = IU[i] = clamp(Math.floor((us[i] - uCenter) / cell + 0.5 * centred));
+      const iw = IW[i] = clamp(Math.round((ws[i] - wCenter) / cell));
+      const iy = IY[i] = Math.max(0, Math.min(2047, Math.round((pts[i][1] - minY) / cell)));
+      if (iu < u0) u0 = iu; if (iu > u1) u1 = iu; if (iw < w0) w0 = iw; if (iw > w1) w1 = iw; if (iy > y1) y1 = iy;
     }
-    let mirrored = 0;
-    for (const k of cells) {
-      const iy = k % 2048, rest = (k - iy) / 2048;
-      const iw = rest % 2048 - 1024, iu = (rest - rest % 2048) / 2048 - 1024;
-      if (cells.has(key((centred ? 0 : -1) - iu, iw, iy))) mirrored++;
+    // Occupied cells on a dense grid (a Set of keys for far-flung outliers).
+    const du = u1 - u0 + 1, dw = w1 - w0 + 1, size = du * dw * (y1 + 1);
+    let occupied = 0, mirrored = 0;
+    if (size <= 32_000_000) {
+      if (mirrorGrid.length < size) mirrorGrid = new Uint8Array(size); else mirrorGrid.fill(0, 0, size);
+      const g = mirrorGrid, at = (iu, iw, iy) => ((iy * dw) + (iw - w0)) * du + (iu - u0);
+      for (let i = 0; i < n; i++) { const k = at(IU[i], IW[i], IY[i]); if (!g[k]) { g[k] = 1; occupied++; } }
+      const flip = centred ? 0 : -1;
+      for (let i = 0; i < n; i++) {
+        const k = at(IU[i], IW[i], IY[i]);
+        if (g[k] !== 1) continue;
+        g[k] = 2; // counted
+        const mu = flip - IU[i];
+        if (mu >= u0 && mu <= u1 && g[at(mu, IW[i], IY[i])]) mirrored++;
+      }
+    } else {
+      const key = (iu, iw, iy) => ((iu + 1024) * 2048 + (iw + 1024)) * 2048 + iy;
+      const cells = new Set();
+      for (let i = 0; i < n; i++) cells.add(key(IU[i], IW[i], IY[i]));
+      for (const k of cells) {
+        const iy = k % 2048, rest = (k - iy) / 2048;
+        const iw = rest % 2048 - 1024, iu = (rest - rest % 2048) / 2048 - 1024;
+        if (cells.has(key((centred ? 0 : -1) - iu, iw, iy))) mirrored++;
+      }
+      occupied = cells.size;
     }
-    best = Math.max(best, mirrored / cells.size);
+    best = Math.max(best, mirrored / occupied);
   }
   return best;
 }
+let mirrorGrid = new Uint8Array(0);
 
 // Yaw that maps the body's lateral (mirror-normal) axis onto X, or 0 when the
 // mesh is already lateral along X or carries no clear symmetry.
@@ -713,10 +777,12 @@ function canonicalizeFacing(doc, skinXforms, bodyMeshes, options = {}) {
   let pts = collectWorldVertices(doc, skinXforms, bodyMeshes, 40000);
   if (pts.length < 64) return none;
   let rotation = [0, 0, 0, 1], upAxis = '+Y';
+  const steps = []; // applied scene rotations, in order (cache replay)
   if (options.bodyPlan !== 'quadruped') {
     const lying = detectUpAxis(pts);
     if (lying) {
       rotateScene(doc, lying.q, skinXforms);
+      steps.push(lying.q);
       rotation = lying.q;
       upAxis = lying.label;
       const m = quatMatrix(lying.q);
@@ -732,6 +798,7 @@ function canonicalizeFacing(doc, skinXforms, bodyMeshes, options = {}) {
   let yaw = mirror.correct ? mirror.yaw : 0;
   if (yaw) {
     rotateScene(doc, yawQuat(yaw), skinXforms);
+    steps.push(yawQuat(yaw));
     rotation = quatMul(yawQuat(yaw), rotation);
   }
   let bounds;
@@ -749,6 +816,7 @@ function canonicalizeFacing(doc, skinXforms, bodyMeshes, options = {}) {
   // the +Z facing the controller and animation libraries expect.
   if (detectForwardZ(doc, bounds, skinXforms, bodyMeshes) < 0) {
     rotateScene(doc, yawQuat(Math.PI), skinXforms);
+    steps.push(yawQuat(Math.PI));
     rotation = quatMul(yawQuat(Math.PI), rotation);
     yaw += Math.PI;
   }
@@ -760,7 +828,7 @@ function canonicalizeFacing(doc, skinXforms, bodyMeshes, options = {}) {
   const facing = dominant >= 0 ? `${f[dominant] > 0 ? '+' : '-'}${'XYZ'[dominant]}`
     : `${(Math.atan2(f[0], f[2]) * 180 / Math.PI).toFixed(1)} deg from +Z`;
   console.log(`[autorig] Mesh faced ${facing}${upAxis !== '+Y' ? ` lying with up ${upAxis}` : ''} (mirror symmetry ${baseline} → ${symmetry}) — rotated upright facing +Z.`);
-  return { applied: true, rotation, yawDegrees, facing, upAxis, symmetry, baseline };
+  return { applied: true, rotation, yawDegrees, facing, upAxis, symmetry, baseline, steps };
 }
 
 export function guessJointsFromBounds({ min, max }, forwardZ = 1) {
@@ -846,7 +914,7 @@ function percentileOf(values, q) {
 
 function median(values) {
   if (!values.length) return NaN;
-  const s = [...values].sort((a, b) => a - b);
+  const s = Float64Array.from(values).sort(); // numeric typed sort: same order, no comparator
   const m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
@@ -1303,6 +1371,7 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
   const matCache = new Map();
   const limit = cell * 0.85;
   let budget = 4_000_000;
+  let trianglesTotal = 0, trianglesDone = 0;
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
@@ -1313,7 +1382,10 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
       if (!pos) continue;
       const ind = prim.getIndices()?.getArray();
       const triCount = ind ? ind.length / 3 : pos.length / 9;
-      const vtx = (i) => transformPoint(world, [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]);
+      trianglesTotal += triCount;
+      // Float32 like the baked vertex data: the topology solid and the geodesic
+      // solid (after the bake) are then the same grid and can be shared.
+      const vtx = (i) => transformPoint(world, [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]).map(Math.fround);
       for (let t = 0; t < triCount && budget > 0; t++) {
         const a = vtx(ind ? ind[t * 3] : t * 3);
         const b = vtx(ind ? ind[t * 3 + 1] : t * 3 + 1);
@@ -1332,6 +1404,7 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
             stack.push([p, mpq, mrp], [mpq, q, mqr], [mrp, mqr, r], [mpq, mqr, mrp]);
           }
         }
+        if (!stack.length) trianglesDone++;
       }
     }
   }
@@ -1389,7 +1462,11 @@ function voxelizeSolid(doc, skinXforms, bounds, N = 64, bodyMeshes = null) {
     }
     grid[i] = 1; solid++;
   }
-  return { grid, nx, ny, nz, origin, cell, solid, idxOf };
+  // The subdivision budget bounds the time on huge or very coarse meshes; when
+  // it runs out the remaining triangles are missing from the solid (reported).
+  const rasterized = trianglesTotal ? trianglesDone / trianglesTotal : 1;
+  if (rasterized < 1) console.warn(`[autorig] Voxel budget reached: ${(100 * rasterized).toFixed(1)}% of triangles rasterized.`);
+  return { grid, nx, ny, nz, origin, cell, solid, idxOf, truncated: rasterized < 1, rasterized };
 }
 
 // Multi-source BFS over solid voxels (26-conn); returns Int32 distances (-1
@@ -1419,9 +1496,11 @@ function voxelBFS(vox, sources) {
  * Pose-independent joint guess. Returns { joints, height, bounds, confidence,
  * method:'topology' } or null when the topology cannot be resolved.
  */
-export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, bodyMeshes = null) {
-  // 96³: fine enough that touching thighs/arms don't fuse prematurely
-  const vox = voxelizeSolid(doc, skinXforms, bounds, 96, bodyMeshes);
+export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, bodyMeshes = null, ctx = null) {
+  // 96³: fine enough that touching thighs/arms don't fuse prematurely. The
+  // solid is kept on ctx for the geodesic weights and the marker checks.
+  const vox = ctx?.vox || voxelizeSolid(doc, skinXforms, bounds, 96, bodyMeshes);
+  if (ctx) ctx.vox = vox;
   if (!vox || vox.solid < 500) return null;
   const { grid, nx, ny, origin, cell } = vox;
   const worldOf = (i) => {
@@ -1715,7 +1794,10 @@ export function guessJointsFromTopology(doc, skinXforms, bounds, forwardZ = 1, b
 // only valid for upright T/A-poses; the topology pass is pose-independent.
 // They agree on standard poses — strong disagreement on hands/feet means the
 // pose is non-standard and topology wins.
-function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, bodyPlan = 'humanoid') {
+// topology 'auto' skips the topology pass where its result could not change
+// the outcome (upright standard pose or skirt: the slicing skeleton always
+// wins); 'always' runs it for the cross-check recorded on ctx.
+function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, bodyPlan = 'humanoid', { topology = 'always', ctx = {} } = {}) {
   // Quadrupeds: the upright-slicing heuristics are humanoid-only. The
   // pose-independent topology pass classifies four limbs + head naturally
   // (front limbs merge near the head = arm chain, hind limbs at the pelvis =
@@ -1723,10 +1805,12 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, b
   if (bodyPlan === 'quadruped') {
     let topo = null;
     try {
-      topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
+      topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes, ctx);
     } catch (e) {
       console.warn('[autorig] Topology pass failed:', e.message);
     }
+    ctx.topologyRan = true;
+    ctx.topoConfidence = topo?.confidence ?? null;
     if (topo && topo.confidence >= 0.4) {
       console.log(`[autorig] Quadruped topology skeleton (confidence ${topo.confidence.toFixed(2)}).`);
       return topo;
@@ -1739,13 +1823,16 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, b
   const profile = frontSilhouetteProfile(doc, skinXforms, bodyMeshes, bounds, median(verts.map(p => p[0])));
   const sliced = guessJointsFromMesh(verts, bounds, forwardZ, profile);
   sliced.method = sliced.flags ? 'slicing' : 'bounds';
+  if (topology === 'auto' && ((sliced.flags?.crotch && sliced.flags?.arms) || sliced.flags?.skirt)) return sliced;
 
   let topo = null;
   try {
-    topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes);
+    topo = guessJointsFromTopology(doc, skinXforms, bounds, forwardZ, bodyMeshes, ctx);
   } catch (e) {
     console.warn('[autorig] Topology pass failed, using slicing guess:', e.message);
   }
+  ctx.topologyRan = true;
+  ctx.topoConfidence = topo?.confidence ?? null;
   if (!topo) return sliced;
 
   // Graph confidence measures path separation, not whether extremities were
@@ -1759,6 +1846,14 @@ function guessJointsAuto(doc, skinXforms, bounds, forwardZ, bodyMeshes = null, b
       separation('LeftShoulder', 'RightShoulder') > 0.04 * H &&
       separation('LeftUpLeg', 'RightUpLeg') > 0.025 * H;
   })();
+  ctx.topoPlausible = topologyPlausible;
+  // Per-joint agreement of the two detectors (fraction of the height).
+  if (topologyPlausible) {
+    ctx.agreement = {};
+    for (const name of Object.keys(BODY_HIERARCHY)) {
+      if (sliced.joints[name] && topo.joints[name]) ctx.agreement[name] = vec3Length(vec3Subtract(sliced.joints[name], topo.joints[name])) / sliced.height;
+    }
+  }
   if (!topologyPlausible) {
     console.log('[autorig] Rejected implausible topology roles — using silhouette skeleton.');
     return sliced;
@@ -1996,6 +2091,56 @@ function groundAndCenter(doc, bodyMeshes) {
   return { applied: true, offset: offset.map(v => +v.toFixed(5)), height: +H.toFixed(5) };
 }
 
+// ── Shared analysis front half ───────────────────────────────────────────────
+// Body selection, canonical facing, bounds and facing sign — replayed from the
+// cache on this document (same rotations, in order) or computed.
+function analysisFront(doc, skinXforms, options, selectionReport, cached, progress, needInputBounds = true) {
+  const meshes = doc.getRoot().listMeshes();
+  progress('select', 0.03);
+  if (cached) {
+    const bodyMeshes = cached.meshIds ? new Set(cached.meshIds.map(i => meshes[i])) : null;
+    if (cached.meshSelection) selectionReport.meshSelection = structuredClone(cached.meshSelection);
+    const inputBounds = cached.inputBounds || (needInputBounds ? computeWorldBounds(doc, skinXforms, bodyMeshes) : null);
+    progress('orient', 0.06);
+    for (const q of cached.orientation.steps || []) rotateScene(doc, q, skinXforms);
+    return { bodyMeshes, orientation: structuredClone(cached.orientation), bounds: structuredClone(cached.bounds),
+      inputBounds: inputBounds && structuredClone(inputBounds), forwardZ: cached.forwardZ };
+  }
+  const bodyMeshes = selectBodyMeshes(doc, skinXforms, options, selectionReport);
+  const inputBounds = needInputBounds ? computeWorldBounds(doc, skinXforms, bodyMeshes) : null;
+  // Analyze in the canonical frame (lateral X, facing ±Z).
+  progress('orient', 0.06);
+  const orientation = canonicalizeFacing(doc, skinXforms, bodyMeshes, options);
+  const bounds = orientation.applied || !inputBounds ? computeWorldBounds(doc, skinXforms, bodyMeshes) : inputBounds;
+  const forwardZ = detectForwardZ(doc, bounds, skinXforms, bodyMeshes);
+  return { bodyMeshes, orientation, bounds, inputBounds, forwardZ };
+}
+
+// Joint analysis in the canonical frame: detectors, symmetry, fingers, tail.
+// fingerSides(guess) picks the hands to analyze (default both).
+function analyzeJoints(doc, skinXforms, front, layout, options, { topology = 'always', ctx = {}, fingerSides = null, progress } = {}) {
+  progress?.('analyze', 0.12);
+  const guess = guessJointsAuto(doc, skinXforms, front.bounds, front.forwardZ, front.bodyMeshes, layout.bodyPlan, { topology, ctx });
+  if (guess.method === 'slicing' && options.symmetrize === true) symmetrizeGuess(guess.joints);
+  progress?.('fingers', 0.2);
+  fitFingerJoints(doc, skinXforms, front.bodyMeshes, guess, front.forwardZ, layout, fingerSides ? fingerSides(guess) : undefined);
+  if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
+  return guess;
+}
+
+function cacheEntry(doc, front, selectionReport, guess, ctx) {
+  const meshes = doc.getRoot().listMeshes();
+  return {
+    meshIds: front.bodyMeshes ? [...front.bodyMeshes].map(m => meshes.indexOf(m)) : null,
+    meshSelection: selectionReport.meshSelection ? structuredClone(selectionReport.meshSelection) : null,
+    orientation: structuredClone(front.orientation), bounds: structuredClone(front.bounds),
+    inputBounds: front.inputBounds && structuredClone(front.inputBounds), forwardZ: front.forwardZ,
+    guess: structuredClone(guess),
+    ctx: { vox: ctx.vox || null, agreement: ctx.agreement || null, topoConfidence: ctx.topoConfidence ?? null,
+      topologyRan: !!ctx.topologyRan, topoPlausible: ctx.topoPlausible ?? null },
+  };
+}
+
 /**
  * Import-time placement for skinless meshes: stands the body up facing +Z
  * (see canonicalizeFacing), puts the feet on y = 0 and centres it over the
@@ -2005,38 +2150,47 @@ function groundAndCenter(doc, bodyMeshes) {
  * the frame. Returns { buffer: null } when nothing changes.
  */
 export async function orientGLB(buffer, options = {}) {
+  const progress = progressReporter(options);
   const io = await getIO();
   const doc = await io.readBinary(new Uint8Array(buffer));
   const root = doc.getRoot();
-  if (root.listSkins().length) return { buffer: null, orientation: { applied: false, reason: 'rigged' } };
+  if (root.listSkins().length) { progress('write', 1); return { buffer: null, orientation: { applied: false, reason: 'rigged' } }; }
+  progress('select', 0.1);
   const bodyMeshes = selectBodyMeshes(doc, new Map(), options);
+  progress('orient', 0.25);
   const { applied, yawDegrees, facing, upAxis, symmetry, baseline } = canonicalizeFacing(doc, new Map(), bodyMeshes, options);
+  progress('analyze', 0.7);
   const placement = options.ground === false ? { applied: false } : groundAndCenter(doc, bodyMeshes);
   const orientation = applied ? { applied, yawDegrees, facing, upAxis, symmetry, baseline } : { applied, yawDegrees, symmetry };
-  if (!applied && !placement.applied) return { buffer: null, orientation, placement };
+  if (!applied && !placement.applied) { progress('write', 1); return { buffer: null, orientation, placement }; }
+  progress('write', 0.85);
   root.listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression')?.dispose();
-  return { buffer: await io.writeBinary(doc), orientation, placement };
+  const out = await io.writeBinary(doc);
+  progress('write', 1);
+  return { buffer: out, orientation, placement };
 }
 
 export async function guessJoints(buffer, options = {}) {
+  const progress = progressReporter(options);
   const layout = buildRigLayout(options);
   const io = await getIO();
-  const doc = await io.readBinary(new Uint8Array(buffer));
+  const bytes = new Uint8Array(buffer);
+  const doc = await io.readBinary(bytes);
+  // Skinless inputs share the cached canonical analysis with autoRigGLB.
+  const cacheKey = doc.getRoot().listSkins().length ? null : analysisKey(bytes, options, layout);
+  const cached = analysisCacheGet(cacheKey);
   await prepareRigGeometry(doc);
   materializePosedSkins(doc);
   const skinXf = skinWorldXforms(doc);
   const selectionReport = {};
-  const bodyMeshes = selectBodyMeshes(doc, skinXf, options, selectionReport);
-  const inputBounds = computeWorldBounds(doc, skinXf, bodyMeshes);
-  // Analyze in the canonical frame (lateral X, facing ±Z); results are mapped
+  // Analyzed in the canonical frame (lateral X, facing ±Z); results are mapped
   // back so markers land on the mesh exactly as the caller displays it.
-  const orientation = canonicalizeFacing(doc, skinXf, bodyMeshes, options);
-  const bounds = orientation.applied ? computeWorldBounds(doc, skinXf, bodyMeshes) : inputBounds;
-  const fwd = detectForwardZ(doc, bounds, skinXf, bodyMeshes);
-  const guess = guessJointsAuto(doc, skinXf, bounds, fwd, bodyMeshes, layout.bodyPlan);
-  if (guess.method === 'slicing' && options.symmetrize === true) symmetrizeGuess(guess.joints);
-  fitFingerJoints(doc, skinXf, bodyMeshes, guess, fwd, layout);
-  if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
+  const front = analysisFront(doc, skinXf, options, selectionReport, cached, progress);
+  const { bodyMeshes, orientation, bounds, inputBounds, forwardZ: fwd } = front;
+  const ctx = cached ? { ...cached.ctx } : {};
+  const guess = cached ? structuredClone(cached.guess) : analyzeJoints(doc, skinXf, front, layout, options, { ctx, progress });
+  if (!cached && cacheKey) analysisCachePut(cacheKey, cacheEntry(doc, front, selectionReport, guess, ctx));
+  progress('validate', 0.85);
   // Existing skeleton (re-rig): seed markers from current bind pose where names match
   if (doc.getRoot().listSkins().length > 0) {
     const seeded = seedJointsFromSkins(doc);
@@ -2106,6 +2260,26 @@ export async function guessJoints(buffer, options = {}) {
   guess.supportedFingerCounts = Object.keys(FINGER_SETS).map(Number);
   guess.meshSelection = selectionReport.meshSelection;
   guess.diagnostics = jointDiagnostics(guess, layout);
+  // Confidence in the canonical frame (the voxel solid lives there).
+  const hands = guess.fingerDetection || {};
+  guess.suggestedFingerCount = hands.Left?.status === 'detected' && hands.Right?.status === 'detected' &&
+    hands.Left.detectedCount === hands.Right.detectedCount ? hands.Left.detectedCount : null;
+  const globalReasons = [];
+  let vox = ctx.vox || null;
+  if (vox?.truncated) {
+    globalReasons.push(`Voxel budget reached: only ${(100 * vox.rasterized).toFixed(0)}% of the triangles entered the body volume; volume checks were skipped.`);
+    vox = null;
+  }
+  const truncated = !!ctx.vox?.truncated;
+  if (guess.suggestedBodyPlan) globalReasons.push('The body is longer than it is tall: consider the quadruped body plan.');
+  const assessment = assessJoints({ joints: guess.joints, order: layout.order, guess, ctx, vox,
+    outsideBounds: guess.diagnostics.outsideBounds, globalReasons, globalFactor: truncated ? 0.92 : 1,
+    deformingFingers: layout.fingers.length ? ['Left', 'Right'].filter(side => ['detected', 'existing'].includes(hands[side]?.status)) : [] });
+  guess.jointConfidence = assessment.jointConfidence;
+  guess.confidence = assessment.confidence;
+  guess.reviewJoints = assessment.reviewJoints;
+  guess.reviewReasons = assessment.reviewReasons;
+  guess.verdict = guess.suggestedBodyPlan ? 'review' : assessment.verdict;
   if (orientation.applied) {
     const back = quatConjugate(orientation.rotation);
     guess.joints = rotateJoints(guess.joints, back);
@@ -2114,6 +2288,7 @@ export async function guessJoints(buffer, options = {}) {
   }
   const { applied, yawDegrees, facing, upAxis, symmetry, baseline } = orientation;
   guess.orientation = { applied, yawDegrees, facing, upAxis, symmetry, baseline };
+  progress('validate', 1);
   return guess;
 }
 
@@ -2401,11 +2576,13 @@ function resolveSkeletonPreset(id = 'mixamo') {
 
 const FINGER_NAMES = ALL_FINGER_NAMES;
 
-function fitFingerJoints(doc, skinXforms, bodyMeshes, guess, forwardZ, layout) {
+// sides: hands to analyze; the others keep the proportional estimate and a
+// 'skipped' status (a caller marker already moved that wrist).
+function fitFingerJoints(doc, skinXforms, bodyMeshes, guess, forwardZ, layout, sides = ['Left', 'Right']) {
   addFingerJoints(guess.joints, guess.height, forwardZ, guess.fingerTips, layout.fingers);
   const primitives = [];
   const parents = buildParentMap(doc), cache = new Map();
-  if (layout.fingers.length) for (const node of doc.getRoot().listNodes()) {
+  if (layout.fingers.length && sides.length) for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh || (bodyMeshes && !bodyMeshes.has(mesh))) continue;
     const world = skinXforms.get(node) || worldMatrixOf(node, parents, cache);
@@ -2419,6 +2596,10 @@ function fitFingerJoints(doc, skinXforms, bodyMeshes, guess, forwardZ, layout) {
   }
   guess.fingerDetection = {};
   for (const side of ['Left', 'Right']) {
+    if (layout.fingers.length && !sides.includes(side)) {
+      guess.fingerDetection[side] = { status: 'skipped', detectedCount: 0, reason: 'The wrist marker was moved; finger analysis skipped.' };
+      continue;
+    }
     const result = detectHandFingers(primitives, guess.joints[`${side}Hand`], guess.joints[`${side}ForeArm`], {
       height: guess.height, fingers: layout.fingers, tip: guess.fingerTips?.[side], forward: [0, 0, forwardZ],
     });
@@ -2452,6 +2633,138 @@ function jointDiagnostics(guess, layout) {
   return { status: issues.length ? 'review' : 'ready', issues, outsideBounds: outside,
     method: guess.reRig ? 'existing-rig' : guess.method,
     scope: 'Automatic placement is an estimate; inspect the rest pose and test animation.' };
+}
+
+// ── Joint confidence and verdict ─────────────────────────────────────────────
+// Per joint 0..1 from the signals the analysis already has: how the body was
+// resolved (method, landmarks, crotch/arm/skirt flags, agreement between the
+// slicing and topology detectors), markers outside the body bounds or volume,
+// L/R limb-length symmetry, finger detection and — once rigged — the stress
+// pose score, geodesic coverage and weighting checks of the joint's region.
+// verdict 'review' when a joint that deforms drops below REVIEW_CONFIDENCE or
+// the whole rig below REVIEW_OVERALL. Finger chains of unresolved hands are
+// listed in reviewJoints but never force a review: they are not skinned
+// automatically, so the hand stays solid.
+const REVIEW_CONFIDENCE = 0.5, REVIEW_OVERALL = 0.6;
+const FINGER_JOINT = /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[123]$/;
+const LEG_JOINT = /^(Left|Right)(UpLeg|Leg|Foot|ToeBase)$/;
+const ARM_JOINT = /^(Left|Right)(Shoulder|Arm|ForeArm|Hand)$/;
+const LIMB_PAIRS = [['UpLeg', 'Leg', 'thigh'], ['Leg', 'Foot', 'shin'], ['Arm', 'ForeArm', 'upper arm'], ['ForeArm', 'Hand', 'forearm']];
+
+// Distance from p to the nearest solid voxel, in cells (0 inside), capped.
+function voxelDistance(vox, p, maxR = 4) {
+  const { grid, nx, ny, nz, origin, cell, idxOf } = vox;
+  const cx = Math.floor((p[0] - origin[0]) / cell), cy = Math.floor((p[1] - origin[1]) / cell), cz = Math.floor((p[2] - origin[2]) / cell);
+  let best = Infinity;
+  for (let r = 0; r <= maxR; r++) {
+    for (let dz = -r; dz <= r; dz++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+      const x = cx + dx, y = cy + dy, z = cz + dz;
+      if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz || grid[idxOf(x, y, z)] !== 1) continue;
+      best = Math.min(best, Math.hypot(dx, dy, dz));
+    }
+    if (best <= r) break;
+  }
+  return Number.isFinite(best) ? best : maxR + 1;
+}
+
+function assessJoints({ joints, order, guess = null, fingerDetection = guess?.fingerDetection, ctx = {}, vox = null, outsideBounds = [], deformingFingers = [],
+  deformation = null, geodesic = null, boneStats = null, globalReasons = [], globalFactor = 1 }) {
+  const conf = {}, why = {};
+  const lower = (name, value, reason) => {
+    if (!(name in conf)) return;
+    if (value < conf[name]) conf[name] = value;
+    if (reason) (why[name] ??= []).includes(reason) || why[name].push(reason);
+  };
+  const scale = (name, factor, reason) => lower(name, conf[name] * factor, reason);
+  const reasons = [...globalReasons];
+  // Base: how the joint was placed.
+  const method = guess?.method || 'markers';
+  for (const name of order) {
+    let base = 0.9;
+    if (guess?.jointSources?.[name]) base = 0.95;
+    else if (method === 'slicing') base = guess.landmarks ? 0.9 : 0.75;
+    else if (method === 'topology') base = 0.55 + 0.35 * Math.max(0, Math.min(1, ((ctx.topoConfidence ?? 0.6) - 0.6) / 0.4));
+    else if (method === 'bounds' || method === 'quadruped-bounds') base = 0.3;
+    conf[name] = base * globalFactor;
+  }
+  const imported = name => !!guess?.jointSources?.[name];
+  if (guess && !guess.reRig) {
+    if (method === 'bounds' || method === 'quadruped-bounds') reasons.push('Body landmarks were not found: joints use estimated proportions.');
+    const flags = guess.flags || {};
+    for (const name of order) {
+      if (imported(name)) continue;
+      if (method === 'slicing' && LEG_JOINT.test(name) && flags.skirt) scale(name, 0.7, 'Clothing hides the legs; hips, knees and ankles are estimated.');
+      // Without a crotch the silhouette landmarks still place the legs (Hips
+      // from the shoulder line, ankles from the feet); without both, proportions.
+      else if (method === 'slicing' && (LEG_JOINT.test(name) || name === 'Hips') && !flags.crotch) {
+        scale(name, guess.landmarks ? 0.92 : 0.75, guess.landmarks ? null : 'No gap between the legs was found; the legs are placed from proportions.');
+      }
+      if (method === 'slicing' && ARM_JOINT.test(name) && !flags.arms) lower(name, 0.4, 'The arm span was not found; arm joints are estimated.');
+      // Slicing and topology passes agree on upright bodies; a large
+      // disagreement on a joint means one of them misread that region.
+      const d = ctx.agreement?.[name];
+      if (method === 'slicing' && d !== undefined && d > 0.1) {
+        scale(name, 1 - 0.3 * Math.min(1, (d - 0.1) / 0.15), d > 0.18 ? `Detectors disagree on ${name} by ${(d * 100).toFixed(0)}% of the height.` : null);
+      }
+    }
+  }
+  for (const name of outsideBounds) lower(name, 0.2, `${name} is outside the body bounds.`);
+  // Markers must sit inside the body volume (fingers: their own checks).
+  if (vox) {
+    for (const name of order) {
+      if (FINGER_JOINT.test(name) || !joints[name] || imported(name)) continue;
+      const d = voxelDistance(vox, joints[name]);
+      if (d > 2.5) scale(name, 0.55, `${name} lies outside the mesh.`);
+      else if (d > 1.5) scale(name, 0.85);
+    }
+  }
+  // Bind skeletons are symmetric: very different left/right bone lengths
+  // usually mean a misplaced marker.
+  for (const [from, to, label] of LIMB_PAIRS) {
+    const len = side => joints[`${side}${from}`] && joints[`${side}${to}`] ? vec3Length(vec3Subtract(joints[`${side}${to}`], joints[`${side}${from}`])) : 0;
+    const l = len('Left'), r = len('Right');
+    if (!(l > 0 && r > 0)) continue;
+    const diff = Math.abs(l - r) / Math.max(l, r);
+    if (diff > 0.2) for (const side of ['Left', 'Right']) {
+      scale(`${side}${to}`, Math.max(0.5, 1 - 2 * (diff - 0.2)), `Left and right ${label} lengths differ by ${(diff * 100).toFixed(0)}%.`);
+    }
+  }
+  // Fingers: detection status per hand.
+  for (const side of ['Left', 'Right']) {
+    const hand = fingerDetection?.[side];
+    for (const name of order) {
+      if (!FINGER_JOINT.test(name) || !name.startsWith(side) || imported(name)) continue;
+      if (!hand || hand.status === 'disabled') continue;
+      if (hand.status === 'detected') lower(name, 0.85);
+      else if (hand.status === 'existing') lower(name, 0.95);
+      else if (!deformingFingers.includes(side)) lower(name, 0.35, `${side} hand: ${hand.reason || 'fingers were not resolved.'}`);
+    }
+  }
+  // Rig signals: stress poses, geodesic coverage, weighting checks.
+  if (deformation?.regions) for (const [region, r] of Object.entries(deformation.regions)) {
+    const members = /HandFingers$/.test(region) ? order.filter(n => FINGER_JOINT.test(n) && n.startsWith(region.slice(0, -11))) : [region];
+    for (const name of members) scale(name, 0.6 + 0.4 * r.score, r.score < REVIEW_CONFIDENCE ? r.issues[0] : null);
+  }
+  if (geodesic?.disabled) for (const name of order) scale(name, 0.9);
+  if (boneStats) for (const [name, s] of Object.entries(boneStats)) {
+    if (s.vertices < 50) continue;
+    if (geodesic && !geodesic.disabled && s.noGeodesic / s.vertices > 0.3) {
+      scale(name, 0.75, `${name}: ${(100 * s.noGeodesic / s.vertices).toFixed(0)}% of its skin has no geodesic data (euclidean weights).`);
+    }
+    if (s.flagged / s.vertices > 0.05) scale(name, 0.7, `${name}: ${(100 * s.flagged / s.vertices).toFixed(0)}% of its vertices carry cross-side or distant weights.`);
+  }
+  const deforming = order.filter(n => !FINGER_JOINT.test(n) || deformingFingers.some(side => n.startsWith(side)));
+  const values = deforming.map(n => conf[n]);
+  const overall = values.length ? 0.6 * values.reduce((a, b) => a + b, 0) / values.length + 0.4 * Math.min(...values) : 0;
+  const reviewJoints = order.filter(n => conf[n] < REVIEW_CONFIDENCE);
+  const verdict = deforming.some(n => conf[n] < REVIEW_CONFIDENCE) || overall < REVIEW_OVERALL ? 'review' : 'ok';
+  for (const name of reviewJoints) for (const reason of why[name] || []) if (!reasons.includes(reason)) reasons.push(reason);
+  if (overall < REVIEW_OVERALL && !reviewJoints.length) reasons.push(`Overall confidence ${(overall * 100).toFixed(0)}%.`);
+  return {
+    verdict, confidence: +overall.toFixed(3), reviewJoints, reviewReasons: reasons.slice(0, 12),
+    jointConfidence: Object.fromEntries(order.map(n => [n, +conf[n].toFixed(3)])),
+  };
 }
 
 function addFingerJoints(joints, H, forwardZ = 1, fingerTips = null, fingers = FINGER_NAMES) {
@@ -2746,38 +3059,305 @@ export function validateRestSkin(doc, height) {
   return { passed: true, vertices, maxPositionError: maxError, maxWeightError, tolerance: height * 2e-5 };
 }
 
+// ── Deformation stress test ──────────────────────────────────────────────────
+// Poses the bind skeleton in a few extreme poses and skins sampled triangles
+// with plain linear blend skinning (what every runtime does), then measures
+// per joint region: edge distortion (stretch/compression ratios), triangles
+// that collapse or fold over against the rotation they should follow, and the
+// forearm volume lost under a 90° wrist twist (candy wrapper). Rotations are
+// applied in the bind (world) frame about each joint, so the result does not
+// depend on bone orientations. parts: [{ positions, indices, joints, weights }]
+// with world positions and 4 skin influences per vertex indexing `order`.
+const rotationMatrix = (axis, angle) => {
+  const [x, y, z] = vec3Normalize(axis), c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
+  return [t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+    t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+    t * x * z - s * y, t * y * z + s * x, t * z * z + c];
+};
+const vec3Cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const vec3Dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+// Rotation taking unit d0 onto unit d1.
+function rotationBetween(d0, d1) {
+  const axis = vec3Cross(d0, d1), c = Math.max(-1, Math.min(1, vec3Dot(d0, d1)));
+  if (vec3Length(axis) < 1e-6) {
+    if (c > 0) return null;
+    const ref = Math.abs(d0[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    return rotationMatrix(vec3Cross(d0, ref), Math.PI);
+  }
+  return rotationMatrix(axis, Math.acos(c));
+}
+
+const DEG = Math.PI / 180;
+const FINGER_CURL = [60, 75, 55];
+
+function stressPoses(joints, order, { forward, left, fingerSides = [], twist = false }) {
+  const up = vec3Normalize(vec3Cross(forward, left));
+  const knee = vec3Cross(up, forward); // shin swings back, thigh forward about −knee
+  const has = name => order.includes(name) && joints[name];
+  const dir = (a, b) => vec3Normalize(vec3Subtract(joints[b], joints[a]));
+  const poses = [];
+  const sides = ['Left', 'Right'].filter(s => has(`${s}UpLeg`) && has(`${s}Leg`) && has(`${s}Arm`));
+  poses.push({ name: 'squat', label: 'squat (hips 90°, knees 100°)', allow: [2.0, 8], rotations: Object.fromEntries(sides.flatMap(s => [
+    [`${s}UpLeg`, rotationMatrix(knee, -90 * DEG)], [`${s}Leg`, rotationMatrix(knee, 100 * DEG)]])) });
+  const armTo = target => Object.fromEntries(sides.map(s => {
+    const out = s === 'Left' ? left : left.map(v => -v);
+    const goal = vec3Normalize(target(out));
+    return [`${s}Arm`, rotationBetween(dir(`${s}Arm`, `${s}ForeArm`), goal)];
+  }).filter(([, r]) => r));
+  poses.push({ name: 'armsUp', label: 'arms raised 120°', allow: [1.8, 4], rotations: armTo(out => up.map((v, i) => v * Math.cos(30 * DEG) + out[i] * Math.sin(30 * DEG))) });
+  poses.push({ name: 'armsDown', label: 'arms down', allow: [1.8, 4], rotations: armTo(out => up.map((v, i) => -v * Math.cos(10 * DEG) + out[i] * Math.sin(10 * DEG))) });
+  poses.push({ name: 'elbows', label: 'elbows bent 130°', allow: [2.2, 8], rotations: Object.fromEntries(sides.map(s => {
+    const d = dir(`${s}ForeArm`, `${s}Hand`);
+    let axis = vec3Cross(d, forward);
+    if (vec3Length(axis) < 0.3) axis = vec3Cross(d, up);
+    return [`${s}ForeArm`, rotationMatrix(axis, 130 * DEG)];
+  })) });
+  poses.push({ name: 'torsoTwist', label: 'torso twist 45°', allow: [1.6, 2], rotations: Object.fromEntries(['Spine', 'Spine1', 'Spine2']
+    .filter(has).map((name, _, all) => [name, rotationMatrix(up, 45 * DEG / all.length)])) });
+  poses.push({ name: 'headTurn', label: 'head turn 60°', allow: [1.6, 2], rotations: Object.fromEntries([['Neck', 25], ['Head', 35]]
+    .filter(([n]) => has(n)).map(([n, a]) => [n, rotationMatrix(up, a * DEG)])) });
+  poses.push({ name: 'wristTwist', label: 'wrist twist 90°', allow: [1.7, 2], candy: true, rotations: Object.fromEntries(sides.flatMap(s => {
+    const axis = dir(`${s}ForeArm`, `${s}Hand`), tw = `${s}ForeArmTwist`;
+    return twist && has(tw) ? [[tw, rotationMatrix(axis, 45 * DEG)], [`${s}Hand`, rotationMatrix(axis, 45 * DEG)]]
+      : [[`${s}Hand`, rotationMatrix(axis, 90 * DEG)]];
+  })) });
+  const curl = {};
+  for (const s of fingerSides) {
+    const knuckles = ['Index', 'Pinky', 'Ring', 'Middle'].map(f => `${s}Hand${f}1`).filter(has);
+    for (const f of ALL_FINGER_NAMES) {
+      if (f === 'Thumb' || !has(`${s}Hand${f}1`) || !has(`${s}Hand${f}2`)) continue;
+      const d = dir(`${s}Hand${f}1`, `${s}Hand${f}2`);
+      let palm = knuckles.length >= 2 ? vec3Normalize(vec3Cross(d, vec3Subtract(joints[knuckles[0]], joints[knuckles[1]]))) : up.map(v => -v);
+      if (s === 'Right' && knuckles.length >= 2) palm = palm.map(v => -v);
+      const axis = vec3Cross(d, palm);
+      if (vec3Length(axis) < 1e-3) continue;
+      [1, 2, 3].forEach(n => { if (has(`${s}Hand${f}${n}`)) curl[`${s}Hand${f}${n}`] = rotationMatrix(axis, FINGER_CURL[n - 1] * DEG); });
+    }
+  }
+  if (Object.keys(curl).length) poses.push({ name: 'fingerCurl', label: 'fingers curled', allow: [2.0, 5], rotations: curl });
+  return poses.filter(p => Object.keys(p.rotations).length);
+}
+
+const regionOf = name => /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d$/.test(name)
+  ? `${name.startsWith('Left') ? 'Left' : 'Right'}HandFingers` : name;
+
+export function deformationStressTest({ parts, order, hierarchy, joints, height: H, forward = [0, 0, 1], left = [1, 0, 0],
+  fingerSides = [], twist = false, maxTriangles = 60000 }) {
+  const t0 = Date.now();
+  const poses = stressPoses(joints, order, { forward: vec3Normalize(forward), left: vec3Normalize(left), fingerSides, twist });
+  const stressJoints = [...new Set(poses.flatMap(p => Object.keys(p.rotations)))];
+  const stressPos = stressJoints.map(n => joints[n]);
+  const capOf = stressJoints.map(n => /Hand(Thumb|Index|Middle|Ring|Pinky)/.test(n) ? 0.03 * H : 0.15 * H);
+  // Stride-sampled triangles, each assigned to its nearest stressed joint.
+  let totalTris = 0;
+  for (const p of parts) totalTris += Math.floor((p.indices ? p.indices.length : p.positions.length / 3) / 3);
+  const stride = Math.max(1, Math.ceil(totalTris / maxTriangles));
+  const tris = []; // [partIndex, a, b, c, region]
+  let seen = 0;
+  parts.forEach((p, pi) => {
+    const n = Math.floor((p.indices ? p.indices.length : p.positions.length / 3) / 3);
+    for (let t = 0; t < n; t++, seen++) {
+      if (seen % stride) continue;
+      const a = p.indices ? p.indices[t * 3] : t * 3, b = p.indices ? p.indices[t * 3 + 1] : t * 3 + 1, c = p.indices ? p.indices[t * 3 + 2] : t * 3 + 2;
+      const P = p.positions;
+      const cx = (P[a * 3] + P[b * 3] + P[c * 3]) / 3, cy = (P[a * 3 + 1] + P[b * 3 + 1] + P[c * 3 + 1]) / 3, cz = (P[a * 3 + 2] + P[b * 3 + 2] + P[c * 3 + 2]) / 3;
+      let best = -1, bd = Infinity;
+      for (let j = 0; j < stressPos.length; j++) {
+        const q = stressPos[j], d = Math.hypot(cx - q[0], cy - q[1], cz - q[2]);
+        if (d < bd && d < capOf[j]) { bd = d; best = j; }
+      }
+      if (best >= 0) tris.push([pi, a, b, c, best]);
+    }
+  });
+  const index = new Map(order.map((n, i) => [n, i]));
+  const vertexOf = (p, v) => [p.positions[v * 3], p.positions[v * 3 + 1], p.positions[v * 3 + 2]];
+  const lbs = (G, p, v) => {
+    const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (let k = 0; k < 4; k++) {
+      const w = p.weights[v * 4 + k];
+      if (!(w > 0)) continue;
+      const g = G[p.joints[v * 4 + k]];
+      for (let i = 0; i < 12; i++) out[i] += w * g[i];
+    }
+    return out;
+  };
+  const apply = (m, x) => [m[0] * x[0] + m[1] * x[1] + m[2] * x[2] + m[3], m[4] * x[0] + m[5] * x[1] + m[6] * x[2] + m[7], m[8] * x[0] + m[9] * x[1] + m[10] * x[2] + m[11]];
+  const applyLinear = (m, x) => [m[0] * x[0] + m[1] * x[1] + m[2] * x[2], m[4] * x[0] + m[5] * x[1] + m[6] * x[2], m[8] * x[0] + m[9] * x[1] + m[10] * x[2]];
+  const regions = {};
+  const report = [];
+  for (const pose of poses) {
+    // Bind-relative joint transforms G_j = G_parent · T(p)·R·T(−p).
+    const G = new Array(order.length);
+    order.forEach((name, i) => {
+      const parent = hierarchy[name] ? G[index.get(hierarchy[name])] : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+      const R = pose.rotations[name];
+      if (!R) { G[i] = parent; return; }
+      const p = joints[name];
+      const t = [p[0] - (R[0] * p[0] + R[1] * p[1] + R[2] * p[2]), p[1] - (R[3] * p[0] + R[4] * p[1] + R[5] * p[2]), p[2] - (R[6] * p[0] + R[7] * p[1] + R[8] * p[2])];
+      const local = [R[0], R[1], R[2], t[0], R[3], R[4], R[5], t[1], R[6], R[7], R[8], t[2]];
+      const out = new Array(12);
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) out[r * 4 + c] = parent[r * 4] * local[c] + parent[r * 4 + 1] * local[4 + c] + parent[r * 4 + 2] * local[8 + c];
+        out[r * 4 + 3] = parent[r * 4] * local[3] + parent[r * 4 + 1] * local[7] + parent[r * 4 + 2] * local[11] + parent[r * 4 + 3];
+      }
+      G[i] = out;
+    });
+    const active = new Set(Object.keys(pose.rotations).map(n => stressJoints.indexOf(n)));
+    const stats = new Map(); // region → { ratios[], tris, inverted, collapsed }
+    for (const [pi, a, b, c, j] of tris) {
+      if (!active.has(j)) continue;
+      const p = parts[pi];
+      const rest = [vertexOf(p, a), vertexOf(p, b), vertexOf(p, c)];
+      const mats = [lbs(G, p, a), lbs(G, p, b), lbs(G, p, c)];
+      const posed = rest.map((x, k) => apply(mats[k], x));
+      const key = regionOf(stressJoints[j]);
+      let s = stats.get(key);
+      if (!s) stats.set(key, s = { ratios: [], tris: 0, inverted: 0, collapsed: 0 });
+      s.tris++;
+      for (let e = 0; e < 3; e++) {
+        const l0 = vec3Length(vec3Subtract(rest[(e + 1) % 3], rest[e])), l1 = vec3Length(vec3Subtract(posed[(e + 1) % 3], posed[e]));
+        if (l0 > 1e-9 * H) s.ratios.push(l1 / l0);
+      }
+      const n0 = vec3Cross(vec3Subtract(rest[1], rest[0]), vec3Subtract(rest[2], rest[0]));
+      const n1 = vec3Cross(vec3Subtract(posed[1], posed[0]), vec3Subtract(posed[2], posed[0]));
+      const a0 = vec3Length(n0);
+      if (!(a0 > 1e-12 * H * H)) continue;
+      const blend = mats[0].map((v, i) => (v + mats[1][i] + mats[2][i]) / 3);
+      if (vec3Length(n1) < 0.1 * a0) s.collapsed++;
+      else if (vec3Dot(n1, applyLinear(blend, n0)) < 0) s.inverted++;
+    }
+    // Candy wrapper: worst forearm cross-section radius kept under the twist.
+    let candy = null;
+    if (pose.candy) {
+      candy = {};
+      for (const side of ['Left', 'Right']) {
+        const fa = joints[`${side}ForeArm`], hand = joints[`${side}Hand`];
+        if (!fa || !hand || !pose.rotations[`${side}Hand`]) continue;
+        const axis = vec3Subtract(hand, fa), len = vec3Length(axis), u = axis.map(v => v / (len || 1));
+        const bins = Array.from({ length: 6 }, () => [0, 0]);
+        const used = new Set();
+        const arm = new Set([`${side}ForeArm`, `${side}ForeArmTwist`, `${side}Hand`].map(n => index.get(n)).filter(i => i !== undefined));
+        for (const [pi, a, b, c] of tris) for (const v of [a, b, c]) {
+          const p = parts[pi], key = pi * 1e9 + v;
+          if (used.has(key) || !arm.has(p.joints[v * 4])) continue; // forearm skin only
+          const x = vertexOf(p, v), rel = vec3Subtract(x, fa), t = vec3Dot(rel, u) / len;
+          if (t < 0.4 || t > 1) continue;
+          const perp = rel.map((r, i) => r - u[i] * t * len), r0 = vec3Length(perp);
+          if (r0 > 0.08 * H || r0 < 1e-6 * H) continue;
+          used.add(key);
+          const y = vec3Subtract(apply(lbs(G, p, v), x), fa), along = vec3Dot(y, u);
+          const r1 = vec3Length(y.map((r, i) => r - u[i] * along));
+          const bin = bins[Math.min(5, Math.floor((t - 0.4) / 0.1))];
+          bin[0] += r0; bin[1] += r1;
+        }
+        const kept = bins.filter(([r0]) => r0 > 0).map(([r0, r1]) => r1 / r0);
+        if (kept.length) candy[side] = +(1 - Math.min(...kept)).toFixed(3);
+      }
+    }
+    const poseRow = { name: pose.name, label: pose.label, joints: Object.keys(pose.rotations), regions: {} };
+    for (const [key, s] of stats) {
+      const ratios = Float64Array.from(s.ratios).sort();
+      const distortion = Float64Array.from(s.ratios, r => (r > 1 ? r : 1 / Math.max(r, 1e-6))).sort();
+      const q = (arr, f) => arr.length ? arr[Math.min(arr.length - 1, Math.floor(f * (arr.length - 1)))] : 1;
+      const row = {
+        triangles: s.tris,
+        distortionP95: +q(distortion, 0.95).toFixed(3), distortionMax: +q(distortion, 1).toFixed(3),
+        stretchMax: +q(ratios, 1).toFixed(3), compressMin: +q(ratios, 0).toFixed(3),
+        invertedPct: +(100 * s.inverted / Math.max(1, s.tris)).toFixed(2), collapsedPct: +(100 * s.collapsed / Math.max(1, s.tris)).toFixed(2),
+      };
+      const side = key.startsWith('Left') ? 'Left' : key.startsWith('Right') ? 'Right' : null;
+      const loss = candy && side && /Hand$/.test(key) ? candy[side] : undefined;
+      if (loss !== undefined) row.candyWrapperLoss = loss;
+      // 0..1 against what linear blend skinning of artist rigs reaches in the
+      // same pose (pose.allow = [p95 distortion, % folded]): a 130° elbow or a
+      // deep squat always folds a little at the crease.
+      const [okP95, okFold] = pose.allow;
+      const fold = row.invertedPct + 0.5 * row.collapsedPct;
+      const parts3 = [Math.max(0, row.distortionP95 - okP95) / DEFORM_P95_SPAN, Math.max(0, fold - okFold) / DEFORM_FOLD_SPAN,
+        loss !== undefined ? Math.max(0, loss - DEFORM_CANDY_OK) * 2 : 0];
+      // Too few sampled triangles to judge: report, never penalize.
+      row.score = s.tris < 8 ? 1 : +Math.max(0, Math.min(1, 1 - parts3[0] - parts3[1] - parts3[2])).toFixed(3);
+      const issues = [];
+      if (row.score < DEFORM_ISSUE_SCORE) {
+        if (parts3[1] >= 0.15) issues.push(`${key}: ${(row.invertedPct + row.collapsedPct).toFixed(1)}% of triangles fold or collapse (${pose.label}).`);
+        if (parts3[0] >= 0.15) issues.push(`${key}: edges distort ${row.distortionP95.toFixed(1)}× (p95, ${pose.label}).`);
+        if (parts3[2] >= 0.15) issues.push(`${key}: forearm loses ${(loss * 100).toFixed(0)}% of its radius (${pose.label}); consider twist bones.`);
+      }
+      row.issues = issues;
+      poseRow.regions[key] = row;
+      const region = regions[key];
+      if (!region || row.score < region.score) regions[key] = { score: row.score, pose: pose.name, issues, ...row };
+      else region.issues = [...new Set([...region.issues, ...issues])];
+    }
+    if (candy) poseRow.candyWrapper = candy;
+    report.push(poseRow);
+  }
+  let worst = null;
+  for (const [key, r] of Object.entries(regions)) if (!worst || r.score < worst.score) worst = { region: key, ...r };
+  const scores = Object.values(regions).map(r => r.score);
+  return {
+    score: scores.length ? +(scores.reduce((x, y) => x + y, 0) / scores.length).toFixed(3) : 1, // mean region score
+    poses: report,
+    worst: worst ? { region: worst.region, pose: worst.pose, score: worst.score, distortionP95: worst.distortionP95,
+      invertedPct: worst.invertedPct, collapsedPct: worst.collapsedPct, issues: worst.issues } : null,
+    regions: Object.fromEntries(Object.entries(regions).map(([k, r]) => [k, { score: r.score, pose: r.pose, issues: r.issues,
+      distortionP95: r.distortionP95, invertedPct: r.invertedPct, collapsedPct: r.collapsedPct,
+      ...(r.candyWrapperLoss !== undefined ? { candyWrapperLoss: r.candyWrapperLoss } : {}) }])),
+    sampledTriangles: tris.length, stride, ms: Date.now() - t0,
+  };
+}
+const DEFORM_P95_SPAN = 1.2, DEFORM_FOLD_SPAN = 15, DEFORM_CANDY_OK = 0.35, DEFORM_ISSUE_SCORE = 0.6;
+
 // ── Mesh vertex adjacency (for weight smoothing) ─────────────────────────────
 // Welds vertices by position (split UV/normal seams share one logical vertex so
 // smoothing crosses the seam) and returns, per logical vertex, the set of
 // logical neighbours from the triangle edges. Smoothing weights across this
 // graph removes the hard creases pure proximity weighting leaves at elbows,
 // knees, armpits and the crotch.
-function buildVertexAdjacency(positions, indices, weldEps) {
-  const count = positions.length / 3;
-  // Weld: quantize positions to a grid, map duplicate coords to one repId.
+// All weighted primitives share one index space (part.offset): coincident
+// vertices weld ACROSS primitives too, so split bodies (Body/Tops/Shoes),
+// material splits and UV seams duplicated between primitives smooth as one
+// surface and their seam vertices end up with identical weights.
+function buildJointAdjacency(parts, count, weldEps) {
+  // Weld: quantize positions to a grid, map duplicate coords to one repId
+  // (open-addressing hash on the quantized coords; exact compare on hit).
   const inv = 1 / Math.max(weldEps, 1e-8);
-  const keyToRep = new Map();
   const repOf = new Int32Array(count);
-  for (let v = 0; v < count; v++) {
-    const kx = Math.round(positions[v * 3] * inv);
-    const ky = Math.round(positions[v * 3 + 1] * inv);
-    const kz = Math.round(positions[v * 3 + 2] * inv);
-    const key = kx + ',' + ky + ',' + kz;
-    let rep = keyToRep.get(key);
-    if (rep === undefined) { rep = v; keyToRep.set(key, v); }
-    repOf[v] = rep;
+  const qx = new Float64Array(count), qy = new Float64Array(count), qz = new Float64Array(count);
+  let size = 1;
+  while (size < count * 2) size <<= 1;
+  const table = new Int32Array(size).fill(-1), mask = size - 1;
+  for (const { positions, offset } of parts) {
+    const n = positions.length / 3;
+    for (let i = 0; i < n; i++) {
+      const v = offset + i;
+      const kx = Math.round(positions[i * 3] * inv), ky = Math.round(positions[i * 3 + 1] * inv), kz = Math.round(positions[i * 3 + 2] * inv);
+      qx[v] = kx; qy[v] = ky; qz[v] = kz;
+      let h = (Math.imul(kx | 0, 73856093) ^ Math.imul(ky | 0, 19349663) ^ Math.imul(kz | 0, 83492791)) & mask;
+      let rep = -1;
+      for (;;) {
+        const r = table[h];
+        if (r < 0) { table[h] = v; break; }
+        if (qx[r] === kx && qy[r] === ky && qz[r] === kz) { rep = r; break; }
+        h = (h + 1) & mask;
+      }
+      repOf[v] = rep < 0 ? v : rep;
+    }
   }
   // Compressed adjacency over representatives (typed arrays: million-vertex
   // meshes would otherwise need a Set per vertex).
-  const triCount = Math.floor((indices ? indices.length : count) / 3);
-  const corner = i => repOf[indices ? indices[i] : i];
   const degree = new Int32Array(count);
   const eachEdge = visit => {
-    for (let t = 0; t < triCount; t++) {
-      const a = corner(t * 3), b = corner(t * 3 + 1), c = corner(t * 3 + 2);
-      if (a !== b) visit(a, b);
-      if (b !== c) visit(b, c);
-      if (c !== a) visit(c, a);
+    for (const { positions, indices, offset } of parts) {
+      const triCount = Math.floor((indices ? indices.length : positions.length / 3) / 3);
+      for (let t = 0; t < triCount; t++) {
+        const a = repOf[offset + (indices ? indices[t * 3] : t * 3)];
+        const b = repOf[offset + (indices ? indices[t * 3 + 1] : t * 3 + 1)];
+        const c = repOf[offset + (indices ? indices[t * 3 + 2] : t * 3 + 2)];
+        if (a !== b) visit(a, b);
+        if (b !== c) visit(b, c);
+        if (c !== a) visit(c, a);
+      }
     }
   };
   eachEdge((a, b) => { degree[a]++; degree[b]++; });
@@ -3035,9 +3615,12 @@ export function jointBindFrames(rigLayout, joints, fwdSign = 1, mode = 'world') 
 // vertex only stores its voxel: memory scales with the grid, not with mesh
 // density, so million-vertex scans and AI meshes keep geodesic weighting.
 const GEO_UNREACHED = 0xffff;
-function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
-  let vox = null;
-  try {
+// boneSegs[b]: the bone's weighting segments (seeds). status (filled):
+// { vox, rasterized, truncated, coverage, disabled }. A voxel solid of the same
+// body and bounds (the topology pass) can be reused as prebuilt.
+function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, boneSegs, status = {}, prebuilt = null) {
+  let vox = prebuilt;
+  if (!vox) try {
     // Geometry is baked to world. Ignore the entire mesh ancestry, including
     // armature transforms retained for unskinned children/accessories.
     const bakedTransforms = new Map(doc.getRoot().listNodes()
@@ -3046,7 +3629,10 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
   } catch (e) {
     console.warn('[autorig] Voxelization for geodesic weights failed:', e.message);
   }
-  if (!vox) return null;
+  if (!vox) { status.disabled = 'voxelization'; return null; }
+  status.vox = vox;
+  status.rasterized = vox.rasterized ?? 1;
+  status.truncated = !!vox.truncated;
   const { grid, nx, ny, nz, origin, cell, idxOf } = vox;
 
   const nearestSolid = (p, maxR) => {
@@ -3073,9 +3659,10 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
   const compact = new Int32Array(grid.length).fill(-1);
   let solidCount = 0;
   for (let i = 0; i < grid.length; i++) if (grid[i] === 1) compact[i] = solidCount++;
-  const nB = segList.length;
+  const nB = boneSegs.length;
   if (solidCount * nB > 64_000_000) {
     console.warn('[autorig] Geodesic weights disabled: voxel field exceeds the memory budget.');
+    status.disabled = 'memory';
     return null;
   }
 
@@ -3097,8 +3684,10 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
       voxelOf.set(prim, vidx);
     }
   }
+  status.coverage = totalVerts ? mapped / totalVerts : 0;
   if (totalVerts === 0 || mapped / totalVerts < 0.5) {
     console.warn('[autorig] Geodesic weights disabled: voxel coverage too low.');
+    status.disabled = 'coverage';
     return null;
   }
 
@@ -3116,7 +3705,7 @@ function buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList) {
 
   const fields = new Uint16Array(solidCount * nB).fill(GEO_UNREACHED);
   for (let b = 0; b < nB; b++) {
-    const seeds = segmentSeeds(segList[b]);
+    const seeds = [...new Set(boneSegs[b].flatMap(segmentSeeds))];
     if (!seeds.length) continue;
     const { dist } = voxelBFS(vox, seeds);
     for (let i = 0; i < grid.length; i++) {
@@ -3192,9 +3781,12 @@ function attachRigidProps(doc, bodyMeshes, jointNodes, segNames, segList, joints
 }
 
 export async function autoRigGLB(buffer, options = {}) {
+  const progress = progressReporter(options);
   const io = await getIO();
-  const doc = await io.readBinary(new Uint8Array(buffer));
+  const bytes = new Uint8Array(buffer);
+  const doc = await io.readBinary(bytes);
   const root = doc.getRoot();
+  const arrivedSkinned = root.listSkins().length > 0;
   const presetId = options.skeletonPreset || 'mixamo';
   const preset = resolveSkeletonPreset(presetId);
   const layout = buildRigLayout(options);
@@ -3216,35 +3808,53 @@ export async function autoRigGLB(buffer, options = {}) {
       console.log('[autorig] Existing rig stripped — rebuilding skeleton with the requested layout.');
     } else {
       validateJointLayout(options.joints || {}, 1, { partial: true });
+      progress('bind', 0.1);
       const adjustment = adjustExistingRig(doc, options.joints || {});
       if (options.reportSink && typeof options.reportSink === 'object') {
         Object.assign(options.reportSink, { mode: 'adjust', ...adjustment,
           notes: adjustment.ignoredJoints.length
             ? [`Unmapped markers: ${adjustment.ignoredJoints.join(', ')}.`] : [] });
       }
-      if (!adjustment.adjustedJoints) return new Uint8Array(buffer);
+      if (!adjustment.adjustedJoints) { progress('write', 1); return new Uint8Array(buffer); }
+      progress('write', 0.8);
       await doc.transform(prune({ keepLeaves: true }));
       root.listExtensionsUsed().find(ext => ext.extensionName === 'KHR_draco_mesh_compression')?.dispose();
-      return io.writeBinary(doc);
+      const out = await io.writeBinary(doc);
+      progress('write', 1);
+      return out;
     }
   }
 
+  validateJointLayout(options.joints || {}, 1, { partial: true }); // fail before the analysis
   await prepareRigGeometry(doc);
   const selectionReport = {};
-  const bodyMeshes = selectBodyMeshes(doc, previouslySkinned, options, selectionReport);
-  // Same canonical frame as guessJoints (deterministic on the same input), so
-  // its markers map in with the same yaw. The generated rig faces +Z.
-  const orientation = canonicalizeFacing(doc, previouslySkinned, bodyMeshes, options);
+  // Same canonical frame as guessJoints (deterministic on the same input, and
+  // shared through the analysis cache), so its markers map in with the same
+  // yaw. The generated rig faces +Z.
+  const cacheKey = arrivedSkinned ? null : analysisKey(bytes, options, layout);
+  const cached = analysisCacheGet(cacheKey);
+  const front = analysisFront(doc, previouslySkinned, options, selectionReport, cached, progress, false);
+  const { bodyMeshes, orientation, bounds, forwardZ } = front;
   const markerJoints = options.joints ? rotateJoints(options.joints, orientation.rotation) : null;
   sourceJoints = rotateJoints(sourceJoints, orientation.rotation);
-  const bounds = computeWorldBounds(doc, previouslySkinned, bodyMeshes);
-  const forwardZ = detectForwardZ(doc, bounds, previouslySkinned, bodyMeshes);
-  const guess = guessJointsAuto(doc, previouslySkinned, bounds, forwardZ, bodyMeshes, layout.bodyPlan);
-  // Symmetry is an explicit option: an asymmetric pose must not be straightened
-  // underneath unchanged geometry. Analysis and generation use the same layout.
-  if (guess.method === 'slicing' && options.symmetrize === true) symmetrizeGuess(guess.joints);
-  fitFingerJoints(doc, previouslySkinned, bodyMeshes, guess, forwardZ, layout);
-  if (layout.bodyPlan === 'quadruped') addTailJoints(guess.joints, guess.height);
+  // A complete marker set leaves the detectors only two jobs: the topology
+  // pass where it can change the method and scale (non-standard poses), and
+  // the finger analysis of hands still on the analyzed wrist (automatic
+  // finger skinning). Everything else they would propose is overridden.
+  const markersComplete = !!markerJoints && layout.order.every(name => markerJoints[name]);
+  const ctx = cached ? { ...cached.ctx } : {};
+  let guess;
+  if (cached) guess = structuredClone(cached.guess);
+  else {
+    // Symmetry is an explicit option: an asymmetric pose must not be straightened
+    // underneath unchanged geometry. Analysis and generation use the same layout.
+    guess = analyzeJoints(doc, previouslySkinned, front, layout, options, {
+      ctx, progress, topology: markersComplete ? 'auto' : 'always',
+      fingerSides: markersComplete ? g => (options.skinFingers === 'auto' ? ['Left', 'Right'].filter(side =>
+        vec3Length(vec3Subtract(markerJoints[`${side}Hand`], g.joints[`${side}Hand`])) < g.height * 0.01) : []) : null,
+    });
+    if (!markersComplete) analysisCachePut(cacheKey, cacheEntry(doc, front, selectionReport, guess, ctx));
+  }
   validateJointLayout(markerJoints || {}, guess.height, { partial: true });
   const joints = { ...guess.joints, ...sourceJoints, ...(markerJoints || {}) };
   for (const name of Object.keys(joints)) {
@@ -3286,6 +3896,7 @@ export async function autoRigGLB(buffer, options = {}) {
   }
 
   // ── 1. Bake node world transforms into vertex data ────────────────────────
+  progress('bind', 0.28);
   // Skinned vertices live in skin space (the mesh node transform is ignored per
   // glTF spec), so positions must be expressed in the same world space as the
   // joints before weights are assigned.
@@ -3454,7 +4065,7 @@ export async function autoRigGLB(buffer, options = {}) {
   skin.setSkeleton(jointNodes.get('Hips'));
 
   // ── 4. Proximity skin weights ──────────────────────────────────────────────
-  // Distance to bone segment, d^-4 falloff, top-4, with two hardening rules:
+  // Distance to bone segment, d^-6 falloff, top-4, with two hardening rules:
   //  a) relative cutoff: drop bones farther than 2.2× the nearest bone — a 4th
   //     influence at 2× distance still gets ~6% weight, which visibly drags
   //     vertices in extreme poses (punch cross, sitting, roll).
@@ -3487,7 +4098,16 @@ export async function autoRigGLB(buffer, options = {}) {
     name.startsWith('Left') ? 1 : name.startsWith('Right') ? -1 : 0);
   const fingerFamily = weightedJointOrder.map(name => name.match(/^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)/)?.[0] || null);
   const fingerColumns = fingerFamily.map((family, b) => family ? b : -1).filter(b => b >= 0);
+  // Exact pre-reject: farther from a wrist than its fingers reach plus the
+  // 1.8% H domain margin means no finger segment can be within the margin.
+  const fingerReach = ['Left', 'Right'].map(side => {
+    const wrist = joints[`${side}Hand`];
+    let reach = -Infinity;
+    fingerColumns.forEach(b => { if (fingerFamily[b].startsWith(side)) for (const q of segList[b]) reach = Math.max(reach, vec3Length(vec3Subtract(q, wrist))); });
+    return { wrist, limit: reach + H * 0.018 };
+  }).filter(r => Number.isFinite(r.limit));
   const fingerDomain = p => {
+    if (fingerReach.every(({ wrist, limit }) => Math.hypot(p[0] - wrist[0], p[1] - wrist[1], p[2] - wrist[2]) > limit * (1 + 1e-9))) return null;
     let nearest = -1, distance = Infinity;
     for (const b of fingerColumns) {
       const d = distPointSegment(p, ...segList[b]);
@@ -3548,12 +4168,34 @@ export async function autoRigGLB(buffer, options = {}) {
   const eps = 0.01 ** 2;
   const CUTOFF = 2.2;
   const nB = segList.length;
+  // Artist (Mixamo) conventions, fit with the weight-error metric on nine
+  // artist rigs (test/autorig-weights.test.mjs): a rigid skull (Neck stops at
+  // the Head joint), joint-centred blends (every bone fades 4% H past its child
+  // joint, limb bones 4% H before their own), a pelvis that spans the hip
+  // sockets and an upper chest that spans the clavicles (so thighs and
+  // shoulders do not take the pelvis and chest), lighter clavicles, a stronger
+  // pelvis. Each step lowered the mean error without deforming worse in the
+  // stress poses.
+  const strength = weightedJointOrder.map(name => (/Shoulder$/.test(name) ? 0.6 : name === 'Hips' ? 1.3 : 1));
+  const endBand = weightedJointOrder.map(name => (name === 'Neck' ? 0 : 0.04));
+  const startBand = weightedJointOrder.map(name => (/(Arm|Leg|Hand|Foot)$/.test(name) ? 0.04 : undefined));
+  const boneSegs = segList.map(s => [s]);
+  const extraSegment = (bone, a, b) => {
+    const i = weightedJointOrder.indexOf(bone);
+    if (i >= 0 && joints[a] && joints[b]) boneSegs[i].push([joints[a], joints[b]]);
+  };
+  extraSegment('Hips', 'LeftUpLeg', 'RightUpLeg');
+  extraSegment('Spine2', 'LeftShoulder', 'RightShoulder');
+  const axisOf = segList.map(([a, e]) => vec3Normalize(vec3Subtract(e, a)));
+  const smooth01 = x => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 
   // Geodesic distance fields: kill influences that would have to jump through
   // air (closed thighs, hand-near-hip, cross-body arms). 0 entries fall back
   // to plain euclidean distance.
+  progress('weights', 0.34);
+  const geoStatus = {};
   const geodesic = options.geodesicWeights !== false
-    ? buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, segList)
+    ? buildGeodesicDistances(doc, bounds, bodyMeshes, bakedMeshes, boneSegs, geoStatus, ctx.vox)
     : null;
   // Strongest bones kept per vertex through smoothing (top-4 are exported).
   const WEIGHT_SLOTS = 10;
@@ -3561,27 +4203,36 @@ export async function autoRigGLB(buffer, options = {}) {
   // Quality report accumulators (see reportSink below)
   let qaVerts = 0, qaCross = 0, qaDistant = 0;
 
+  // Every weighted primitive shares one vertex index space (offset per part),
+  // so smoothing diffuses across mesh/primitive boundaries.
+  const parts = [];
+  let totalVerts = 0;
   for (const mesh of bakedMeshes) {
     for (const prim of mesh.listPrimitives()) {
       const pos = prim.getAttribute('POSITION');
       if (!pos) continue;
       const arr = pos.getArray();
       const count = arr.length / 3;
-      const indices = prim.getIndices()?.getArray() || null;
+      parts.push({ mesh, prim, positions: arr, indices: prim.getIndices()?.getArray() || null, offset: totalVerts, count });
+      totalVerts += count;
+    }
+  }
+  if (totalVerts > 8_000_000) {
+    throw new Error(`Auto-Rig memory budget exceeded for ${totalVerts.toLocaleString('en-US')} vertices. Split or decimate the mesh.`);
+  }
+  // Sparse per-vertex weight field (strongest WEIGHT_SLOTS bones), built from
+  // proximity with a SOFT side gate, then Laplacian-smoothed across the joint
+  // mesh graph, then reduced to the glTF 4-influence limit.
+  const field = createSparseWeights(totalVerts, WEIGHT_SLOTS, nB);
+  const dists = new Float32Array(nB);
+  const weights = new Float64Array(nB);
 
-      if (count > 8_000_000) {
-        throw new Error(`Auto-Rig memory budget exceeded for a ${count.toLocaleString('en-US')}-vertex primitive. Split or decimate the mesh.`);
-      }
-
-      // Sparse per-vertex weight field (strongest WEIGHT_SLOTS bones), built
-      // from proximity with a SOFT side gate, then Laplacian-smoothed across
-      // the mesh graph, then reduced to the glTF 4-influence limit.
-      const field = createSparseWeights(count, WEIGHT_SLOTS, nB);
-      const dists = new Float32Array(nB);
-      const weights = new Float64Array(nB);
+  for (const { prim, positions: arr, offset, count } of parts) {
+    {
       const voxelIndex = geodesic ? geodesic.voxelOf.get(prim) : null;
 
       for (let v = 0; v < count; v++) {
+        if (((offset + v) & 0xffff) === 0) progress('weights', 0.36 + 0.32 * (offset + v) / totalVerts);
         const p = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
         const ctr = centerAtY(p[1]);
         // Signed distance from the midline along the anatomical left axis.
@@ -3592,6 +4243,7 @@ export async function autoRigGLB(buffer, options = {}) {
         let dMin = Infinity;
         for (let b = 0; b < nB; b++) {
           let d = distPointSegment(p, segList[b][0], segList[b][1]);
+          for (let s = 1; s < boneSegs[b].length; s++) d = Math.min(d, distPointSegment(p, boneSegs[b][s][0], boneSegs[b][s][1]));
           // max(euclid, geodesic): near the bone the two agree; across an air
           // gap the geodesic explodes and the influence dies. 26-conn BFS
           // underestimates true length, so it can only ever REMOVE bad
@@ -3611,7 +4263,19 @@ export async function autoRigGLB(buffer, options = {}) {
           const d = dists[b];
           if (d > dMax) continue;
           const relativeDistance = d / H;
-          let w = 1 / ((relativeDistance * relativeDistance + eps) ** 2);
+          let w = strength[b] / ((relativeDistance * relativeDistance + eps) ** 3);
+          {
+            // Past the child joint (along the bone) the bone fades out over
+            // endBand·H, so blends centre on the joint instead of spreading.
+            const e = segList[b][1], u = axisOf[b];
+            const ex = ((p[0] - e[0]) * u[0] + (p[1] - e[1]) * u[1] + (p[2] - e[2]) * u[2]) / H;
+            if (ex > 0) w *= endBand[b] > 0 ? smooth01(1 - ex / endBand[b]) : 0;
+          }
+          if (startBand[b] !== undefined) {
+            const a = segList[b][0], u = axisOf[b];
+            const ex = -((p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1] + (p[2] - a[2]) * u[2]) / H;
+            if (ex > 0) w *= startBand[b] > 0 ? smooth01(1 - ex / startBand[b]) : 0;
+          }
           // Soft side gate: a Left bone fades out as the vertex crosses to the
           // right of the midline (and vice-versa) over a 2·sideMargin band, so
           // inner thighs / cross-body bleed vanish without a hard cut that the
@@ -3637,19 +4301,30 @@ export async function autoRigGLB(buffer, options = {}) {
           // this, a vertex close to a bone can overwhelm an entire joint ring.
           for (let b = 0; b < nB; b++) sparseAdd(field, b, weights[b] / total);
         }
-        sparseFlush(field, field.cols, field.vals, v);
+        sparseFlush(field, field.cols, field.vals, offset + v);
       }
+    }
+  }
 
-      // ── Laplacian weight smoothing (crease-free joints) ────────────────────
-      const weldEps = 1e-4 * H;
-      const adjacency = buildVertexAdjacency(arr, indices, weldEps);
-      smoothSparseWeights(field, adjacency, 5, 0.6);
+  // ── Laplacian weight smoothing (crease-free joints) ────────────────────────
+  // One graph over all weighted primitives: coincident vertices weld across
+  // primitive and mesh boundaries and leave with identical weights.
+  progress('smooth', 0.7);
+  const weldEps = 1e-4 * H;
+  const adjacency = buildJointAdjacency(parts, totalVerts, weldEps);
+  smoothSparseWeights(field, adjacency, 2, 0.6);
 
+  // Per dominant bone: skinned vertices, vertices without geodesic data and
+  // vertices failing the cross-side / distant checks (joint confidence).
+  const boneStats = weightedJointOrder.map(() => ({ vertices: 0, noGeodesic: 0, flagged: 0 }));
+  for (const [partIndex, { prim, positions: arr, offset, count }] of parts.entries()) {
+    {
+      const voxelIndex = geodesic ? geodesic.voxelOf.get(prim) : null;
       // ── Reduce to top-4 influences + normalize ─────────────────────────────
       const jointsOut = new Uint8Array(count * 4);
       const weightsOut = new Float32Array(count * 4);
       for (let v = 0; v < count; v++) {
-        const base = v * WEIGHT_SLOTS;
+        const base = (offset + v) * WEIGHT_SLOTS;
         const point = [arr[v * 3], arr[v * 3 + 1], arr[v * 3 + 2]];
         const domain = fingerDomain(point);
         const best = [[-1, 0], [-1, 0], [-1, 0], [-1, 0]];
@@ -3700,17 +4375,32 @@ export async function autoRigGLB(buffer, options = {}) {
         }
         if (wrongSide > 0.10) qaCross++;
         if (distant) qaDistant++;
+        const stat = boneStats[best[0][0] >= 0 ? best[0][0] : 0];
+        stat.vertices++;
+        if (voxelIndex && voxelIndex[v] < 0) stat.noGeodesic++;
+        if (wrongSide > 0.10 || distant) stat.flagged++;
       }
 
       prim.setAttribute('JOINTS_0', doc.createAccessor()
         .setType('VEC4').setArray(jointsOut).setBuffer(glbBuffer));
       prim.setAttribute('WEIGHTS_0', doc.createAccessor()
         .setType('VEC4').setArray(weightsOut).setBuffer(glbBuffer));
+      parts[partIndex].joints = jointsOut;
+      parts[partIndex].weights = weightsOut;
     }
   }
 
   for (const node of meshNodes) node.setSkin(skin);
+  progress('validate', 0.8);
   const restValidation = validateRestSkin(doc, H);
+  progress('deform-test', 0.86);
+
+  // Stress poses on the final influences (humanoid layouts only).
+  const deformation = layout.bodyPlan === 'humanoid' && options.deformationTest !== false
+    ? deformationStressTest({ parts, order: rigLayout.order, hierarchy: rigLayout.hierarchy, joints, height: H,
+      forward: [0, 0, fwdSign], left: leftAxisValid ? leftAxis : [fwdSign, 0, 0],
+      fingerSides: layout.fingers.length ? activeFingerSides : [], twist: rigLayout !== layout })
+    : null;
 
   // Re-parent small nearby props (glasses, weapons, hats) under their nearest
   // joint so they follow the animation instead of freezing in world space.
@@ -3730,13 +4420,42 @@ export async function autoRigGLB(buffer, options = {}) {
     notes.push(...diagnostics.issues);
     if (crossPct > 0.01) notes.push(`${(crossPct * 100).toFixed(1)}% of vertices carry cross-side limb weight.`);
     if (distantPct > 0.01) notes.push(`${(distantPct * 100).toFixed(1)}% of vertices are influenced by a distant bone.`);
-    if (!geodesic && options.geodesicWeights !== false) notes.push('Geodesic weighting unavailable (voxelization failed) — euclidean fallback used.');
+    // Geodesic weighting state (never silent): budget truncation, low voxel
+    // coverage, memory or voxelization failure all fall back to euclidean.
+    const geoReasons = [];
+    if (options.geodesicWeights !== false) {
+      if (geoStatus.truncated) geoReasons.push(`Voxel budget reached: only ${(100 * geoStatus.rasterized).toFixed(0)}% of the triangles entered the body volume; geodesic weights are approximate where it is missing.`);
+      if (geoStatus.disabled === 'coverage') geoReasons.push(`Geodesic weighting disabled: only ${(100 * geoStatus.coverage).toFixed(0)}% of the vertices lie in the voxel shell (needs 50%); euclidean fallback used.`);
+      else if (geoStatus.disabled === 'memory') geoReasons.push('Geodesic weighting disabled: the voxel field exceeds the memory budget; euclidean fallback used.');
+      else if (!geodesic) geoReasons.push('Geodesic weighting unavailable (voxelization failed); euclidean fallback used.');
+    }
+    notes.push(...geoReasons);
     if (propsAttached > 0) notes.push(`${propsAttached} prop mesh(es) rigidly attached to the skeleton.`);
     if (orientation.applied) notes.push(`Mesh faced ${orientation.facing}${orientation.upAxis !== '+Y' ? ` (up ${orientation.upAxis})` : ''} — rigged output rotated upright facing +Z.`);
     if (preset.compatibility === 'naming-convention') {
       notes.push(`${preset.label} changes deform-bone names only; engine avatar/control-rig validation is still required.`);
     }
+    // Confidence and verdict on the joints that deform. Caller markers are
+    // judged on their own (volume, symmetry, rig signals); guessed joints
+    // also by how they were found.
+    const reliableVox = geoStatus.vox && !geoStatus.truncated && !(geoStatus.coverage < 0.5) ? geoStatus.vox
+      : !geoStatus.vox && ctx.vox && !ctx.vox.truncated ? ctx.vox : null;
+    const assessment = assessJoints({
+      joints, order: weightedJointOrder, ctx, vox: reliableVox,
+      guess: markersComplete ? null : { ...guess, jointSources: Object.fromEntries(Object.keys(sourceJoints).map(n => [n, n])) },
+      fingerDetection: guess.fingerDetection, outsideBounds: diagnostics.outsideBounds,
+      deformingFingers: layout.fingers.length ? activeFingerSides : [], deformation,
+      geodesic: options.geodesicWeights !== false ? { disabled: !geodesic } : null,
+      boneStats: Object.fromEntries(weightedJointOrder.map((name, b) => [name, boneStats[b]])),
+      globalReasons: geoReasons.filter(() => !geodesic || geoStatus.truncated),
+      globalFactor: geoStatus.truncated ? 0.95 : 1,
+    });
     const report = {
+      verdict: assessment.verdict,
+      confidence: assessment.confidence,
+      reviewJoints: assessment.reviewJoints,
+      reviewReasons: assessment.reviewReasons,
+      jointConfidence: assessment.jointConfidence,
       score,
       scoreScope: 'Heuristic influence checks, not a measure of anatomical accuracy.',
       restValidation,
@@ -3757,12 +4476,14 @@ export async function autoRigGLB(buffer, options = {}) {
       skeletonPreset: presetId,
       presetCompatibility: preset.compatibility,
       meshSelection: selectionReport.meshSelection,
+      deformation,
       notes,
     };
-    console.log(`[autorig] Skin quality score: ${score}/100` + (notes.length ? ` — ${notes.join(' ')}` : ''));
+    console.log(`[autorig] Skin quality score: ${score}/100, verdict ${assessment.verdict} (${(100 * assessment.confidence).toFixed(0)}%)` + (notes.length ? ` — ${notes.join(' ')}` : ''));
     if (options.reportSink && typeof options.reportSink === 'object') Object.assign(options.reportSink, report);
   }
 
+  progress('write', 0.9);
   await doc.transform(prune({ keepLeaves: true }));
   // Draco-compressed sources (rebuild path): re-encoding on write quantizes the
   // fresh JOINTS/WEIGHTS accessors and drifts the weight normalization. Drop
@@ -3772,5 +4493,7 @@ export async function autoRigGLB(buffer, options = {}) {
     console.log('[autorig] Disposing KHR_draco_mesh_compression extension (uncompressed output).');
     dracoExt.dispose();
   }
-  return io.writeBinary(doc);
+  const output = await io.writeBinary(doc);
+  progress('write', 1);
+  return output;
 }

@@ -11,6 +11,7 @@
 import express from 'express';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
 import path from 'path';
 
 // multer is CommonJS — use createRequire to load it in ESM context
@@ -25,7 +26,39 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.BCC_HOST || '127.0.0.1';
 const MAX_UPLOAD_MB = Math.max(1, Math.min(256, Number(process.env.BCC_MAX_UPLOAD_MB) || 96));
 const MAX_CONCURRENT_JOBS = Math.max(1, Math.min(8, Number(process.env.BCC_MAX_JOBS) || 2));
+// Dense AI-generated meshes (1M+ vertices) need more than two minutes for the
+// full rig + deformation check, so heavy jobs share one configurable budget.
+const JOB_TIMEOUT_MS = Math.max(30, Math.min(1800, Number(process.env.BCC_JOB_TIMEOUT_S) || 300)) * 1000;
+const APP_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 let activeJobs = 0;
+
+// ── Job progress: the Builder tags heavy requests with X-Job-Id and polls
+// GET /api/progress/:id while the worker reports its stages.
+const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+const jobProgress = new Map();
+
+function trackJob(req, kind) {
+  const id = req.get('x-job-id');
+  if (!id || !JOB_ID_PATTERN.test(id)) return { onProgress: null, done() {} };
+  const startedAt = Date.now();
+  const entry = { kind, stage: 'queued', fraction: 0, startedAt, updatedAt: startedAt, done: false };
+  jobProgress.set(id, entry);
+  // Bounded: a client that never polls cannot grow the map without limit.
+  if (jobProgress.size > 64) jobProgress.delete(jobProgress.keys().next().value);
+  return {
+    onProgress({ stage, fraction }) {
+      entry.stage = String(stage || entry.stage).slice(0, 40);
+      entry.fraction = Math.max(0, Math.min(1, Number(fraction) || 0));
+      entry.updatedAt = Date.now();
+    },
+    done() {
+      entry.done = true;
+      entry.fraction = 1;
+      entry.updatedAt = Date.now();
+      setTimeout(() => { if (jobProgress.get(id) === entry) jobProgress.delete(id); }, 30_000).unref?.();
+    },
+  };
+}
 
 // ── Multer: in-memory storage ────────────────────────────────────────────────
 const storage = multer.memoryStorage();
@@ -42,8 +75,8 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
-  req.setTimeout(120_000);
-  res.setTimeout(120_000);
+  req.setTimeout(JOB_TIMEOUT_MS + 10_000);
+  res.setTimeout(JOB_TIMEOUT_MS + 10_000);
   next();
 });
 
@@ -164,8 +197,37 @@ export function encodeAutoRigReport(report) {
     notes: Array.isArray(report.notes)
       ? report.notes.slice(0, 8).map(note => String(note).slice(0, 512))
       : [],
+    verdict: report.verdict === 'ok' || report.verdict === 'review' ? report.verdict : undefined,
+    confidence: Number.isFinite(report.confidence) ? report.confidence : undefined,
+    reviewJoints: Array.isArray(report.reviewJoints)
+      ? report.reviewJoints.slice(0, 24).map(name => String(name).slice(0, 48))
+      : undefined,
+    reviewReasons: Array.isArray(report.reviewReasons)
+      ? report.reviewReasons.slice(0, 6).map(reason => String(reason).slice(0, 240))
+      : undefined,
+    deformation: compactDeformation(report.deformation),
   };
   return Buffer.from(JSON.stringify(compact), 'utf8').toString('base64url');
+}
+
+// Stress-pose deformation summary: per-region scores and the worst pose only
+// (the full per-pose arrays would overflow an HTTP header).
+function compactDeformation(deformation) {
+  if (!deformation || typeof deformation !== 'object') return undefined;
+  const scalar = value => (Number.isFinite(value) ? value
+    : typeof value === 'string' ? value.slice(0, 80)
+      : typeof value === 'boolean' ? value : undefined);
+  const flat = object => (object && typeof object === 'object'
+    ? Object.fromEntries(Object.entries(object).slice(0, 12).map(([key, value]) => [key.slice(0, 40), scalar(value)])
+      .filter(([, value]) => value !== undefined))
+    : undefined);
+  const regions = deformation.regions && typeof deformation.regions === 'object'
+    ? Object.fromEntries(Object.entries(deformation.regions).slice(0, 40).map(([name, region]) => [name.slice(0, 48), {
+      score: Number.isFinite(region?.score0to1) ? region.score0to1 : Number.isFinite(region?.score) ? region.score : undefined,
+      issues: Array.isArray(region?.issues) ? region.issues.slice(0, 3).map(issue => String(issue).slice(0, 120)) : undefined,
+    }]))
+    : undefined;
+  return { score: scalar(deformation.score), worst: flat(deformation.worst), regions };
 }
 
 // Retarget diagnostics from mergeGLBs (root scale, ground fixes, quaternion
@@ -196,7 +258,21 @@ export function encodeMergeReport(report) {
 function processingSignal(req) {
   const controller = new AbortController();
   req.once('aborted', () => controller.abort());
+  // Newer Node versions close the response without emitting 'aborted' when the
+  // client cancels (Builder Cancel button) — stop the worker in that case too.
+  req.res?.once?.('close', () => { if (!req.res.writableFinished) controller.abort(); });
   return controller.signal;
+}
+
+async function runTrackedJob(req, type, payload) {
+  const tracker = trackJob(req, type);
+  try {
+    return await runProcessingJob(type, payload, {
+      signal: processingSignal(req), timeoutMs: JOB_TIMEOUT_MS, onProgress: tracker.onProgress,
+    });
+  } finally {
+    tracker.done();
+  }
 }
 
 // ── Static files: explicit public allowlist ──────────────────────────────────
@@ -208,7 +284,18 @@ app.get('/index.html', (_req, res) => res.sendFile(path.join(__dirname, 'index.h
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, version: '2.4.1', ts: Date.now() });
+  res.json({ ok: true, version: APP_VERSION, progress: true, ts: Date.now() });
+});
+
+// ── Job progress (polled by the Builder while a tagged heavy job runs) ──────
+app.get('/api/progress/:id', (req, res) => {
+  const entry = JOB_ID_PATTERN.test(req.params.id) ? jobProgress.get(req.params.id) : null;
+  if (!entry) return res.status(404).json({ error: 'Unknown job.' });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    kind: entry.kind, stage: entry.stage, fraction: entry.fraction, done: entry.done,
+    elapsedMs: (entry.done ? entry.updatedAt : Date.now()) - entry.startedAt,
+  });
 });
 
 // ── Analyze a single GLB ─────────────────────────────────────────────────────
@@ -220,7 +307,7 @@ app.post('/api/analyze', heavyJob, upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
     assertGLB(req.file);
     console.log(`[analyze] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB)`);
-    const result = await runProcessingJob('analyze', { file: req.file.buffer }, { signal: processingSignal(req) });
+    const result = await runTrackedJob(req, 'analyze', { file: req.file.buffer });
     res.json(result.data);
   } catch (err) {
     console.error('[analyze] Error:', err);
@@ -260,11 +347,11 @@ app.post('/api/merge', heavyJob, upload.fields([
       console.log(`[merge] anim=none (clean animations mode)`);
     }
 
-    const job = await runProcessingJob('merge', {
+    const job = await runTrackedJob(req, 'merge', {
       character: charFile.buffer,
       animations: animBuffer,
       options,
-    }, { signal: processingSignal(req) });
+    });
     const merged = Buffer.from(job.data);
 
     const mergeReport = animFile ? encodeMergeReport(job.report) : null;
@@ -294,11 +381,11 @@ app.post('/api/convert-fbx', heavyJob, upload.single('file'), async (req, res) =
     assertFBX(req.file);
     console.log(`[convert-fbx] ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(2)} MB)`);
 
-    const job = await runProcessingJob('convertFBX', {
+    const job = await runTrackedJob(req, 'convertFBX', {
       file: req.file.buffer,
       name: req.file.originalname,
       options: { repairMaterials: false },
-    }, { signal: processingSignal(req) });
+    });
     const glb = Buffer.from(job.data);
 
     res.setHeader('Content-Type', 'model/gltf-binary');
@@ -327,7 +414,7 @@ app.post('/api/autorig-joints', heavyJob, upload.single('file'), async (req, res
       catch (_) { return res.status(400).json({ error: 'Invalid JSON in options.' }); }
     }
     console.log(`[autorig-joints] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB) plan=${options.bodyPlan || 'humanoid'} fingers=${options.fingerCount ?? 5}`);
-    const result = await runProcessingJob('guessJoints', { file: req.file.buffer, options }, { signal: processingSignal(req) });
+    const result = await runTrackedJob(req, 'guessJoints', { file: req.file.buffer, options });
     res.json(result.data);
   } catch (err) {
     console.error('[autorig-joints] Error:', err);
@@ -345,7 +432,7 @@ app.post('/api/autorig-orient', heavyJob, upload.single('file'), async (req, res
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded (field: file)' });
     assertGLB(req.file);
-    const job = await runProcessingJob('orient', { file: req.file.buffer, options: {} }, { signal: processingSignal(req) });
+    const job = await runTrackedJob(req, 'orient', { file: req.file.buffer, options: {} });
     const info = job.kind === 'binary' ? job : job.data || {};
     const orientation = { ...(info.orientation || { applied: false }), placement: info.placement || { applied: false } };
     res.setHeader('X-Autorig-Orientation', JSON.stringify(orientation));
@@ -379,7 +466,7 @@ app.post('/api/autorig', heavyJob, upload.single('file'), async (req, res) => {
     }
 
     console.log(`[autorig] ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB), custom joints: ${options.joints ? Object.keys(options.joints).length : 0}`);
-    const job = await runProcessingJob('autorig', { file: req.file.buffer, options }, { signal: processingSignal(req) });
+    const job = await runTrackedJob(req, 'autorig', { file: req.file.buffer, options });
     const rigged = Buffer.from(job.data);
     const reportSink = job.report || {};
 

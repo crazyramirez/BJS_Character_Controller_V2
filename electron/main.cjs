@@ -68,7 +68,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     try {
-      const port = await getFreePort(3000);
+      // Stable ports first: the window origin (and its saved Builder settings)
+      // only changes when all of them are taken.
+      const port = await getFreePort([3000, 3417, 3418, 3419, 3420]);
       await startServer(port);
       createWindow(port);
     } catch (err) {

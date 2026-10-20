@@ -48,7 +48,16 @@ function animationGroup(name) {
     setWeightForAllAnimatables(weight) { this.animatables[0].weight = weight; },
     start() { this.isPlaying = true; },
     stop() { this.isPlaying = false; },
+    goToFrame() {},
+    clone(cloneName) { const copy = animationGroup(cloneName); copy.from = this.from; copy.to = this.to; return copy; },
+    dispose() { this.disposed = true; },
   };
+}
+
+function quietConsole(sandbox) {
+  const warnings = [];
+  sandbox.console = { ...console, log() {}, warn: (...args) => warnings.push(args.join(' ')) };
+  return warnings;
 }
 
 test('animation mapping is deterministic when clean names collide', async () => {
@@ -96,6 +105,127 @@ test('bone role normalization keeps left and right aliases distinct', async () =
   assert.equal(sandbox.normBone('upperarm_r'), 'rightarm');
   assert.notEqual(sandbox.normBone('CC_Base_L_Hand'), sandbox.normBone('CC_Base_R_Hand'));
   assert.equal(sandbox.cleanAnimName('Armature|Locomotion|Walk_Loop'), 'Walk_Loop');
+});
+
+test('standard slots fall back to Builder keywords without double-mapping locomotion clips', async () => {
+  const { sandbox } = await loadController();
+  const warnings = quietConsole(sandbox);
+  const names = ['Armature|Walk_And_Run', 'Armature|Walk', 'Idle_Breathing', 'Crouch_Walk', 'Jump_Start', 'Roll_Dodge', 'Wave'];
+  const groups = names.map(animationGroup);
+  const ctrl = new sandbox.AnimCtrl(groups, { onBeforeRenderObservable: observable() }, { warnMissing: false });
+  const byName = name => groups[names.indexOf(name)];
+  // Walk_Loop prefers the plain Walk over the longer clip listed first; that clip
+  // stays free for Sprint_Loop instead of being shared by two locomotion slots.
+  assert.equal(ctrl.g.get('Walk_Loop'), byName('Armature|Walk'));
+  assert.equal(ctrl.g.get('Sprint_Loop'), byName('Armature|Walk_And_Run'));
+  assert.equal(ctrl.g.get('Idle_Loop'), byName('Idle_Breathing'));
+  assert.equal(ctrl.g.get('Crouch_Fwd_Loop'), byName('Crouch_Walk'));
+  assert.equal(ctrl.g.get('Roll'), byName('Roll_Dodge'));
+  assert.equal(ctrl.g.get('Jump_Start'), byName('Jump_Start'));
+  const report = ctrl.mappingReport;
+  assert.deepEqual([...report.exact], ['Jump_Start']);
+  assert.deepEqual([...report.keyword].map(k => `${k.slot}=${k.clip}`), [
+    'Idle_Loop=Idle_Breathing', 'Walk_Loop=Walk', 'Sprint_Loop=Walk_And_Run', 'Crouch_Fwd_Loop=Crouch_Walk', 'Roll=Roll_Dodge',
+  ]);
+  assert.ok(report.missing.includes('Punch') && !report.missing.includes('Walk_Loop'));
+  assert.equal(sandbox.STANDARD_ANIM_SLOTS.length, 16);
+  assert.equal(warnings.length, 0);
+  ctrl.dispose();
+});
+
+test('a clip is only shared by two locomotion slots when nothing better exists, and missing core slots warn once', async () => {
+  const { sandbox } = await loadController();
+  const warnings = quietConsole(sandbox);
+  const only = animationGroup('Walk_Run_Cycle');
+  const ctrl = new sandbox.AnimCtrl([only], { onBeforeRenderObservable: observable() }, { warnMissing: false });
+  assert.equal(ctrl.g.get('Walk_Loop'), only);
+  const sprint = ctrl.g.get('Sprint_Loop');
+  assert.notEqual(sprint, only, 'second locomotion slot plays an independent clone');
+  assert.equal(sprint.__isSharedClone, true);
+  assert.deepEqual({ ...ctrl.mappingReport.keyword[1] }, { slot: 'Sprint_Loop', clip: 'Walk_Run_Cycle', sharedWith: 'Walk_Loop' });
+  assert.deepEqual([...ctrl._warnMissingCoreSlots()], ['Idle_Loop']);
+  ctrl._warnMissingCoreSlots();
+  assert.equal(warnings.filter(w => w.includes('No clip for Idle_Loop')).length, 1);
+  ctrl.dispose();
+});
+
+function presetHarness(sandbox, names) {
+  const groups = names.map(animationGroup);
+  const anim = new sandbox.AnimCtrl(groups, { onBeforeRenderObservable: observable() }, { warnMissing: false });
+  const configs = [];
+  const charCtrl = {
+    anim, keyBindings: { JUMP: ['Space'] },
+    setConfig(partial) { configs.push(partial); return partial; },
+  };
+  return { groups, anim, charCtrl, configs };
+}
+
+test('applyCharacterPreset maps slots, clears null slots and reports missing clips once', async () => {
+  const { sandbox } = await loadController();
+  const warnings = quietConsole(sandbox);
+  const { groups, anim, charCtrl, configs } = presetHarness(sandbox, ['Armature|Walking', 'Roll', 'Dance', 'Idle_Loop']);
+  const result = sandbox.applyCharacterPreset(charCtrl, anim, groups, {
+    schema: 'bjs-character-preset/v1',
+    keys: { JUMP: ['KeyK'], TAUNT: 'KeyT' },
+    config: { SPD_WALK: 3 },
+    animations: {
+      Walk_Loop: { clip: 'Walking', from: 2, to: 18 },
+      Roll: null,
+      Sprint_Loop: { clip: 'Sprinting' },
+      Idle_Loop: 'Idle_Loop',
+    },
+    customActions: [{ name: 'TAUNT', clip: 'Dance', keys: ['KeyT', 'KeyY'] }, { name: 'WAVE', clip: 'Wave' }],
+    animationEvents: { Walk_Loop: [{ type: 'footstep', frame: '5', label: 'L' }] },
+  });
+  const walk = anim.g.get('Walk_Loop');
+  assert.equal(walk.name, 'Armature|Walking__Walk_Loop', 'remap clones like setAnimation does');
+  assert.equal(walk.from, 2);
+  assert.equal(walk.to, 18);
+  assert.equal(anim.g.has('Roll'), false, 'null clears the slot');
+  assert.equal(groups[1].isPlaying, false);
+  assert.equal(anim.g.get('Idle_Loop'), groups[3], 'already exclusive mapping is kept as is');
+  assert.equal(anim.g.get('TAUNT').name, 'Dance__TAUNT');
+  assert.deepEqual([...charCtrl.keyBindings.TAUNT], ['KeyT', 'KeyY']);
+  assert.deepEqual([...charCtrl.keyBindings.JUMP], ['KeyK']);
+  assert.deepEqual({ ...configs[0] }, { SPD_WALK: 3 });
+  assert.equal(anim.animationEvents.Walk_Loop[0].frame, 5);
+  assert.deepEqual([...result.missing].map(m => `${m.slot}:${m.clip}`), ['Sprint_Loop:Sprinting', 'WAVE:Wave']);
+  assert.ok(result.applied.includes('animations.Walk_Loop'));
+  assert.ok(result.applied.includes('animations.Roll=none'));
+  assert.ok(result.applied.includes('customActions.TAUNT'));
+  assert.ok(result.applied.includes('keys') && result.applied.includes('config') && result.applied.includes('animationEvents'));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Sprint_Loop ← "Sprinting", WAVE ← "Wave"/);
+  anim.dispose();
+});
+
+test('Builder builder-config.json files are accepted as presets', async () => {
+  const { sandbox } = await loadController();
+  quietConsole(sandbox);
+  const preset = sandbox.normalizeCharacterPreset({
+    schema: 'bjs-character-controller-builder/v2',
+    keys: { JUMP: ['KeyK'] },
+    physics: { SPD_WALK: 3 },
+    transforms: { SCALE_X: 1, SCALE_Y: 2, SCALE_Z: 1 },
+    rigging: { boneMapOverrides: { pelvis: 'Hips' } },
+    animations: {
+      standardMappings: {
+        Walk_Loop: { animName: 'Walking', from: 0, to: 30 },
+        Roll: { animName: 'None', autoMapped: false },
+        Punch: { animName: 'None', autoMapped: true },
+      },
+      customActions: [{ name: 'TAUNT', animName: 'Dance', keyTrigger: ['KeyT'] }, { name: 'X', animName: 'None', keyTrigger: [] }],
+      events: { Walk_Loop: [{ type: 'footstep', frame: 3 }] },
+    },
+  });
+  assert.equal(preset.schema, 'bjs-character-preset/v1');
+  assert.deepEqual({ ...preset.animations.Walk_Loop }, { clip: 'Walking', from: 0, to: 30 });
+  assert.equal(preset.animations.Roll, null);
+  assert.equal('Punch' in preset.animations, false, 'automatic None leaves the runtime auto-map alone');
+  assert.deepEqual([...preset.customActions].map(a => a.name), ['TAUNT']);
+  assert.equal(preset.character.capsuleScale.y, 2);
+  assert.equal(preset.mergeOptions.boneMapOverrides.pelvis, 'Hips');
+  assert.equal(sandbox.normalizeCharacterPreset(null), null);
 });
 
 async function dustController(t) {
